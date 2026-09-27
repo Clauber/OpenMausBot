@@ -14,6 +14,8 @@ enum PrefKey {
     static let activityDetail = "companion.prefs.activityDetail"
     static let quickReplies = "companion.prefs.quickReplies"
     static let language = "companion.prefs.language"
+    /// Live calls: speaker (true, the default) or earpiece. A phone-side choice.
+    static let liveSpeaker = "companion.prefs.liveSpeaker"
 }
 
 /// The set of chats whose island intro has already played.

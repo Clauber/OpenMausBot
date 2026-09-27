@@ -9,6 +9,7 @@ import CompanionCore
 
 struct ChatListView: View {
     @EnvironmentObject private var session: Session
+    @EnvironmentObject private var liveCall: LiveCallController
     @State private var query = ""
     @AppStorage(PrefKey.activityDetail) private var activityDetail = ActivityDetail.full.rawValue
     /// Driven so that making a bot can open it. Value-based navigation alone
@@ -37,6 +38,11 @@ struct ChatListView: View {
             VStack(spacing: 0) {
                 header
                 StatusBanner()
+                LiveCallBanner { target in
+                    if let bot = session.state.bot(target.botId)?.projected(forThread: target.threadId) {
+                        path.append(Chat.bot(bot))
+                    }
+                }
 
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
@@ -333,6 +339,7 @@ struct ChatListView: View {
                         GroupTile(room: room)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityIdentifier("chat-row.\(room.id)")
                 }
                 if showsCreate {
                     Button {
@@ -366,6 +373,7 @@ struct ChatListView: View {
                     )
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("chat-row.\(summary.chat.id)")
                 if case let .bot(bot) = summary.chat {
                     BotThreadTree(
                         botID: bot.id, query: $query,
@@ -507,6 +515,7 @@ struct ChatListView: View {
             showingWalkie = true
         }
         .accessibilityLabel("Walkie")
+        .disabled(liveCall.machine.isActive)
     }
 
     private var sectionButton: some View {

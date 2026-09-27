@@ -12,6 +12,7 @@ import UserNotifications
 @main
 struct CompanionApp: App {
     @StateObject private var session = Session()
+    @StateObject private var liveCall = LiveCallController.forThisLaunch()
     @Environment(\.scenePhase) private var scenePhase
     @State private var liveActivities = LiveActivityBridge()
     @AppStorage(PrefKey.language) private var language = AppLanguage.system.rawValue
@@ -20,6 +21,7 @@ struct CompanionApp: App {
         WindowGroup {
             RootView()
                 .environmentObject(session)
+                .environmentObject(liveCall)
                 // One modifier is the whole language seam. SwiftUI resolves a
                 // `LocalizedStringKey` against the environment's locale, so
                 // every `Text("…")`, `Button("…")`, `Section("…")` and
@@ -42,9 +44,15 @@ struct CompanionApp: App {
                     OpenMausSharedInbox.removeDirectories(olderThan: 60 * 60)
                     session.connect()
                     liveActivities.attach(to: session)
+                    liveCall.attach(to: session)
                 }
                 .onOpenURL { session.receivePairingURL($0) }
                 .onValueChange(of: scenePhase) { phase in
+                    // Only a true background hangs up (CompanionCore's rule):
+                    // Control Center and the mic prompt pass through .inactive.
+                    // Hang up *before* linger(): the end request rides the same
+                    // ~25 s background window the stream's cursor write uses.
+                    if LiveCallLifecycle.endsCall(on: phase.liveCallPhase) { liveCall.leaveForeground() }
                     switch phase {
                     case .active:
                         OpenMausSharedInbox.removeDirectories(olderThan: 60 * 60)
@@ -202,6 +210,7 @@ struct RootView: View {
 struct UnpairedView: View {
     let onPairAgain: () -> Void
     let onChooseAnother: (() -> Void)?
+    @EnvironmentObject private var liveCall: LiveCallController
 
     var body: some View {
         NavigationStack {
@@ -210,6 +219,15 @@ struct UnpairedView: View {
                 systemImage: "lock.slash",
                 description: Text("The connection was removed on your computer. Pair again to keep using your chats here.")
             ) {
+                // A Live call the refusal hung up says why here: this screen
+                // replaces the chat whose bar would have said it.
+                if case let .stopped(_, notice) = liveCall.machine.phase, case .signedOut = notice {
+                    notice.text
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .accessibilityIdentifier("live-call-signed-out")
+                }
                 Button("Pair again", action: onPairAgain)
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
