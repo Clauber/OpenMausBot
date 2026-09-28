@@ -256,7 +256,7 @@ export function CallTargetButton({
           active
             ? "bg-danger text-white hover:brightness-110"
             : unavailable
-              ? "text-ink-secondary/50 hover:bg-raised hover:text-ink-secondary"
+              ? "text-ink-tertiary hover:bg-raised hover:text-ink-secondary"
               : "text-ink-secondary hover:bg-raised hover:text-ink",
         )}
       >
@@ -833,7 +833,7 @@ function Call({ bot }: { bot: Bot }) {
         </button>
       </div>
 
-      <div className="text-[11.5px] text-ink-secondary/70">
+      <div className="text-[11.5px] text-ink-tertiary">
         Hold Control + Option to talk · Space interrupts · Esc hangs up
       </div>
     </>
