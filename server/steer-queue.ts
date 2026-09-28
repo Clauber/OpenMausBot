@@ -19,6 +19,7 @@
 
 import { newId } from "./contracts.ts";
 import { chatFollowups, saveChatFollowup, settleChatFollowups } from "./message-db.ts";
+import { drainCoalesceHead } from "./admission.ts";
 import type { ResolvedSender, SteerQueueReason } from "../shared/wire.ts";
 import type { BotRecord, Message } from "./store.ts";
 import type { UsageTrigger } from "./usage-ledger.ts";
@@ -55,6 +56,9 @@ interface QueueEntry {
     /** The words were spoken in a Live call, not typed: the drained line
      * says so, like an immediate send would. */
     via?: "call";
+    /** When the words were queued (epoch ms): drain-time coalescing splits
+     * one sender's items when the gap between them outgrows the window. */
+    queuedAt: number;
   }>;
 }
 
@@ -78,7 +82,15 @@ export function restoreSteeredMessages(): void {
     if (entry.botId !== row.ownerId) throw new Error("queued task belongs to another bot");
     // a 1:1 line is only ever stamped "call"; "api" belongs to channel rows
     const { via, ...payload } = row.payload;
-    entry.items.push({ ...payload, ...(via === "call" ? { via } : {}), messageId: row.id, prompt: row.payload.prompt ?? row.payload.text });
+    entry.items.push({
+      ...payload,
+      ...(via === "call" ? { via } : {}),
+      messageId: row.id,
+      prompt: row.payload.prompt ?? row.payload.text,
+      // rows queued before timestamps were kept read as queued at restore
+      // time: the burst was still live when the restart interrupted it
+      queuedAt: row.payload.queuedAt ?? Date.now(),
+    });
     queues.set(row.threadId, entry);
   }
 }
@@ -134,6 +146,7 @@ export function queueSteeredMessage(
     sender: options.sender,
     trigger: options.trigger,
     via: options.via,
+    queuedAt: Date.now(),
   };
   saveChatFollowup({ id, kind: "bot", ownerId: botId, threadId, payload: item });
   entry.items.push(item);
@@ -174,11 +187,14 @@ export function isSteeredMessageQueued(botId: string, threadId: string, queueId:
 
 /** Drain every queue whose task is idle: append the held lines (leaf is now
  * the finished turn's last item), then one run per thread whose prompt is
- * the texts separated by a blank line. `userMessage` is the last appended line
+ * the drained group's texts separated by a blank line. `userMessage` is the last appended line
  * so startTurn does not duplicate it; `excludeIds` is every drained line
  * so transcript-replay adapters do not also see earlier queued texts.
  * Entries leave the map BEFORE running so a settle racing another settle
- * can never fire the same queue twice. */
+ * can never fire the same queue twice. M2: only the leading coalesced
+ * group drains per settle — one sender's contiguous in-window burst joins
+ * one turn, and later groups (another sender, or the same sender past the
+ * window) wait for this turn's completion, preserving FIFO. */
 export function drainSteeredMessages(
   store: SteerStore,
   run: (
@@ -205,14 +221,17 @@ export function drainSteeredMessages(
       continue;
     }
     if (bot.busy || isBlocked?.(entry.botId, threadId)) continue;
+    const group = drainCoalesceHead(entry.items, coalesceIdentity, (item) => item.queuedAt);
     // committed to draining: the entry leaves the map before anything runs,
     // so a settle racing another settle can never fire the same queue twice
-    const ids = entry.items.map((item) => item.messageId);
+    const ids = group.map((item) => item.messageId);
     settleChatFollowups(ids, "dispatching");
-    queues.delete(threadId);
+    const rest = entry.items.slice(group.length);
+    if (rest.length > 0) queues.set(threadId, { botId: entry.botId, items: rest });
+    else queues.delete(threadId);
     changed();
     const appended: Message[] = [];
-    for (const item of entry.items) {
+    for (const item of group) {
       // queueId is the pending-chip identity from the 202; append still
       // assigns a fresh transcript id so replay/exclude keep using message.id.
       appended.push(
@@ -235,7 +254,7 @@ export function drainSteeredMessages(
     // newline can merge a trailing standalone attachment tag with the next
     // message into one HTML block, which makes that attachment stop being a
     // native image when the combined follow-up is dispatched.
-    const prompt = entry.items.map((item) => item.prompt).join("\n\n");
+    const prompt = group.map((item) => item.prompt).join("\n\n");
     const running = run(
       entry.botId,
       threadId,
@@ -243,16 +262,28 @@ export function drainSteeredMessages(
       last,
       appended.map((message) => message.id),
       // one unattended line makes the whole drained turn unattended: a
-      // person's words in the same queue cannot re-attend a bot's own
-      entry.items.some((item) => item.unattended === true),
+      // person's words in the same group cannot re-attend a bot's own
+      group.some((item) => item.unattended === true),
       // the first waiting line is the one that starts this turn
-      { trigger: entry.items[0].trigger, sender: entry.items[0].sender, peerAsk: entry.items[0].peerAsk },
+      { trigger: group[0].trigger, sender: group[0].sender, peerAsk: group[0].peerAsk },
     );
     void Promise.resolve(running).then(
       () => settleChatFollowups(ids, null),
       () => settleChatFollowups(ids, "interrupted"),
     ).catch((error) => console.warn("steer-queue: could not settle durable follow-up", error));
   }
+}
+
+/** A queued item's coalescing identity: WHO sent it, with provenance as
+ * part of the identity. A person's texts merge only with that same
+ * person's; a bot's own queued work (peerAsk/unattended) never merges with
+ * anyone's person texts, and unattributed local sends (the loopback owner)
+ * are one identity — the transcript already names them all the same. */
+function coalesceIdentity(item: QueueEntry["items"][number]): string {
+  if (item.peerAsk) return `peer:${item.peerAsk.botId}:${item.unattended === true ? "unattended" : "attended"}`;
+  if (item.unattended === true) return "unattended";
+  if (item.sender) return `person:${item.sender.id ?? item.sender.name}`;
+  return "person:local";
 }
 
 /** Find the receipt for a retry whose message is still waiting to drain. */

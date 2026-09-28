@@ -100,7 +100,7 @@ export interface DecisionRow {
   /** "call": that person answered by voice on a Live call, not with a tap */
   via?: "call";
   /** how the ask reached the fold: a tool call (absent) or a block parsed
-   * out of model-authored output ("output", the BoxAgent transport).
+   * out of model-authored output ("output", the BoatAgent transport).
    * Question cards only. */
   origin?: "output";
 }
