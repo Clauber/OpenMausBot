@@ -51,5 +51,6 @@ for kind in iphone ipad; do
     -only-testing:OpenMausCompanionUITests/ThreadNavigationUITests \
     -only-testing:OpenMausCompanionUITests/TranscriptPresentationUITests \
     -only-testing:OpenMausCompanionUITests/LiveCallUITests \
+    -only-testing:OpenMausCompanionUITests/SwipeBackUITests \
     CODE_SIGNING_ALLOWED=NO test
 done
