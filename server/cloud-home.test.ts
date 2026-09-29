@@ -4,10 +4,10 @@ import { join } from "node:path";
 import type { IncomingMessage } from "node:http";
 import { afterEach, expect, it } from "vitest";
 import {
-  CLOUD_HOME_MARKER, CLOUD_IGNORED_KEYS, CLOUD_PAIRING_MAX_TTL_S, CLOUD_PAIRING_NONCE_MS, CLOUD_PAIRING_SKEW_S, cloudHomeConfiguration, cloudHomeConfigured,
-  cloudHomeHost, cloudPairingSignature, createCloudPairing, prepareCloudHomeVolume, withoutIgnoredCloudKeys,
+  CLOUD_HOME_MARKER, CLOUD_HOME_RESTART_EXIT_CODE, CLOUD_IGNORED_KEYS, CLOUD_PAIRING_MAX_TTL_S, CLOUD_PAIRING_NONCE_MS, CLOUD_PAIRING_SKEW_S, cloudHomeConfiguration, cloudHomeConfigured,
+  boatNotConfiguredMessage, cloudHomeHost, cloudHomeOffersPlace, cloudHomePlaceRefusal, cloudPairingSignature, createCloudPairing, prepareCloudHomeVolume, withoutIgnoredCloudKeys,
 } from "./cloud-home.ts";
-import { cloudHomeChildEnvironments, passwdIds } from "./cloud-home-start.ts";
+import { cloudHomeChildEnvironments, passwdIds, serverExitAction } from "./cloud-home-start.ts";
 import { hostedModelPolicy } from "./hosted-models.ts";
 import { resolveRequestAuth } from "./request-auth.ts";
 import { SessionRegistry } from "./sessions.ts";
@@ -91,6 +91,31 @@ it("never echoes a secret or token in its refusal", () => {
     try { cloudHomeConfiguration(env); expect.unreachable(); }
     catch (error) { expect(String(error)).not.toContain(secret); expect(String(error)).not.toContain(token); }
   }
+});
+
+// ── places ──────────────────────────────────────────────────────────────────
+
+it("offers the built-in browser and cloud computers, never this computer or a Local VM", () => {
+  expect((["cloud", "vm", "local", "browser"] as const).filter(cloudHomeOffersPlace)).toEqual(["cloud", "browser"]);
+  expect(cloudHomePlaceRefusal("cloud")).toBeUndefined();
+  expect(cloudHomePlaceRefusal("browser")).toBeUndefined();
+});
+
+it("refuses the places it never offers with what is true there, not a setup step", () => {
+  const local = cloudHomePlaceRefusal("local")!, vm = cloudHomePlaceRefusal("vm")!;
+  expect(local).toBe("This computer isn't a place on your OMB Cloud: its bots run in the cloud. Set Works on to Auto, Cloud or Browser, or lend your Mac under Settings → OMB Cloud.");
+  expect(vm).toBe("Bots on your OMB Cloud can't use a Local VM: the cloud machine has no container runtime. Set Works on to Auto, Cloud or Browser.");
+  for (const text of [local, vm]) {
+    expect(text).not.toMatch(/configure|Computer panel|install|set (?:it|one) up/i);
+    // A failed turn shows the first 160 characters of its error.
+    expect(text.length).toBeLessThanOrEqual(160);
+  }
+});
+
+it("suggests the browser, not a Local VM, when Cloud has no Boat account on a Cloud home", () => {
+  expect(boatNotConfiguredMessage(true)).toBe("Cloud Boat is not configured — add a Boat API key or choose Browser");
+  // Every other server keeps its words.
+  expect(boatNotConfiguredMessage(false)).toBe("Cloud Boat is not configured — add a Boat API key or choose Local VM");
 });
 
 // ── the Admin's signed pairing request ───────────────────────────────────────
@@ -261,4 +286,13 @@ it("ships an edge and a Fly template that keep the server private", () => {
   for (const secretKey of ["OMB_CLOUD_BOOTSTRAP_SECRET", "OMB_CLOUD_ADMIN_URL"]) expect(env).not.toMatch(new RegExp(`^\\s*${secretKey}\\s*=`, "m"));
   // Cloud Pro includes no AI: the template sets no gateway.
   expect(fly).not.toContain("OMB_HOSTED_");
+});
+
+it("starts the server again only when it asks to after a restore, and only a few times in a row", () => {
+  expect(serverExitAction(CLOUD_HOME_RESTART_EXIT_CODE, false, 0)).toBe("restart");
+  expect(serverExitAction(CLOUD_HOME_RESTART_EXIT_CODE, false, 4)).toBe("restart");
+  for (const code of [0, 1, null]) expect(serverExitAction(code, false, 0)).toBe("stop");
+  // Stopping for good (Fly asked, or the edge died), or restarting in a loop.
+  expect(serverExitAction(CLOUD_HOME_RESTART_EXIT_CODE, true, 0)).toBe("stop");
+  expect(serverExitAction(CLOUD_HOME_RESTART_EXIT_CODE, false, 5)).toBe("stop");
 });

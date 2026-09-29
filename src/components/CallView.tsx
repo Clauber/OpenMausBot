@@ -21,6 +21,8 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Check, ChevronDown, Loader2, Phone, PhoneOff, X } from "lucide-react";
 
 import { useStore, visibleMessages, type Bot } from "@/state/store";
+import { cn } from "@/lib/cn";
+import { useMenuMotion } from "./MenuMotion";
 import { currentCall, deferCallCleanup, endCall, startCall, useOnCall } from "@/lib/call";
 import { CALL_MODES, callModeHint, setCallMode, useCallMode, type CallMode } from "@/lib/call-mode";
 import { NO, YES } from "../../shared/call-consent";
@@ -35,7 +37,6 @@ import { navigateThreadMenu } from "./BotProjects";
 import { LiveKeySetup } from "./LiveKeySetup";
 import { liveLineHeldElsewhere } from "./LiveCallBar";
 import { isRoutineApproval, isSkillApproval, pendingApprovals, spokenApprovalPrompt } from "./PendingApproval";
-import { cn } from "@/lib/cn";
 import { track } from "@/lib/analytics";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { callCapabilityHelp } from "@/lib/call-capability";
@@ -120,6 +121,7 @@ export function CallTargetButton({
   // the harness answered "no key" to this window's call attempt (the key was
   // removed, or this window's config was stale): ask for it here too
   const keyPopover = canLive && !active && (keyOpen || (media.needsKey && media.botId === targetId));
+  const helpMotion = useMenuMotion(Boolean(unavailable && helpOpen));
   const rootRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const chevronRef = useRef<HTMLButtonElement>(null);
@@ -317,12 +319,12 @@ export function CallTargetButton({
         </div>
       )}
 
-      {unavailable && helpOpen && (
+      {helpMotion.shown && (
         <div
           id={helpId}
           role="group"
           aria-label="Call unavailable"
-          className="animate-pop-in absolute right-0 top-full z-30 mt-1.5 w-[280px] rounded-xl border border-hairline bg-panel p-3 text-left shadow-2xl"
+          className={cn("absolute right-0 top-full z-30 mt-1.5 w-[280px] rounded-xl border border-hairline bg-panel p-3 text-left shadow-2xl", helpMotion.className)} {...helpMotion.exitProps}
         >
           <div className="text-[13px] font-medium text-ink">Call unavailable</div>
           <div className="mt-1 text-[12px] leading-[1.45] text-ink-secondary">{reason}</div>

@@ -56,6 +56,32 @@ problem**, **Could not be set up yet**. Only Ready can be connected to.
 Signed out of Cloud, the app makes no Cloud request and nothing on this page
 runs.
 
+### Where bots work
+
+A Cloud home is a headless Linux server, so its bots have two places: the
+built-in browser and cloud computers. It never offers **This computer** (that
+would be the server itself) or a **Local VM** (a Fly machine has no container
+runtime). The person's own Mac is reached only when they lend it (**Let my
+Cloud use this Mac**, below), through the shared-computer tools.
+
+- Neither place is listed in the Computer panel, the composer's place chip, a
+  bot's Works on setting or Settings → Computers (the config answers
+  `"cloudHome": true`), nor in `select_computer`, which also drops `vm_exec`.
+  Auto never lands on either.
+- A bot still set to either (an older or imported setting) has each task
+  refused with a sentence saying so, suggesting Auto, Cloud or Browser and,
+  for This computer, lending the Mac.
+- Every turn's system prompt says the bot runs in the cloud. Asked about the
+  person's own computer, a bot with the shared-computer tools checks for a lent
+  Mac and, finding none, says so and how to lend one; a bot without them says
+  it cannot reach it. Either offers the browser and cloud computers, never a
+  place that cannot exist.
+- The built-in browser is on unless the person switches it off in Settings.
+  The desktop turns it on in its first-run welcome, which a Cloud home skips.
+
+`shared/cloud-home.ts` decides which places are offered, for the server and
+the app alike.
+
 ### Open in the app: `openmausbot://cloud`
 
 The Cloud page (`https://cloud.openmausbot.com/cloud`) can offer **Open in the
@@ -99,6 +125,150 @@ registers itself at startup. Before that, or if the app is not installed, the
 browser has nothing to open (it shows nothing or an error), so the Cloud page
 should keep a download link next to the button.
 
+## Let my Cloud use this Mac
+
+The Cloud is home: bots and chats live there. The person's Mac is a computer
+the Cloud can borrow while it is awake. Lending is off until the person turns
+it on, and it exists only between their own desktop app and their own Cloud
+home. Other users (desktop only, self-hosted, hosted team workspaces) keep
+computer sharing exactly as before: off unless a maintainer sets
+`features.sharedComputers` by hand.
+
+### What the person sees
+
+In **Settings → OMB Cloud**, the **Your Cloud** card has a **Let my Cloud use
+this Mac** switch under **Connect to my Cloud** (it is part of connecting, not
+a dialog). Turning it on shows what can be lent; each change applies at once,
+with no confirmation. The switch and the chosen scopes are the consent.
+
+- **Folders**: chosen with the folder picker. Read-only by default; **Can
+  edit** lets bots create files and overwrite them, but only after reading the
+  current version (the overwrite is checked against its hash). Nothing is ever
+  deleted. At most 256 KiB per file, no symbolic or hard links. The home folder
+  and anything above it cannot be chosen.
+- **Apps and screen**: bots see the screen and use apps as the person, through
+  this app's own computer control (the signed app holds Accessibility and
+  Screen Recording; the Cloud never does). This is broad by nature, since it
+  reaches anything those apps can, and the switch says so. It needs local
+  computer control set up first.
+- **No terminal.** The shell grant of maintainer sharing is never offered here.
+
+The switch can be turned on before the first **Connect to my Cloud**; lending
+starts once this Mac is signed in to the Cloud. Lending runs while the app is
+open: quitting it (or the Mac sleeping) only pauses lending, and it resumes
+when the app runs again with the switch still on. Below the choices, **Activity
+on this computer** lists every request the Cloud made, refused ones included.
+
+While lending is on, a menu-bar item shows it (**In use** while the Cloud is
+running something on this Mac) with **Stop lending**. Turning the switch off or
+choosing **Stop lending** stops at once: the Cloud is told, a running action
+is cancelled (the computer-control transport is closed and the screen lease
+released), and nothing more runs. An action an app had already started may
+still finish.
+
+### How it is enforced
+
+On the Mac (the authority; `electron/computer-sharing.mjs`,
+`electron/shared-computer-access.mjs`):
+
+- **Outbound only.** Electron main dials the Cloud's HTTPS address with this
+  app's own session cookie and a per-grant 256-bit secret; there is no
+  listening port. The Cloud can only answer the Mac's long poll.
+- **Bound to the account and the machine.** The grant records the Cloud
+  account id and the machine's origin from the verified Cloud session
+  (`cloud-account.mjs`), and the Cloud home's environment id on first contact.
+  Signing out of OMB Cloud, another account signing in, the Cloud moving to
+  another machine, or another server answering at that address ends lending
+  and switches it off (turning it back on is the person's choice). A Cloud
+  sign-in that must be renewed pauses lending; a minute's re-verification or an
+  unreachable Admin does not. The server must say it is a Cloud home
+  (`cloudHome: true`) and this Mac's session there must be one of the owner's
+  admin devices. Lending never reads the maintainer flag and it never goes to
+  any other server.
+- **Every operation is checked against the grant here**, whatever the server
+  says: the folder must be lent, writes need **Can edit**, screen actions need
+  apps and screen. Jobs are validated against the server's schema first.
+- **What folders never reach**, read-only or not: this app's data and grants,
+  keys and sign-in stores (`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.config/gh`,
+  `~/.claude`, `~/.codex`, keychains, browser profiles and cookies…) and places
+  that run code (`~/Library/LaunchAgents`, git and shell configuration,
+  `~/.local/bin`), decided by filesystem identity rather than spelling. Writes
+  inside any `.git` directory are refused.
+- **Screen tools and their arguments are an allow-list**
+  (`electron/lent-screen-tools.mjs`), derived from the local driver's own
+  schemas: observation and input only. The driver's tools that work outside
+  the screen (uploading a file by path, recording or replaying to a path,
+  configuration, installing, DevTools, killing a process, raising permission
+  prompts) are refused and hidden, and so is every argument that names a path,
+  a command line or a port: screenshots come back inline (never
+  `screenshot_out_file` or `debug_image_out`), `launch_app` takes no extra
+  arguments or inspector port and opens only `http`/`https` addresses, and a
+  cursor image cannot be read from a path. Any other argument is refused, and
+  the tool list the Cloud sees shows only what is accepted.
+- **Activity log**: `lending-activity.jsonl` in the app's data folder, owner
+  only: time, action, folder and relative path or tool name, and whether it
+  ran. Never contents, output or typed text. The app only ever appends to it
+  (never through a link); a full file of 500 entries is moved to
+  `lending-activity.jsonl.1` intact. No folder or screen argument reaches it.
+
+On the Cloud home (`server/shared-computers.ts`, `server/index.ts`):
+
+- Lending is on for every Cloud home, with no maintainer flag.
+- Only the owner's admin sessions (the Admin's signed pairing gives the
+  desktop one) can lend. A chat-only device the owner paired cannot.
+- The server refuses operations outside the scopes the Mac registered before
+  queuing them, never retries an operation with an unknown outcome, and never
+  substitutes its own files for an offline Mac.
+- Only turns that provably act for the owner may use the lent Mac
+  (`server/cloud-lending.ts`): a conversation the owner started from one of
+  their own devices (a live session with admin scope), a scheduled run of a
+  routine the owner wrote or last rewrote from one of those devices, or a run
+  of it the owner started by hand. Never a webhook-started run (its payload
+  comes from outside), a guest's conversation or routine (a device paired
+  with chat-only access), a routine someone else rewrote, a room, a bot's
+  delegated or peer turn, a local process on the Cloud, or anything the
+  harness cannot trace. A conversation qualifies only while it holds nobody
+  else's words, anywhere in it, before or during the turn: one line from a
+  guest, a teammate bot or a local process (sent, queued, steered or handed
+  in, or history imported with a move), or one card answer from someone else,
+  takes that conversation out of lending for good, because a resumed session
+  carries everything said in it. The bot is told "Someone else wrote in this
+  conversation, so it can't use your Mac. Start a new conversation to use it."
+  and the lending switch says the same. The owner's own edits count as theirs,
+  and the harness's own automatic card settlements do not count. A
+  routine stops being the owner's once anyone else edits it in any way (its
+  instructions, schedule, results destination or whether it is on); the
+  owner rewriting its instructions makes it theirs again. A bot whose
+  **Computer** setting is off cannot use lent apps and screen.
+- On a Cloud home only the owner's own devices (admin sessions) can answer a
+  card or remember an approval; a guest can read along but never answer.
+- What this does not cover: a bot's own memory. Notes a bot keeps while
+  talking with a guest load into that bot's later conversations, the owner's
+  included. Pairing a guest to your Cloud lets them talk to your bots; lend
+  your Mac only while you trust everyone paired there.
+
+### What the Cloud can see: `GET /api/shared-computers`
+
+For the Cloud UI and the next step (placing a step on the Mac, "Waiting for
+your Mac"). Client scope; on a Cloud home only the owner's own devices (admin
+sessions) see the lent Mac and a guest sees an empty list; elsewhere a session
+sees only its own person's. No secrets, no local paths.
+
+```json
+{ "computers": [ {
+  "id": "5b3e…", "name": "MacBook-Pro",
+  "online": true, "busy": false, "lastSeenAt": 1790000000000,
+  "scopes": { "folders": [ { "id": "9f1c…", "name": "Plans", "write": false } ], "terminal": false, "screen": true }
+} ] }
+```
+
+`online` is false once the Mac has not polled for 40 seconds (asleep, app
+closed, offline); the entry stays until lending is stopped, the Mac's session
+ends, or 14 days pass. The list is in memory and empty after the Cloud
+restarts, until the Mac registers again (within seconds of being online).
+Server code can call `sharedComputers.status(principal)` directly. Bots use
+the `list_shared_computers` and `shared_computer` tools.
+
 ## The image
 
 `deploy/fly/Dockerfile` builds on the published server image
@@ -120,7 +290,9 @@ mount point to the `maus` user, drops privileges for good, binds the volume to
 this machine (`/data/.omb-cloud-home.json`; another machine's volume, or an
 unmarked volume with data on it, is refused), and runs two children: the
 server on `127.0.0.1:8799` (webhooks on `127.0.0.1:8800`) and Caddy on
-`:8080`. If either exits, both stop and Fly restarts the machine.
+`:8080`. If either exits, both stop and Fly restarts the machine. The one
+exception: after a restore commits (Move to Cloud, below), the server exits
+with code 75 and the launcher starts only the server again.
 
 `HOME=/data`, so `~/.claude`, `~/.codex` and OpenMausBot's own data
 (`/data/.openmausbot`) persist on the volume.
@@ -183,10 +355,11 @@ ignores them:
 - no `included.*` or other read-only instance is served; the person's own
   engines are the only way to a model.
 
-### Included Boat computers and voice
+### Included Boat computers, voice and decisions
 
-Pro includes Boat cloud computers and ElevenLabs voice with no key to paste.
-When the Admin has both services configured, it also sets:
+Pro includes Boat cloud computers, ElevenLabs voice and the decision model
+(TypeSafe's Jev, [decision-model.md](decision-model.md)) with no key to paste.
+For each service the Admin has configured, it also sets:
 
 | Variable | Fly | Value |
 | --- | --- | --- |
@@ -195,30 +368,54 @@ When the Admin has both services configured, it also sets:
 | `OMB_CLOUD_VOICE_URL` | env | `https://cloud.openmausbot.com/api/cloud/services/voice/v1`, the Admin's voice relay. |
 | `OMB_CLOUD_VOICE_TOKEN` | secret | This machine's voice relay token (`omb_voice_…`). |
 | `OMB_TTS_DEFAULT_VOICE` | env | An ElevenLabs voice id, used until the person picks a voice or another speech provider in Settings. |
+| `OMB_CLOUD_DECIDER_URL` | env | `https://cloud.openmausbot.com/api/cloud/services/decider`, the Admin's Jev relay. It is a Jev base URL, used as it is: the decider adds `/v1/systemone`, the relay's only route, so every included decision goes to exactly `<OMB_CLOUD_DECIDER_URL>/v1/systemone`. |
+| `OMB_CLOUD_DECIDER_TOKEN` | secret | This machine's decision relay token (`omb_decide_…`). It is not a Jev key and works only through the relay. |
 
 A service is included only when both its URL and its token are set
-(`server/included-services.ts`). The real Boat and ElevenLabs keys stay on the
-Admin, which checks the subscription, the monthly caps and which computers
-belong to this machine on every request.
+(`server/included-services.ts`). The real Boat, ElevenLabs and Jev keys stay
+on the Admin, which checks the subscription, the monthly caps and which
+computers belong to this machine on every request.
 
 - **The person's own key always wins.** An included token is a fallback, used
   only while the person has no key of their own: none saved in Settings
-  (`box.token`, `tts.key`) and no `BOX_TOKEN` or `OMB_TTS_KEY` in the
-  environment. Adding a key switches to it at once; removing it falls back to
-  the included service again (for Boat, once that key's cloud computers are
-  deleted: removing a Boat key that still has computers is refused). The
-  choice is made on every request.
+  (`box.token`, `tts.key`, `decider.key`) and no `BOX_TOKEN`, `OMB_TTS_KEY`
+  or `OMB_JEV_API_KEY` in the environment. Adding a key switches to it at
+  once; removing it falls back to the included service again (for Boat, once
+  that key's cloud computers are deleted: removing a Boat key that still has
+  computers is refused). The choice is made on every request.
 - **Each credential goes to one place.** The relays know only the Admin's
-  accounts, so an own key goes only to the provider (`OMB_BOX_API` or
-  `OMB_ELEVENLABS_API` when set, for development and tests, else Boat's and
-  ElevenLabs' own APIs) and an included token only to its relay.
+  accounts, so an own key goes only to the provider (`OMB_BOX_API`,
+  `OMB_ELEVENLABS_API` or `decider.baseUrl` when set, for development and
+  tests, else Boat's, ElevenLabs' and Jev's own APIs) and an included token
+  only to its relay, whatever those settings say.
+- **The decision relay takes two requests, and the app sends it nothing
+  else.** Through the included token the app sends only room routing's
+  request (one question `answer`, a choice with the fixed instructions in
+  `server/decider/room-routing.ts`, and state keys `room`, `humans_in_room`,
+  `bots_in_room`, `new_message` and, when there are recent lines,
+  `recent_messages`) and the Settings key check's fixed request, within the
+  relay's caps (a body of at most 64 KiB, a state of at most 24,000 bytes as
+  JSON). `server/decider/relay.ts` checks each request before it is sent; one
+  that does not fit is not sent, and the room falls back as for any other
+  decision-model failure. Any other decision job, now or added later, uses
+  only the person's own Jev key until the relay accepts it too.
+- **Included decisions are on until switched off.** While the decision model
+  runs on the included token, its master switch counts as on unless the person
+  switched it off in **Settings → Decision model**; an explicit off always
+  wins, and switching it back on needs no key. The per-job switches keep their
+  defaults, so rooms set to Auto ask who answers, and new rooms start on Auto,
+  as with a saved key. An own Jev key is on once saved, as anywhere else, and
+  clearing it falls back to the included decisions without switching them
+  off.
 - **An included token is never the person's key.** It is never written to
   `config.json`, never sent to a client (Settings sees `configured` and
   `included: true`, and says "Included with Cloud Pro"), and Settings never
-  verifies, rotates or clears it. Boat's account-change rules still apply:
-  adding an own Boat key while included cloud computers exist is refused until
-  they are deleted, because the new account cannot reach them.
-- **What holding the tokens does and does not do.** The server reads both
+  verifies, rotates or clears it. The decision model's **Test** button, with
+  no key pasted, makes one tiny call through the relay, never to Jev
+  directly. Boat's account-change rules still apply: adding an own Boat key
+  while included cloud computers exist is refused until they are deleted,
+  because the new account cannot reach them.
+- **What holding the tokens does and does not do.** The server reads the
   tokens at startup, keeps them in memory and removes them from its
   environment, like the bootstrap secret, and they are on the credential list.
   So no process the server starts inherits them, including tools that copy
@@ -228,12 +425,18 @@ belong to this machine on every request.
   running as the same user (a bot with a shell) can read a relay token there.
   That is accepted because a relay token is only this customer's own Cloud Pro
   allowance: it works only through the Admin, only on this machine's cloud
-  computers and voice, and only up to the monthly caps. Whoever holds it can
-  at worst use up this month's included hours or voice characters; it opens
-  no other customer's data and none of the Admin's provider keys.
-- A refusal from the relay (for example, the month's cloud computer hours are
-  used up) is shown as the relay's own message. A resume that fails with a
-  server error is retried on the next poll, as Boat asks.
+  computers, voice and decisions, and only up to the monthly caps. Whoever
+  holds it can at worst use up this month's included hours, voice characters
+  or decisions; it opens no other customer's data and none of the Admin's
+  provider keys.
+- A refusal from the Boat or voice relay (for example, the month's cloud
+  computer hours are used up) is shown as the relay's own message. A resume
+  that fails with a server error is retried on the next poll, as Boat asks.
+- A refusal from the decision relay (401 for an unknown token, 402 without an
+  active subscription, 429 over the month's cap or a rate limit, 502 or 503
+  upstream) never reaches a turn: as with any decision-model failure, the room
+  does what it would without it (its lead answers). Only **Test** shows it,
+  as a fixed sentence.
 
 ## Pairing: the Admin's signed request
 
@@ -305,6 +508,157 @@ pairing-link flow as Connect to a server. The code stays in main-process
 memory for that one navigation: never on disk, never in a renderer. A
 malformed session summary or grant is treated as none.
 
+## Move to Cloud
+
+One action copies everything from the person's own computer to their Cloud:
+bots, chats and their messages, attachments, memory, routines, skills, rooms
+and teams, and the settings a workspace backup carries. It is a copy; nothing
+on the computer changes. Chat history travels between machines here, and only
+here, because the person asked for it. Secrets never travel.
+
+### Where it is
+
+- **Settings → OMB Cloud**, under Your Cloud once it is Ready: **Move to
+  Cloud** (`src/components/CloudMove.tsx`). Before anything starts it shows the
+  size and the counts (`GET /api/cloud-move/estimate` on the computer's own
+  server), and says that API keys and sign-ins stay on the computer and that
+  the person signs in to Claude or ChatGPT on the Cloud (the Cloud's first-run
+  engine sign-in above).
+- When the Cloud already has bots or chats, the button reads **Replace my
+  Cloud with this computer's workspace**, and the card says that what the
+  Cloud holds is replaced, backed up on the Cloud first, and put back by **Swap
+  back to previous Cloud**. There is no confirmation dialog. Without a session
+  on the Cloud yet (never connected), it says the same thing conditionally.
+- The first time the app shows an empty Cloud (its starter bot at most, no
+  rooms, nobody has chatted) and the computer has work of its own, the Cloud's
+  page shows a card: **Bring your bots and chats from this Mac** ("this
+  computer" elsewhere), with **Move** and **Not now**. Not now hides it for that
+  Cloud for good; it never blocks anything. Only the desktop app shows it, and
+  main answers the Cloud page only when it is the verified Cloud (the origin the
+  Cloud session reports) open as the window's active server. That page can
+  start a move only from the person's own click (`navigator.userActivation`)
+  and cannot swap back to the previous Cloud.
+
+### What moves, and what stays
+
+Exactly what a workspace backup carries (`server/workspace-backup.ts`,
+`server/workspace-backup-policy.ts`). Never: API keys, provider and MCP
+connections, engine sign-ins (`~/.claude`, `~/.codex`, the server's
+`providers/`), saved credentials, pairing, paired devices and sessions (the
+session registry's open marker included: a restore leaves the destination's
+own marker in place, so a crash just before it still ends account sign-ins),
+the server's identity, caches,
+downloaded tools and runtime files. Never this app's Cloud sign-in or what
+it lends (Let my Cloud use this Mac, above): both live in the desktop app's
+own storage, not in the workspace, and a lent Mac reconnects once the Cloud
+has restarted. Unsent drafts and window preferences stay on the computer.
+
+The Cloud keeps its own: every connection section of its config (engine and
+API keys, the included Boat and voice relays, sign-in allow-lists), its
+sessions and pairing, its engine sign-ins, its computer-sharing switch
+(`features.sharedComputers` always stays with the machine a backup is restored
+on), and its boot contract (the environment, and the volume marker outside the
+data folder). As with any restore, routines, webhooks and scheduled calls
+arrive paused and nothing queued runs; the person turns routines on in the
+Cloud when they want them to run there instead. A bot that used an engine or
+API key the Cloud does not have asks for one there, and a bot pointed at a
+project folder outside the workspace keeps that path, which the Cloud does not
+have: the files inside the workspace move, folders elsewhere on the computer
+do not.
+
+### How it moves (`electron/cloud-move.mjs`, `server/cloud-move-http.ts`)
+
+1. Main opens a session of its own on the Cloud. The Admin opens a single-use
+   pairing window for the signed-in owner (`POST /api/cloud/desktop/pairing`),
+   and main redeems it at `/api/auth/pair` for a bearer token held only in
+   memory. That session is labelled "Move to Cloud" and signed out when the
+   move ends.
+2. The computer's server exports its encrypted backup with a random password,
+   under the usual rule that bots finish their turns first, and main copies it
+   to a private temporary file, hashing it.
+3. `POST /api/cloud-move/upload {sha256, bytes, files}`. The Cloud refuses more
+   than 10 GB of data or 100,000 files (`413`), and checks its free space: the
+   upload three times over (the upload, its decrypted copy and its staged
+   files), plus twice its own workspace (the backup it takes first, briefly
+   with its snapshot), plus 256 MB. A part stored by an earlier upload, of any
+   file, counts as free: a new upload replaces it. Cloud volumes have a fixed
+   size (the Admin's `OMB_CLOUD_VOLUME_GB`, 10 by default). Not enough room is
+   `507` with `freeBytes` and `neededBytes`, and the app shows both. Nothing
+   has been moved at that point. A new upload also deletes whatever an earlier
+   attempt staged.
+4. Parts of 16 MB (at most 64): `PUT /api/cloud-move/upload/<sha256>?offset=n`.
+   A part already stored is accepted again without being written; any other
+   offset answers `409` with `received`; a part that fails is cut back off.
+   Main retries with backoff and continues from where the Cloud stands. An
+   upload that keeps failing keeps its archive for 30 minutes, so moving again
+   continues it rather than starting over; the Cloud keeps a stored part for a
+   day, and its startup deletes an older one.
+5. `POST /api/cloud-move/preview {sha256, password}`: the Cloud checks the
+   SHA-256 and stages the file as an ordinary backup, which authenticates the
+   whole file before parsing anything. Anything that is not a valid backup is
+   refused and the upload discarded.
+6. `POST /api/cloud-move/restore {id}`, inside the maintenance gate: the
+   Cloud's workspace is backed up first (below), then the restore is committed
+   and the server exits with code 75. The launcher
+   (`server/cloud-home-start.ts`) starts only the server again, and startup
+   installs the restore before anything else loads. Preview, restore and undo
+   can take minutes, so each answers `202` and runs as a job the app follows
+   in `GET /api/cloud-move`. A Cloud that answers `409` (another step still
+   running) is asked again with the same staged workspace. A restore that
+   fails on the Cloud (bots that stay busy past a few tries of the gate, for
+   one) deletes what it staged and the backup it took.
+7. Main waits until the Cloud reports that restore installed
+   (`lastRestoreId`), signs its session out, and opens My Cloud in the window.
+
+Stopping before step 6, or any failure before it, asks the Cloud to drop what
+the move staged (`POST /api/cloud-move/discard`; a preview still running drops
+its result when it ends). A stored upload part stays, for moving again.
+
+### Swap back to previous Cloud
+
+Before a move replaces the Cloud's workspace, that workspace is backed up to
+`.backups/cloud-previous` on the Cloud's own volume, which no backup includes
+and no restore replaces. Its random password is kept beside it: the same volume
+holds the same data unencrypted anyway. It is offered as **Swap back to
+previous Cloud** unless it is a fresh Cloud's (its starter bot at most, no
+rooms, nobody has chatted).
+
+Swapping back (`POST /api/cloud-move/undo`) is the same restore the other way
+round: the workspace the Cloud has now is backed up first and becomes the
+previous Cloud, so a swap back can itself be swapped back, and nothing done on
+the Cloud since the move is lost. It needs room for the previous Cloud staged
+and installed plus that backup (`507` otherwise).
+
+That archive is the one undo point kept. A new backup waits in
+`.backups/cloud-previous.next` and replaces it only once startup has installed
+the restore it was made for (a restore that never commits or rolls back leaves
+the previous Cloud as it was). Once a move's or swap's restore is installed,
+startup deletes its safety copy (`.backups/safety-<id>`) and its staged files,
+so `.backups` holds about one workspace, not four. `GET /api/cloud-move`
+reports the previous Cloud's size (`previous.bytes`, shown in Settings) and
+everything `.backups` holds (`heldBytes`). A restore made from Settings →
+Backups keeps its safety copy as before.
+
+### Move security
+
+- Every Cloud route needs a paired session with admin scope. A client-scope
+  device is refused, and so is a bare loopback request. That second refusal
+  is not a wall against the machine itself: a process there (a bot's shell)
+  runs as the server's user, already reads and writes `/data`, and can pair
+  itself as the owner through loopback like any owner tool. Only a Cloud home
+  receives a workspace; any other server answers `404`, except for sizing its
+  own (`/api/cloud-move/estimate`).
+- The upload is bounded by its declared size, the per-part limit and the
+  backup's own limits on size and file count.
+- The bundle is the workspace backup: credentials are left out by path and by
+  a config allowlist, and checked again at staging (a config with connection
+  settings or webhook secrets is refused). Staging never decompresses: tar is
+  told not to, and gzip or zstd payloads are refused. `server/cloud-move.e2e.test.ts`
+  gives the desktop keys, a driver environment, workspace credentials and a
+  provider login, scans the exported bundle for them, moves it to a real Cloud
+  home, and scans every file on the Cloud's volume.
+- Nothing logs a request body, the password, a file name or bundle contents.
+
 ## Security summary
 
 - The server never listens on the network; only Caddy does, and nothing it
@@ -318,6 +672,9 @@ malformed session summary or grant is treated as none.
   engine. Every model call uses the person's own sign-in or key.
 - A volume binds to one machine and is never adopted by another.
 - Each customer's app lives in its own Fly private network.
+- A lent Mac is reached only through its own outbound connection, within the
+  scopes the person chose, which the Mac itself enforces (see "Let my Cloud use
+  this Mac").
 
 ## Published image
 
