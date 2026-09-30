@@ -20,6 +20,29 @@ that only offer an OAuth sign-in (no token) cannot be signed into from a bot's
 headless run; use a personal access token or API key the server issues and
 put it in the `Authorization` header.
 
+### Example: give your bots web search
+
+A good first URL server is You.com's search server, because the free profile
+needs no token at all. Add a URL server with the address
+
+```
+https://api.you.com/mcp?profile=free
+```
+
+leave the headers empty, and press **Test** — the handshake completes and the
+server advertises `you-search` (web search) and `you-discover` (a directory of
+other MCP servers). The free profile is read-only and rate-limited to 100
+searches a day; there is no key, so none is stored. Turn the server on and
+every compatible bot can search the web on its next task — `you-search` results
+arrive like any other tool result, through the approval cards.
+
+If the free limits are too small, [you.com/platform](https://you.com/platform)
+issues an API key with a higher quota and extra tools (`you-contents` for
+full-page extraction, `you-research` for multi-step reports). Add the same
+address without `?profile=free` and one header line,
+`Authorization: Bearer <your key>` — the key is kept write-only like every
+other header value.
+
 ### Import and choose tools per bot
 
 **Paste config** accepts an `mcpServers` JSON block, a server-name map, or a
