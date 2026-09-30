@@ -56,6 +56,46 @@ problem**, **Could not be set up yet**. Only Ready can be connected to.
 Signed out of Cloud, the app makes no Cloud request and nothing on this page
 runs.
 
+### Setup checklist
+
+On a Cloud home a small card, **Set up your Cloud**, sits at the bottom left
+until its steps are done or the person hides it (`src/components/CloudSetup.tsx`,
+`src/lib/cloud-setup.ts`). Only the owner's own devices (an admin session on a
+Cloud home) see it; desktop and self-hosted installs never do and keep their
+welcome flow. Each step's state comes from the Cloud or the app, never from a
+box the person ticks:
+
+1. **Sign in to Claude or ChatGPT**, the one required step: done when any
+   engine on the Cloud can run. From another view, its **Sign in** returns to
+   the engine sign-in above.
+2. **Bring your bots from your computer**: only in the desktop app, while Move
+   to Cloud's card would be offered (an empty Cloud, a computer with work to
+   bring). **Move to Cloud** opens that offer in place (the size, what stays,
+   **Move** and **Not now**). Done after a move; skipped after **Not now**,
+   which the Cloud keeps (`cloud-setup-move-skipped` in its onboarding record)
+   and which also hides the one-time card.
+3. **Try something that runs while you're away**: one example, a daily
+   routine. **Try it** puts it in the chat's composer, unsent. Done when a bot's
+   turn first finishes on the Cloud: the server records `onboarding.firstTurnAt`
+   once, on a Cloud home only, for a turn that finished (not a failed or
+   stopped one) in a bot's conversation or a room. The onboarding record never
+   travels with Move to Cloud, so moved-in chats do not count.
+4. **Optional: Let your Cloud use this Mac**: only in the desktop app on
+   macOS. **Choose what to lend** opens Settings → OMB Cloud on this Mac,
+   leaving the Cloud's page as the menu-bar item's **Lending settings…** does
+   (`cloudLending.open()`: no arguments, answered only for the verified Cloud
+   page or the app's own window). Done when `GET /api/shared-computers` lists
+   a computer.
+
+**Hide setup** is the only dismiss. The Cloud keeps it (`cloud-setup-hidden`
+in its onboarding record), so it holds on every device and after browser
+storage is cleared, and it is the move's **Not now** too. The card also goes
+away by itself once steps 1 and 3 are done. Nothing asks for confirmation.
+After the card, Move to Cloud's one-time card behaves as before.
+
+While a window shows a Cloud home, the sidebar's server switcher reads **My
+Cloud · always on**; in a browser, a plain label says the same.
+
 ### Where bots work
 
 A Cloud home is a headless Linux server, so its bots have two places: the
@@ -124,6 +164,79 @@ for an AppImage) once the installed app has started at least once, since it
 registers itself at startup. Before that, or if the app is not installed, the
 browser has nothing to open (it shows nothing or an error), so the Cloud page
 should keep a download link next to the button.
+
+### Use in your browser: `/pair#signin=…`
+
+For people without the desktop app, or on another computer, a Chromebook or an
+iPad, the Cloud page's **Use in your browser** opens the Cloud's own web UI in
+a new tab, signed in after one **Continue**, with nothing to copy.
+
+1. The Cloud page opens a blank tab from the click itself (so no pop-up blocker
+   stops it) and cuts it off from the page (`opener` set to null).
+2. The Admin sends the machine a signed pairing request with
+   `"purpose":"browser"` and `"owner":"<the account's email>"` (below). The
+   machine opens a **browser sign-in** window: single use, admin and client
+   scopes, at most two minutes, redeemable only by its 256-bit credential
+   through a browser sign-in, and recording its owner. The answer has no
+   typeable code and says `"purpose":"browser"` back.
+3. The tab goes to `https://<app>.fly.dev/pair#signin=omb_pair_…`. The
+   credential is only in the fragment, which never reaches a server, a proxy
+   log or a `Referer`.
+4. Before anything renders, the web UI takes the fragment off the address bar
+   and replaces the tab's history entry (`takeBrowserSignInFromLocation`,
+   `src/lib/session.ts`). It asks the machine whose Cloud this is
+   (`POST /api/auth/pair` with `{code, browser: true, preview: true}`, which
+   redeems nothing and counts toward no lockout) and shows **Signing in to
+   <owner>'s Cloud** with one **Continue** and a quiet *Not your email? Close
+   this tab.* (`src/pair/BrowserSignInPage.tsx`). Nothing is redeemed until the
+   person continues, so a link someone else sent never signs a browser in to
+   their Cloud unseen.
+5. **Continue** posts `{code, label, cookie: true, browser: true, attemptId}`
+   to `POST /api/auth/pair`, always, whether or not this browser is already
+   connected. The server redeems it into a session and sets this browser's
+   `HttpOnly`, `SameSite=Lax`, `Secure` session cookie, replacing (and
+   revoking) any session this browser already had here. The tab then goes to
+   `/`. A retry after a lost answer reuses the page's attempt id and gets the
+   same session. `browser` without `cookie: true` is a `400`.
+6. A spent, expired or unknown sign-in shows the pair page with *This sign-in
+   link has expired or was already used* and never shows the credential.
+
+**Scope:** the session has admin and client scopes, the same as the desktop
+app gets from its own Cloud pairing: the owner, who can sign engines in and
+manage the Cloud. It is labelled with the browser (for example "Safari on
+iPad") in the Cloud's paired devices, where it can be revoked; a session whose
+answer never arrived is listed and revocable the same way. The sidebar's
+**My Cloud · always on** adds *<owner>'s Cloud* under it (`GET
+/api/auth/session` answers `owner`).
+
+What keeps the credential safe is where it travels and that it works once: it
+is only ever in the URL fragment (never sent to a server, a proxy log or a
+`Referer`, and removed from the address bar before the page renders), it is
+single use, and it lives at most two minutes. The session's own rules are
+defence in depth on top of that, not the protection itself. It is
+**cookie-only**: its token is accepted as this browser's cookie (never readable
+by scripts) and refused as `Authorization: Bearer`. Its changes (any request
+other than `GET`, `HEAD` or `OPTIONS`) must also say they come from this
+Cloud's own page, with an `Origin` equal to the Cloud's origin or
+`Sec-Fetch-Site: same-origin`, which every current browser (and the desktop
+app's Chromium) sends; a request with neither is a `403`. Anyone holding the
+token can still set those headers themselves. A browser sign-in window is never redeemed by
+`/api/pair`, by an app, or by `/api/auth/pair` without `browser: true`; a
+browser sign-in never redeems an ordinary pairing window or a typed code. So an
+ordinary pairing link is still one click on the pair page.
+
+Anyone with a Cloud can make a sign-in link for their own Cloud and send it to
+someone else. The page says whose Cloud it is before anything happens, and
+nothing is redeemed without **Continue**.
+
+The fragment leaves the tab's address bar and its history entry, but the
+browser's global history may still list the address it opened. By then the
+credential is spent (single use) or expires within two minutes.
+
+The web UI's pages are sent with `Content-Security-Policy: frame-ancestors
+'none'`, `X-Frame-Options: DENY` and `Referrer-Policy: no-referrer`
+(`serveStatic`, `server/index.ts`): no other page can frame them. Nothing
+frames the web UI: the desktop app shows it in its own window.
 
 ## Let my Cloud use this Mac
 
@@ -227,12 +340,14 @@ On the Cloud home (`server/shared-computers.ts`, `server/index.ts`):
   comes from outside), a guest's conversation or routine (a device paired
   with chat-only access), a routine someone else rewrote, a room, a bot's
   delegated or peer turn, a local process on the Cloud, or anything the
-  harness cannot trace. A conversation qualifies only while it holds nobody
-  else's words, anywhere in it, before or during the turn: one line from a
-  guest, a teammate bot or a local process (sent, queued, steered or handed
-  in, or history imported with a move), or one card answer from someone else,
-  takes that conversation out of lending for good, because a resumed session
-  carries everything said in it. The bot is told "Someone else wrote in this
+  harness cannot trace. A conversation qualifies only while the owner opened
+  it and it holds nobody else's words, anywhere in it, before or during the
+  turn: one line from a guest, a teammate bot or a local process (sent,
+  queued, steered or handed in, or history imported with a move), one card
+  answer from someone else, or one report of a routine the owner did not
+  write, takes that conversation out of lending for good, because a resumed
+  session carries everything said in it. A conversation a guest opened (and
+  named) is never the owner's, whoever writes in it. The bot is told "Someone else wrote in this
   conversation, so it can't use your Mac. Start a new conversation to use it."
   and the lending switch says the same. The owner's own edits count as theirs,
   and the harness's own automatic card settlements do not count. A
@@ -242,10 +357,87 @@ On the Cloud home (`server/shared-computers.ts`, `server/index.ts`):
   **Computer** setting is off cannot use lent apps and screen.
 - On a Cloud home only the owner's own devices (admin sessions) can answer a
   card or remember an approval; a guest can read along but never answer.
-- What this does not cover: a bot's own memory. Notes a bot keeps while
-  talking with a guest load into that bot's later conversations, the owner's
-  included. Pairing a guest to your Cloud lets them talk to your bots; lend
-  your Mac only while you trust everyone paired there.
+- A guest writes only in conversations it opened: it cannot send into the
+  owner's conversations (not even steer a line into a running turn), and it
+  renames, edits, compacts, switches versions of or deletes only its own. Only
+  the owner's own devices change a bot's name, title, description, standing
+  instructions or notifications (a guest keeps its picture and voice), rename
+  the owner's rooms or change their bulletin, change a conversation's approval
+  level or a bot's default model, or point a routine's results at the owner's
+  conversations. On a guest's device (or one of the owner's paired with
+  chat-only access) the composer of any other conversation is replaced by a
+  **New conversation** button.
+- A conversation a guest opened (or a guest's routine opened for its
+  results, or a room a guest opened) runs in Ask whatever the bot's own
+  level: no Auto reviewer, no Full access, no saved command answers for it.
+  So does a room turn whose latest line from a person is a guest's, and any
+  work a guest's turn hands a teammate (delegation, coordination, a room
+  handoff), however deep. A delegation or a question to a teammate runs in a
+  new conversation of the guest's own on that teammate, never in the owner's
+  conversation with it, and is never folded into a turn running there. It
+  works in a folder of its own, never the bot's
+  project folder the owner's conversations share, and a card it raises never
+  offers "always allow".
+- A guest's turn gets no shell and reads nothing outside its own folder, on
+  every engine; an engine that cannot run it that way refuses it with one
+  line ("This bot can't take requests from guests on this Cloud. Ask the
+  owner to switch it to Claude."), before anything is recorded:
+
+  | Engine | A guest's turn |
+  | --- | --- |
+  | Claude Code (2.1.257 or newer) | `--restricted` and only Read, Grep, Glob, Edit, Write and WebSearch: no Bash, PowerShell or WebFetch; reads outside its folder refused outright (`blockReadsOutsideWorkingDirectories`, plus deny rules); the folder's own `.mcp.json` and settings never load; only the harness's own MCP tools are pre-allowed, every other call asks the owner. The session's `init` must list no command-running tool, or the turn stops. An older Claude Code refuses. |
+  | Codex / ChatGPT (codex-cli 0.159) | no environment (`environments: []`: no `exec_command`, `apply_patch` or `view_image`, and calls to them are refused), `features.shell_tool`, `unified_exec` and `view_image` off and web search disabled, proven in `config/read` before the turn starts, or the turn refuses. |
+  | API models (OpenAI-compatible, MiniMax, Mistral, Grok API) | no shell or file tool on the machine at all; every MCP call asks the owner. |
+  | Cursor, Qwen, Gemini, Hermes, Pi, OpenCode, Grok Build, Antigravity, Droid, Kimi, a custom ACP engine, Boat | refused: each runs its own shell or reads files outside its folder without asking in Ask (Qwen, Gemini, OpenCode and Pi could have it switched off; that needs a separate process per guest conversation, a follow-up). |
+- Everything the owner's own devices write carries one owner identity, so
+  pairing a device again (or revoking one) never makes the owner's earlier
+  conversations someone else's. A guest never carries it.
+- On a Cloud home a request from the machine itself without a session (a
+  bot's shell, any local process) is only a service, whatever
+  `OMB_LOOPBACK_TRUST` says: it may reach the health check, the Slack
+  worker's guarded routes and a turn's own capability routes, decline a card
+  and nothing else. It cannot open a pairing window, change a setting or a
+  bot, answer a card or review memory.
+- A bot's memory and its other conversations reach every one of its turns,
+  so on a Cloud home nothing a conversation the owner did not write produces
+  flows into them (`server/lending-memory.ts`):
+  - memory capture skips such conversations, and they leave no line in the
+    bot's daily log;
+  - the bot's memory tools (`memory_update`, `memory_log`) refuse to write from
+    them;
+  - recall, the recent-work brief and, in a turn that may use the Mac, the
+    session tools (`session_search`, `session_read`, `list_threads`) draw
+    only on conversations the owner alone opened and wrote in (a title is
+    words too);
+  - a change while such a turn runs flags the bot: to MEMORY.md, a topic file
+    or a daily log, or to an instruction file its engine reads in the folder
+    of a conversation the owner opened, the bot's own folder, or a folder
+    above one (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`,
+    `.claude/settings.json`, skills, agents and commands). A guest's own
+    folder is not watched: nothing there reaches the owner's turns. A skills,
+    agents or commands folder of more than 200 entries is judged as a whole
+    (any entry added or removed there is a change). A
+    line someone else steers into the owner's running turn makes that turn
+    count as theirs from then on. A link is judged by where it points, and
+    on a Cloud home memory is never read through one. A flagged bot's turns
+    cannot use the Mac, and the bot says "This bot's memory was changed in a
+    conversation you didn't write. Review it in Memory to use your Mac
+    again." The bot's **Memory** panel shows the same notice, lists the files
+    that changed, and **Mark reviewed** (one click, only from one of the
+    owner's own devices, never a local process) accepts exactly what was
+    shown: if anything changed since, the panel shows it again. The owner's
+    own turns, their edits in the Memory panel (save, delete, undo), upkeep
+    on their conversations and the tidy-up never flag it. A damaged record
+    (`lending-memory.json`) flags every bot that existed when it was found
+    until the owner reviews each; a bot created later starts clean.
+- What this cannot stop: any conversation whose bot can run commands without
+  the owner approving (Auto or Full access, or a remembered command), a
+  guest's included, controls the Cloud machine: it can change other bots'
+  files and these records. Pair only people you trust with your Cloud while
+  you lend your Mac.
+- Not covered yet: a bot whose memory changed can still pass its words to
+  other bots through rooms, `ask_bot` and delegation, and a turn that may use
+  the Mac can still read room names and routine listings through its tools.
 
 ### What the Cloud can see: `GET /api/shared-computers`
 
@@ -285,22 +477,47 @@ docker build -t openmausbot .
 docker build -f deploy/fly/Dockerfile --build-arg BASE_IMAGE=openmausbot -t omb-cloud-home .
 ```
 
-At boot the launcher, running as root only for this step, hands the volume's
-mount point to the `maus` user, drops privileges for good, binds the volume to
-this machine (`/data/.omb-cloud-home.json`; another machine's volume, or an
-unmarked volume with data on it, is refused), and runs two children: the
+At boot the launcher, running as root, hands the volume's mount point to the
+`maus` user, binds the volume to this machine as `maus`
+(`/data/.omb-cloud-home.json`; another machine's volume, or an unmarked
+volume with data on it, is refused), and runs two children as `maus`: the
 server on `127.0.0.1:8799` (webhooks on `127.0.0.1:8800`) and Caddy on
-`:8080`. If either exits, both stop and Fly restarts the machine. The one
-exception: after a restore commits (Move to Cloud, below), the server exits
-with code 75 and the launcher starts only the server again.
+`:8080`. It stays a small root supervisor: if either child exits, both stop
+and Fly restarts the machine. The one exception: after a restore commits
+(Move to Cloud, below), the server exits with code 75 and the launcher starts
+only the server again.
+
+The machine's secrets (`OMB_CLOUD_BOOTSTRAP_SECRET` and the relay tokens
+`OMB_CLOUD_BOAT_TOKEN`, `OMB_CLOUD_VOICE_TOKEN`, `OMB_CLOUD_DECIDER_TOKEN`)
+arrive as the launcher's environment, from the Fly app secrets the Admin
+sets. The launcher never puts them in a child's environment, because
+`/proc/<pid>/environ` keeps a process's starting environment for anything
+running as the same user to read. It writes them to the server over an
+inherited pipe (`OMB_CLOUD_SECRETS_FD`). The server reads it and closes it
+as its very first step (`server/cloud-secrets-boot.ts`, its first import),
+before any other module loads, so no process it starts inherits the pipe.
+The server's environment is built from an allow-list: the process basics,
+what the image sets and the parts of the boot contract that are not secret
+(`serverEnvironmentAllowed`). Anything else, a secret the platform adds
+later included, never reaches it; the launcher logs the names it left out,
+never their values. The launcher's own environment and memory belong to
+root, out of `maus`'s reach. A server started without the pipe (tests,
+development) reads them from its environment and says so in its log.
+
+The launcher runs and trusts only code `maus` cannot change: the image
+makes `/app` root's and not writable by anyone else, and the launcher
+refuses to start if Node, itself, the server's entry point, Caddy or its
+config (or any folder above them) is not root's, is writable by others, or
+is on the volume. Only the `/data` volume is `maus`'s.
 
 `HOME=/data`, so `~/.claude`, `~/.codex` and OpenMausBot's own data
 (`/data/.openmausbot`) persist on the volume.
 
 ### Why the server stays on loopback
 
-`server/request-auth.ts` treats an unproxied loopback request as the
-machine's owner. The server therefore never binds a public interface. Caddy
+`server/request-auth.ts` treats an unproxied loopback request on a Cloud
+home as a service, never the owner (see above), and the server never binds
+a public interface. Caddy
 (`deploy/fly/Caddyfile`) forwards every request with `X-Forwarded-Proto:
 https` and `X-Forwarded-For`, so the server sees each one as remote: it needs
 a paired session, whatever `Host` it claims. Caddy trusts `Fly-Client-IP`
@@ -415,20 +632,19 @@ computers belong to this machine on every request.
   directly. Boat's account-change rules still apply: adding an own Boat key
   while included cloud computers exist is refused until they are deleted,
   because the new account cannot reach them.
-- **What holding the tokens does and does not do.** The server reads the
-  tokens at startup, keeps them in memory and removes them from its
-  environment, like the bootstrap secret, and they are on the credential list.
-  So no process the server starts inherits them, including tools that copy
-  its environment as it is (the browser, docker, ssh, MCP bridges). It does
-  not make them unreadable: the launcher starts the server with them, so the
-  server's `/proc/<pid>/environ` keeps its startup environment, and an engine
-  running as the same user (a bot with a shell) can read a relay token there.
-  That is accepted because a relay token is only this customer's own Cloud Pro
+- **What holding the tokens does and does not do.** The server receives the
+  tokens over the launcher's pipe, never its environment, keeps them in
+  memory, and they are on the credential list. So no process the server
+  starts inherits them, including tools that copy its environment as it is
+  (the browser, docker, ssh, MCP bridges), and no process finds them in the
+  server's `/proc/<pid>/environ`. They are still in the server's memory, and
+  that is the remaining exposure: the server runs as `maus`, like every
+  engine, so a process running as the same user that may trace it (the
+  kernel's ptrace policy, `kernel.yama.ptrace_scope`, decides) could read
+  them there. That is why a guest's turn gets no shell (above); the complete
+  fix is engines under a user of their own. A relay token is only this customer's own Cloud Pro
   allowance: it works only through the Admin, only on this machine's cloud
-  computers, voice and decisions, and only up to the monthly caps. Whoever
-  holds it can at worst use up this month's included hours, voice characters
-  or decisions; it opens no other customer's data and none of the Admin's
-  provider keys.
+  computers, voice and decisions, and only up to the monthly caps.
 - A refusal from the Boat or voice relay (for example, the month's cloud
   computer hours are used up) is shown as the relay's own message. A resume
   that fails with a server error is retried on the next poll, as Boat asks.
@@ -468,13 +684,27 @@ v1\n<timestamp>\n<nonce>\nPOST\n/api/cloud/pairing\n<base64url SHA-256 of the ra
 (`server/sessions.ts`): single use, admin and client scopes, redeemed at the
 machine's existing `POST /api/auth/pair`.
 
+With `"purpose":"browser"` and `"owner":"<the account's email>"` in the body
+(the Cloud page's **Use in your browser**, above), the machine opens a browser
+sign-in window for that owner instead and answers
+
+```json
+{ "credential": "omb_pair_…", "expiresAt": 1790000120000, "purpose": "browser" }
+```
+
+`ttlSeconds` then defaults to and is capped at 120. Only
+`POST /api/auth/pair` with `browser: true` and `cookie: true` redeems it, and
+only by `credential`. A machine from before this ignores `purpose` and answers
+with an ordinary window and no `purpose`; the Admin then discards it and does
+not open the browser.
+
 | Status | Body | Meaning |
 | --- | --- | --- |
 | `401` | `{"error":"invalid_signature"}` | Wrong key, tampered request, or malformed headers. Counts toward the per-source pairing lockout. |
 | `401` | `{"error":"stale_request"}` | Timestamp more than 300 s from the machine's clock. |
 | `401` | `{"error":"replayed_request"}` | Nonce already used in the last 10 minutes. |
 | `429` | `{"error":"rate_limited","retryAfterSeconds":n}` | Too many bad signatures from this source. |
-| `400` | `invalid_body`, `invalid_label`, `invalid_ttl` | Not a JSON object; label not plain text of 80 characters or fewer; TTL not a positive integer. |
+| `400` | `invalid_body`, `invalid_label`, `invalid_ttl`, `invalid_purpose`, `invalid_owner` | Not a JSON object; label not plain text of 80 characters or fewer; TTL not a positive integer; `purpose` present and not `"browser"`; `owner` missing on a browser sign-in, or not one email address of 254 characters or fewer in printable ASCII with exactly one `@` and no `<` or `>`. |
 | `405`, `415` | | Not a POST; not JSON. |
 
 Rules the machine enforces: the signature is checked first, in constant time;
@@ -537,7 +767,8 @@ here, because the person asked for it. Secrets never travel.
   main answers the Cloud page only when it is the verified Cloud (the origin the
   Cloud session reports) open as the window's active server. That page can
   start a move only from the person's own click (`navigator.userActivation`)
-  and cannot swap back to the previous Cloud.
+  and cannot swap back to the previous Cloud. While the Cloud's setup
+  checklist is up, the same offer is its second step instead of a card.
 
 ### What moves, and what stays
 
@@ -642,10 +873,11 @@ Backups keeps its safety copy as before.
 ### Move security
 
 - Every Cloud route needs a paired session with admin scope. A client-scope
-  device is refused, and so is a bare loopback request. That second refusal
-  is not a wall against the machine itself: a process there (a bot's shell)
-  runs as the server's user, already reads and writes `/data`, and can pair
-  itself as the owner through loopback like any owner tool. Only a Cloud home
+  device is refused, and so is a bare loopback request: on a Cloud home a
+  process on the machine (a bot's shell) is only a service and cannot pair
+  itself as the owner. It still runs as the server's user and can read and
+  write `/data` directly, which is why a bot that runs commands without the
+  owner approving is trusted with the machine (above). Only a Cloud home
   receives a workspace; any other server answers `404`, except for sizing its
   own (`/api/cloud-move/estimate`).
 - The upload is bounded by its declared size, the per-part limit and the
@@ -665,6 +897,14 @@ Backups keeps its safety copy as before.
   forwards is the loopback owner.
 - Pairing windows are opened only for a request signed with the machine's
   secret, fresh and never replayed; each window is single use and short lived.
+  A browser sign-in window lives at most two minutes, shows whose Cloud it is
+  and is redeemed only on **Continue**, and travels only in a URL fragment the
+  web UI removes from the address bar before it renders. Its session is
+  cookie-only and makes changes only from requests its browser marks as
+  same-origin: defence in depth, not the protection itself.
+- The web UI's pages cannot be framed and send no `Referer`.
+- Device names are stored without control or bidirectional-formatting
+  characters.
 - The signing secret is removed from the server's environment at startup and
   is never passed to engines or to Caddy.
 - There is no platform model gateway: stray `OMB_HOSTED_*` settings are

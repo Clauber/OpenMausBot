@@ -45,12 +45,19 @@ let base: string;
 let child: ChildProcess;
 let log = "";
 
+let ownerToken = "";
+
+/** A request through the edge. Without `remote`, it comes from one of the
+ * owner's own devices (paired with the Admin's signed request): on a Cloud
+ * home a bare local request is only a service, never the owner. */
 async function api(method: string, path: string, options: { body?: unknown; remote?: boolean; headers?: Record<string, string> } = {}) {
+  const asOwner = !options.remote && ownerToken !== "";
   const response = await fetch(`${base}${path}`, {
     method,
     headers: {
       // What the Caddy edge adds to every request it forwards: never the owner.
-      ...(options.remote ? { host: HOST, "x-forwarded-for": "203.0.113.9", "x-forwarded-proto": "https" } : {}),
+      ...(options.remote || asOwner ? { host: HOST, "x-forwarded-for": "203.0.113.9", "x-forwarded-proto": "https" } : {}),
+      ...(asOwner ? { authorization: `Bearer ${ownerToken}` } : {}),
       ...(options.body === undefined ? {} : { "content-type": "application/json" }),
       ...options.headers,
     },
@@ -85,6 +92,9 @@ await import(${JSON.stringify(pathToFileURL(join(SERVER_DIR, "testing", "fake-cl
       claude: { driver: "claudeAgent", displayName: "Claude", config: { cli } },
     },
   }));
+  // The web UI's pages (a stand-in for the built app).
+  mkdirSync(join(home, "web"));
+  writeFileSync(join(home, "web", "index.html"), "<!doctype html><title>OpenMausBot</title>");
   const port = await freePortBlock([0, 1]);
   base = `http://127.0.0.1:${port}`;
   const offlinePrelude = `data:text/javascript,${encodeURIComponent('globalThis.fetch = async () => new Response("offline fixture", { status: 503 });')}`;
@@ -94,7 +104,7 @@ await import(${JSON.stringify(pathToFileURL(join(SERVER_DIR, "testing", "fake-cl
       PATH: process.env.PATH,
       ...(process.env.PATHEXT ? { PATHEXT: process.env.PATHEXT } : {}),
       ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
-      HOME: home, USERPROFILE: home, OMB_DATA_DIR: dataDir, OMB_PORT: String(port), OMB_WEBHOOK_PORT: String(port + 1),
+      HOME: home, USERPROFILE: home, OMB_DATA_DIR: dataDir, OMB_PORT: String(port), OMB_WEBHOOK_PORT: String(port + 1), OMB_STATIC_DIR: join(home, "web"),
       OMB_CLOUD_ROLE: "home", OMB_CLOUD_MACHINE_ID: "3f9c2a4e-8b1d-4c6e-9a7f-2d5e8c1b0a93", OMB_CLOUD_ADMIN_URL: "https://cloud.example.test",
       OMB_CLOUD_BOOTSTRAP_SECRET: secret, OMB_PUBLIC_URL: `https://${HOST}`,
       ...gateway,
@@ -111,7 +121,19 @@ await import(${JSON.stringify(pathToFileURL(join(SERVER_DIR, "testing", "fake-cl
     if (Date.now() > deadline) throw new Error(`the Cloud home did not start:\n${log}`);
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
+  ownerToken = await ownerPairing();
 }, 30_000);
+
+/** One of the owner's devices, paired the way the Admin pairs the app. */
+async function ownerPairing(): Promise<string> {
+  const body = JSON.stringify({ label: "OpenMausBot app (Cloud)", ttlSeconds: 300 });
+  const timestamp = String(Math.floor(Date.now() / 1000)), nonce = randomBytes(16).toString("base64url");
+  const granted = await api("POST", "/api/cloud/pairing", { remote: true, headers: {
+    "content-type": "application/json", "x-omb-cloud-timestamp": timestamp, "x-omb-cloud-nonce": nonce,
+    "x-omb-cloud-signature": `v1=${cloudPairingSignature(secret, timestamp, nonce, body)}`,
+  }, body: JSON.parse(body) });
+  return (await api("POST", "/api/auth/pair", { remote: true, body: { code: granted.body.code } })).body.token as string;
+}
 
 afterAll(async () => {
   if (child) await waitForExit(child, { signal: "SIGTERM" });
@@ -152,10 +174,106 @@ it("pairs the app on a signed request and tells it its first run is the engine s
   const session = await api("GET", "/api/auth/session", { remote: true, headers: auth });
   expect(session.body).toMatchObject({ kind: "session", scopes: ["admin", "client"], cloudHome: true });
   expect(session.body).not.toHaveProperty("hosted");
+  // No bot has finished a turn here yet: the setup checklist's step is open.
+  expect((await api("GET", "/api/config", { remote: true, headers: auth })).body.onboarding).not.toHaveProperty("firstTurnAt");
   const { instances } = (await api("GET", "/api/instances", { remote: true, headers: auth })).body;
   expect(instances.map((instance: any) => instance.instanceId)).toContain("claude");
   expect(instances.filter((instance: any) => instance.instanceId.startsWith("included.") || "included" in instance || instance.readOnly)).toEqual([]);
   expect(JSON.stringify(instances)).not.toContain("cloud.example.test");
+});
+
+/** The Admin's signed request for a browser sign-in on this machine, for `owner`'s Cloud. */
+async function mintBrowserSignIn(owner = "ada@example.test"): Promise<string> {
+  const body = JSON.stringify({ label: "Web browser (Cloud page)", ttlSeconds: 120, purpose: "browser", owner });
+  const timestamp = String(Math.floor(Date.now() / 1000)), nonce = randomBytes(16).toString("base64url");
+  const granted = await api("POST", "/api/cloud/pairing", { remote: true, headers: {
+    "content-type": "application/json", "x-omb-cloud-timestamp": timestamp, "x-omb-cloud-nonce": nonce,
+    "x-omb-cloud-signature": `v1=${cloudPairingSignature(secret, timestamp, nonce, body)}`,
+  }, body: JSON.parse(body) });
+  expect(granted.status, JSON.stringify(granted.body)).toBe(200);
+  expect(granted.body).toMatchObject({ purpose: "browser", credential: expect.stringMatching(/^omb_pair_/) });
+  expect(granted.body).not.toHaveProperty("code");
+  return granted.body.credential as string;
+}
+/** The web page's own requests (src/lib/session.ts): what it shows first, then Continue. */
+const browserRequest = (body: Record<string, unknown>, cookie?: string) => fetch(`${base}/api/auth/pair`, { method: "POST", headers: {
+  host: HOST, "x-forwarded-for": "203.0.113.9", "x-forwarded-proto": "https", "content-type": "application/json", ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body) });
+
+it("signs a browser in from the Cloud page's \"Use in your browser\" into an owner's session, once, and never logs it", async () => {
+  const credential = await mintBrowserSignIn();
+  // An app's exchange, or one asking for a bearer token instead of this browser's cookie, gets nothing and leaves it open.
+  expect((await api("POST", "/api/auth/pair", { remote: true, body: { code: credential } })).status).toBe(401);
+  expect((await api("POST", "/api/pair", { remote: true, body: { credential } })).status).toBe(401);
+  expect((await api("POST", "/api/auth/pair", { remote: true, body: { code: credential, browser: true } })).status).toBe(400);
+  // Before anything is redeemed the page shows whose Cloud this is; looking redeems nothing.
+  for (let i = 0; i < 2; i++) {
+    const preview = await browserRequest({ code: credential, browser: true, preview: true });
+    expect(preview.status).toBe(200);
+    expect(await preview.json()).toEqual({ owner: "ada@example.test", expiresAt: expect.any(Number) });
+    expect(preview.headers.get("set-cookie")).toBeNull();
+  }
+  const signIn = () => browserRequest({ code: credential, label: "Safari on iPad", cookie: true, browser: true, attemptId: randomBytes(12).toString("base64url") });
+  const signedIn = await signIn();
+  expect(signedIn.status).toBe(200);
+  expect(await signedIn.json()).not.toHaveProperty("token");
+  const cookie = signedIn.headers.get("set-cookie") ?? "";
+  expect(cookie).toMatch(/HttpOnly/);
+  expect(cookie).toMatch(/Secure/);
+  expect(cookie).toMatch(/SameSite=Lax/);
+  const session = await api("GET", "/api/auth/session", { remote: true, headers: { cookie: cookie.split(";")[0] } });
+  // The owner's admin scope, exactly what the app gets from its own Cloud pairing, and whose Cloud it is.
+  expect(session.body).toMatchObject({ kind: "session", label: "Safari on iPad", scopes: ["admin", "client"], cloudHome: true, owner: "ada@example.test" });
+  // Its cookie's value is not a bearer token.
+  const token = cookie.split(";")[0].split("=").slice(1).join("=");
+  expect((await api("GET", "/api/auth/session", { remote: true, headers: { authorization: `Bearer ${token}` } })).status).toBe(401);
+  // Its changes need the browser's word that they come from this Cloud's own page: the cookie alone is refused.
+  const change = (headers: Record<string, string>) => api("POST", "/api/auth/stream-ticket", { remote: true, headers: { cookie: cookie.split(";")[0], ...headers } });
+  expect((await change({})).status).toBe(403);
+  expect((await change({ "sec-fetch-site": "cross-site" })).status).toBe(403);
+  // (fetch sends its own Host here, so this Cloud's origin is the proxied scheme plus the fixture's address)
+  expect((await change({ origin: base.replace("http:", "https:") })).status).toBe(200);
+  expect((await change({ origin: `https://evil.example`, "sec-fetch-site": "same-origin" })).status).toBe(403);
+  expect((await change({ "sec-fetch-site": "same-origin" })).status).toBe(200);
+  // A replay, or looking at a spent one, gets nothing.
+  expect((await signIn()).status).toBe(401);
+  expect((await browserRequest({ code: credential, browser: true, preview: true })).status).toBe(401);
+  expect(log).not.toContain(credential);
+});
+
+it("replaces a browser's own session when it signs in again, and a lost answer leaves a named session that can be revoked", async () => {
+  const cookieOf = (response: Response) => (response.headers.get("set-cookie") ?? "").split(";")[0];
+  const first = await browserRequest({ code: await mintBrowserSignIn(), label: "Chrome on Mac", cookie: true, browser: true, attemptId: randomBytes(12).toString("base64url") });
+  expect(first.status).toBe(200);
+  const firstCookie = cookieOf(first), firstId = ((await first.json()) as any).session.id as string;
+  // Signing in again from the same browser, already connected: the new session replaces the old one.
+  const second = await browserRequest({ code: await mintBrowserSignIn(), label: "Chrome on Mac", cookie: true, browser: true, attemptId: randomBytes(12).toString("base64url") }, firstCookie);
+  expect(second.status).toBe(200);
+  const secondCookie = cookieOf(second), secondId = ((await second.json()) as any).session.id as string;
+  expect((await api("GET", "/api/auth/session", { remote: true, headers: { cookie: firstCookie } })).status).toBe(401);
+  const listed = await api("GET", "/api/auth/sessions", { remote: true, headers: { cookie: secondCookie } });
+  expect(listed.body.sessions.map((s: any) => s.id)).toContain(secondId);
+  expect(listed.body.sessions.map((s: any) => s.id)).not.toContain(firstId);
+  // An answer that never arrives leaves a session named for its browser in Paired devices, which the owner can revoke.
+  const lost = await browserRequest({ code: await mintBrowserSignIn(), label: "Firefox on Chromebook", cookie: true, browser: true, attemptId: randomBytes(12).toString("base64url") });
+  const lostId = ((await lost.json()) as any).session.id as string;
+  const orphan = (await api("GET", "/api/auth/sessions", { remote: true, headers: { cookie: secondCookie } })).body.sessions.find((s: any) => s.id === lostId);
+  expect(orphan).toMatchObject({ label: "Firefox on Chromebook", scopes: ["admin", "client"], owner: "ada@example.test" });
+  // (as the Cloud's own page sends it: a browser marks the change same-origin)
+  const revoke = await fetch(`${base}/api/auth/sessions/${lostId}`, { method: "DELETE", headers: { host: HOST, "x-forwarded-for": "203.0.113.9", "x-forwarded-proto": "https",
+    "sec-fetch-site": "same-origin", cookie: secondCookie } });
+  expect(revoke.status).toBe(200);
+  expect((await api("GET", "/api/auth/session", { remote: true, headers: { cookie: cookieOf(lost) } })).status).toBe(401);
+});
+
+it("serves its pages to no frame and with no Referer", async () => {
+  for (const path of ["/pair", "/", "/settings"]) {
+    const page = await fetch(`${base}${path}`, { headers: { host: HOST, "x-forwarded-for": "203.0.113.9", "x-forwarded-proto": "https" } });
+    expect(page.status, path).toBe(200);
+    expect(page.headers.get("content-type"), path).toBe("text/html");
+    expect(page.headers.get("content-security-policy"), path).toBe("frame-ancestors 'none'");
+    expect(page.headers.get("x-frame-options"), path).toBe("DENY");
+    expect(page.headers.get("referrer-policy"), path).toBe("no-referrer");
+  }
 });
 
 it("never hands the included tokens or the signing secret to a CLI it probes", async () => {
@@ -179,6 +297,31 @@ console.log("dump-env 1.0.0");
   for (const value of [...includedTokens, secret]) expect(JSON.stringify(env)).not.toContain(value);
 });
 
+it("does not count a turn that was stopped before it finished", async () => {
+  writeFileSync(join(home, "hang"), "");
+  const created = await api("POST", "/api/bots", { body: {
+    name: "Stopped fixture", modelSelection: { instanceId: "claude", model: "claude-sonnet-5" }, requireAvailableModel: true,
+  } });
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  const botId = created.body.bot.id;
+  const dump = join(home, "spawn-hang.json");
+  try {
+    expect((await api("POST", `/api/bots/${botId}/messages`, { body: { text: "wait for me" } })).status).toBe(202);
+    await expect.poll(() => existsSync(dump), { timeout: 15_000 }).toBe(true);
+  } finally {
+    rmSync(join(home, "hang"), { force: true });
+    await api("POST", `/api/bots/${botId}/interrupt`, { body: {} });
+  }
+  const busy = async () => {
+    const { bots } = (await api("GET", "/api/bots?messages=10")).body as { bots: Array<{ id: string; busy?: boolean }> };
+    return bots.find((bot) => bot.id === botId)?.busy === true;
+  };
+  await expect.poll(busy, { timeout: 15_000 }).toBe(false);
+  expect((await api("GET", "/api/config")).body.onboarding).not.toHaveProperty("firstTurnAt");
+  // A later test reads the next hanging turn's own record.
+  rmSync(dump, { force: true });
+});
+
 it("never hands a gateway's settings or the signing secret to an engine", async () => {
   const created = await api("POST", "/api/bots", { body: {
     name: "Cloud fixture", modelSelection: { instanceId: "claude", model: "claude-sonnet-5" }, requireAvailableModel: true,
@@ -193,6 +336,28 @@ it("never hands a gateway's settings or the signing secret to an engine", async 
   expect(JSON.stringify(env)).not.toContain(token);
   expect(JSON.stringify(env)).not.toContain(secret);
   for (const includedToken of includedTokens) expect(JSON.stringify(env)).not.toContain(includedToken);
+});
+
+it("records when a bot's turn first finished here, once, in the Cloud's own settings", async () => {
+  // The turn above ("hello") finished on this machine.
+  const first = async () => (await api("GET", "/api/config")).body.onboarding?.firstTurnAt as string | undefined;
+  await expect.poll(first, { timeout: 15_000 }).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  const recorded = await first();
+  expect(JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8")).onboarding.firstTurnAt).toBe(recorded);
+  // A later turn leaves it as it was.
+  const created = await api("POST", "/api/bots", { body: {
+    name: "Second fixture", modelSelection: { instanceId: "claude", model: "claude-sonnet-5" }, requireAvailableModel: true,
+  } });
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  const botId = created.body.bot.id;
+  expect((await api("POST", `/api/bots/${botId}/messages`, { body: { text: "hello again" } })).status).toBe(202);
+  const replied = async () => {
+    const { bots } = (await api("GET", "/api/bots?messages=10")).body as { bots: Array<{ id: string; busy?: boolean; messages: Array<{ role: string; kind: string }> }> };
+    const bot = bots.find((entry) => entry.id === botId);
+    return Boolean(bot && !bot.busy && bot.messages.some((message) => message.role === "bot" && message.kind === "text"));
+  };
+  await expect.poll(replied, { timeout: 15_000 }).toBe(true);
+  expect(await first()).toBe(recorded);
 });
 
 it("offers its bots the browser and cloud computers only, and tells them they cannot see the person's computer", async () => {

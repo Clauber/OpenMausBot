@@ -12,7 +12,10 @@
 // the machine's bootstrap secret (HMAC-SHA256 over the method, path, a
 // timestamp, a nonce and the body's hash); each valid request opens one
 // ordinary pairing window (sessions.ts: single use, at most ten minutes),
-// which the Admin hands to the person's signed-in desktop app.
+// which the Admin hands to the person's signed-in desktop app. A request for
+// a browser sign-in (the Cloud page's "Use in your browser") names the
+// account that owns this Cloud and opens a window only this machine's web
+// page redeems, for at most two minutes, after showing whose Cloud it is.
 //
 // Cloud Pro includes no AI. The person signs in on the machine with their own
 // Claude or ChatGPT account, or an API key, exactly as on any server; nothing
@@ -36,6 +39,10 @@ export const CLOUD_IGNORED_KEYS = ["OMB_HOSTED_MODEL_URL", "OMB_HOSTED_MODEL_TOK
 export const CLOUD_PAIRING_PATH = "/api/cloud/pairing";
 export const CLOUD_PAIRING_DEFAULT_TTL_S = 300;
 export const CLOUD_PAIRING_MAX_TTL_S = 600;
+/** A browser sign-in's owner: printable ASCII with no space, `<` or `>`, and exactly one `@`. */
+const OWNER_EMAIL = /^[!-;=?A-~]{1,64}@[!-;=?A-~]{1,189}$/;
+/** A browser sign-in is redeemed the moment its tab loads. */
+export const CLOUD_BROWSER_SIGN_IN_MAX_TTL_S = 120;
 /** How far a signed request's timestamp may be from this machine's clock. */
 export const CLOUD_PAIRING_SKEW_S = 300;
 /** How long a used nonce is refused. Longer than the whole accepted window. */
@@ -95,6 +102,10 @@ export function cloudHomeConfiguration(env: NodeJS.ProcessEnv = process.env): Cl
   return { machineId, adminOrigin, publicOrigin, bootstrapSecret, warnings };
 }
 
+// The secrets and their pipe live in cloud-secrets.ts, which the server
+// reads before anything else (cloud-secrets-boot.ts).
+export { CLOUD_HOME_SECRET_KEYS, CLOUD_SECRETS_FD_ENV, cloudHomeSecrets, takeCloudSecrets, withoutCloudSecrets } from "./cloud-secrets.ts";
+
 /** The environment without a platform gateway's settings (CLOUD_IGNORED_KEYS). */
 export function withoutIgnoredCloudKeys(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const kept = { ...env };
@@ -120,6 +131,18 @@ export function cloudHomePlaceRefusal(place: Surface): string | undefined {
  * suggest instead. */
 export function boatNotConfiguredMessage(cloudHome: boolean): string {
   return `Cloud Boat is not configured — add a Boat API key or choose ${cloudHome ? "Browser" : "Local VM"}`;
+}
+
+/** The Cloud's setup checklist (docs/cloud-pro.md) has a "try something"
+ * step that is done once a bot's turn finishes on the machine itself. The
+ * server records when, once, in this Cloud's own onboarding record: that
+ * section never travels with Move to Cloud (workspace-backup-policy.ts), so a
+ * moved-in history of turns does not count. Null when there is nothing to
+ * record: not a Cloud home, already recorded, a failed or stopped turn, or a
+ * thread that is no bot's conversation or room. */
+export function firstCloudTurnPatch(turn: { cloudHome: boolean; recorded: string | undefined; ok: boolean; known: boolean; now?: Date }): { onboarding: { firstTurnAt: string } } | null {
+  if (!turn.cloudHome || turn.recorded || !turn.ok || !turn.known) return null;
+  return { onboarding: { firstTurnAt: (turn.now ?? new Date()).toISOString() } };
 }
 
 /** The Admin's side of the signature (openmaus-cloud cloudPairingSignature). */
@@ -171,16 +194,28 @@ export function createCloudPairing(options: {
       let parsed: unknown;
       try { parsed = input.body.length ? JSON.parse(input.body.toString("utf8")) : {}; } catch { return { status: 400, body: { error: "invalid_body" } }; }
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { status: 400, body: { error: "invalid_body" } };
-      const { label, ttlSeconds } = parsed as { label?: unknown; ttlSeconds?: unknown };
+      const { label, ttlSeconds, purpose, owner } = parsed as { label?: unknown; ttlSeconds?: unknown; purpose?: unknown; owner?: unknown };
       // oxlint-disable-next-line no-control-regex
       if (label !== undefined && (typeof label !== "string" || label.length > 80 || /[\x00-\x1f\x7f]/.test(label))) return { status: 400, body: { error: "invalid_label" } };
       if (ttlSeconds !== undefined && (!Number.isSafeInteger(ttlSeconds) || (ttlSeconds as number) < 1)) return { status: 400, body: { error: "invalid_ttl" } };
-      const ttl = Math.min((ttlSeconds as number | undefined) ?? CLOUD_PAIRING_DEFAULT_TTL_S, CLOUD_PAIRING_MAX_TTL_S);
+      if (purpose !== undefined && purpose !== "browser") return { status: 400, body: { error: "invalid_purpose" } };
+      const browser = purpose === "browser";
+      // A browser sign-in names its Cloud's owner (the account's email), which the sign-in page shows before the
+      // person continues: one address in printable ASCII, as the Admin's email schemas allow, with no `<` or `>`.
+      if ((browser || owner !== undefined) && (typeof owner !== "string" || owner.length > 254 || !OWNER_EMAIL.test(owner))) {
+        return { status: 400, body: { error: "invalid_owner" } };
+      }
+      const ttl = Math.min((ttlSeconds as number | undefined) ?? CLOUD_PAIRING_DEFAULT_TTL_S, browser ? CLOUD_BROWSER_SIGN_IN_MAX_TTL_S : CLOUD_PAIRING_MAX_TTL_S);
       const opened = sessions.openPairing({
         scopes: ["admin", "client"],
         label: typeof label === "string" && label.trim() ? label.trim() : "OMB Cloud",
         ttlMs: ttl * 1000,
+        browser,
+        ...(browser ? { owner: owner as string } : {}),
       });
+      // A browser sign-in has no code to type: only its credential redeems it, and saying `purpose` back tells the
+      // Admin this machine made one (a machine from before this ignores `purpose` and opens an ordinary window).
+      if (browser) return { status: 200, body: { credential: opened.credential, expiresAt: opened.expiresAt, purpose: "browser" } };
       return { status: 200, body: { code: formatPairingCode(opened.code), credential: opened.credential, expiresAt: opened.expiresAt } };
     },
   };
