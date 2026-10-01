@@ -122,7 +122,9 @@ Revoking an installation first revokes its local installation credentials, then
 schedules best-effort endpoint cleanup. Cloud cleanup failure cannot restore or
 delay credential revocation. Repeating the owner-scoped installation DELETE is
 safe and retries retained cleanup state. A five-minute cron also processes at
-most `OMB_CLEANUP_SWEEP_LIMIT` (default 20) expired-lease rows per run when
+most `OMB_CLEANUP_SWEEP_LIMIT` (code default 20; `wrangler.jsonc` ships 4 until
+the account is confirmed on Workers Paid, whose per-invocation subrequest and D1
+limits the default needs) expired-lease rows per run when
 they are already deleting, belong to a revoked installation, or outlive a
 hard-deleted installation. Rows run five at a time (the Workers limit is six
 connections awaiting headers), and a run stops starting new rows as soon as
@@ -175,8 +177,9 @@ capacity step before cleanup:
    `console.error` with `"alert": "managed_endpoint_capacity"`, the resource,
    used, limit, and percentage. Create a Workers Logs alert on that field.
 
-Set `OMB_TUNNEL_RECLAIM` to `observe` to log `idle`/`eligible` counts without
-marking anything. The two limits only drive the alert and `/healthz`; raise
+`OMB_TUNNEL_RECLAIM` is `observe` unless set to `on` (an unset or invalid value
+observes): it logs `idle`/`eligible` counts without marking anything. Deploy in
+`observe`, check one full scan cycle of real counts, then set it to `on`. The two limits only drive the alert and `/healthz`; raise
 them when Cloudflare raises the account or zone quota.
 
 `GET /healthz` keeps `ok` and `service` unchanged (desktops gate hosted sign-in
