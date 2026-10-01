@@ -9,13 +9,15 @@
 ALTER TABLE installation_endpoints
   ADD COLUMN reclaim_requested_at INTEGER;
 
--- Rows that an operator already moved to 'deleting' for an installation that
--- is still active were idle-reclaim decisions made by hand (issue #1283). Give
--- them the same reconnect guard as automatic reclaims. Revoked or missing
--- installations keep plain owner-requested cleanup.
+-- The batch an operator moved to 'deleting' by hand on 2026-10-01 between
+-- 10:00Z and 10:30Z (issue #1283; never-connected or offline 3+ weeks) were
+-- idle-reclaim decisions. Give exactly those rows the reconnect guard of an
+-- automatic reclaim. Owner-requested deletes, and rows of revoked or missing
+-- installations, stay plain cleanup.
 UPDATE installation_endpoints
-   SET reclaim_requested_at = COALESCE(delete_requested_at, updated_at)
+   SET reclaim_requested_at = delete_requested_at
  WHERE status = 'deleting'
+   AND delete_requested_at BETWEEN 1790848800000 AND 1790850600000
    AND EXISTS (
      SELECT 1 FROM installations i
       WHERE i.id = installation_endpoints.installation_id

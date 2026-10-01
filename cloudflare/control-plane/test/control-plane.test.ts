@@ -173,7 +173,7 @@ describe("control-plane migrations and health", () => {
       cleanupSweepLimit: 20,
       dnsRecordLimit: 1000,
       offlineReclaimMs: 21 * 24 * 60 * 60 * 1_000,
-      reclaimMode: "on",
+      reclaimMode: "observe",
       tunnelLimit: 1000,
     });
     const withVars = (vars: Record<string, string>) => ({ ...base, ...vars }) as unknown as Env;
@@ -189,19 +189,14 @@ describe("control-plane migrations and health", () => {
       tunnelLimit: 2500,
     });
     // Reclaim can never be configured to treat a tunnel offline for less than
-    // a week as idle, and the sweep cannot outgrow its subrequest budget.
-    expect(() => readConfig(withVars({ OMB_TUNNEL_OFFLINE_RECLAIM_DAYS: "6" }))).toThrow(
-      "OMB_TUNNEL_OFFLINE_RECLAIM_DAYS must be between 7 and 365",
-    );
-    expect(() => readConfig(withVars({ OMB_CLEANUP_SWEEP_LIMIT: "51" }))).toThrow(
-      "OMB_CLEANUP_SWEEP_LIMIT must be between 1 and 50",
-    );
-    expect(() => readConfig(withVars({ OMB_TUNNEL_LIMIT: "1e3" }))).toThrow(
-      "OMB_TUNNEL_LIMIT must be a whole number",
-    );
-    expect(() => readConfig(withVars({ OMB_TUNNEL_RECLAIM: "yes" }))).toThrow(
-      "OMB_TUNNEL_RECLAIM must be on or observe",
-    );
+    // a week as idle, and the sweep cannot outgrow its subrequest budget. A bad
+    // value falls back to the default instead of taking sign-in down, and a bad
+    // reclaim mode only observes.
+    expect(readConfig(withVars({ OMB_TUNNEL_OFFLINE_RECLAIM_DAYS: "6" })).capacity.offlineReclaimMs).toBe(21 * 24 * 60 * 60 * 1_000);
+    expect(readConfig(withVars({ OMB_CLEANUP_SWEEP_LIMIT: "51" })).capacity.cleanupSweepLimit).toBe(20);
+    expect(readConfig(withVars({ OMB_TUNNEL_LIMIT: "1e3" })).capacity.tunnelLimit).toBe(1000);
+    expect(readConfig(withVars({ OMB_TUNNEL_RECLAIM: "yes" })).capacity.reclaimMode).toBe("observe");
+    expect(readConfig(withVars({ OMB_TUNNEL_RECLAIM: "on" })).capacity.reclaimMode).toBe("on");
   });
 
   it("reports an unhealthy deployment without exposing invalid configuration", async () => {

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CloudflareAPI, CloudflareAPIError, type CloudflareFetch } from "../src/cloudflare-api";
 import { createAuth } from "../src/auth";
 import { readConfig } from "../src/config";
+import { cleanupEndpointRow } from "../src/endpoints";
 import { createWorker } from "../src/index";
 
 const BASE_URL = "https://auth.openmausbot.test";
@@ -1400,6 +1401,32 @@ describe("idle tunnel reclaim", () => {
       [2, 32, 0, 0],
     ]);
     logged.mockRestore();
+  });
+
+  it("never deletes a row its owner took back after the sweep chose it", async () => {
+    const cloudflare = new FakeCloudflare();
+    const worker = createWorker(cloudflare.fetch);
+    const owner = await signIn(worker, "reclaim-race@example.com");
+    const taken = await provisioned(worker, cloudflare, owner.token, "reclaim-race");
+    await quiet(taken.id, 30 * DAY_MS);
+    const markedAt = Date.now() - 60_000;
+    await env.DB.prepare(
+      `UPDATE installation_endpoints
+          SET status = 'deleting', reclaim_requested_at = ?, delete_requested_at = ?
+        WHERE installation_id = ?`,
+    ).bind(markedAt, markedAt, taken.id).run();
+    // The sweep has chosen the row. Before it claims it, the owner's app
+    // provisions again and takes the row back.
+    const back = await call(worker, "/v1/installations/self/endpoint", { method: "POST", token: taken.credential });
+    expect(back.status).toBe(200);
+    expect(await endpointState(taken.id)).toMatchObject({ status: "ready" });
+    cloudflare.calls.length = 0;
+
+    const outcome = await cleanupEndpointRow(env, readConfig(env), taken.id, cloudflare.fetch, "race-test", true);
+
+    expect(outcome.result).toBe("skipped");
+    expect(await endpointState(taken.id)).toMatchObject({ status: "ready" });
+    expect(cloudflare.calls.filter((call) => call.method === "DELETE")).toHaveLength(0);
   });
 
   it("cancels a pending reclaim when the tunnel reconnects or the installation checks in", async () => {

@@ -58,20 +58,22 @@ function boundedIntegerVar(
 ): number {
   if (value === undefined || value === null || value === "") return fallback;
   const text = typeof value === "number" ? String(value) : value;
-  if (typeof text !== "string" || !/^[0-9]{1,9}$/.test(text.trim())) {
-    throw new Error(`${label} must be a whole number`);
-  }
-  const parsed = Number(text.trim());
+  const parsed = typeof text === "string" && /^[0-9]{1,9}$/.test(text.trim()) ? Number(text.trim()) : Number.NaN;
   if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
-    throw new Error(`${label} must be between ${minimum} and ${maximum}`);
+    // A tuning value must never take sign-in and pairing down: use the default.
+    console.error(JSON.stringify({ message: "invalid capacity setting; using the default", setting: label, minimum, maximum, fallback }));
+    return fallback;
   }
   return parsed;
 }
 
 function reclaimMode(value: unknown): TunnelReclaimMode {
-  if (value === undefined || value === null || value === "") return "on";
+  // Unset or invalid: observe only. Reclaiming is switched on deliberately.
   if (value === "on" || value === "observe") return value;
-  throw new Error("OMB_TUNNEL_RECLAIM must be on or observe");
+  if (value !== undefined && value !== null && value !== "") {
+    console.error(JSON.stringify({ message: "invalid OMB_TUNNEL_RECLAIM; observing only", allowed: ["on", "observe"] }));
+  }
+  return "observe";
 }
 
 /** Optional tuning variables. Each has a safe default so an older deployment

@@ -162,7 +162,16 @@ async function claimEndpoint(
   // removed anything.
   const deletingGuard = nextStatus === "provisioning"
     ? "AND (status != 'deleting' OR reclaim_requested_at IS NOT NULL)"
-    : "";
+    // The sweep's claim: only a row still marked for deletion, or one whose
+    // installation was revoked or removed. A row its owner took back (by
+    // provisioning again) after the sweep chose it is left alone.
+    : keepReclaim
+      ? `AND (status = 'deleting' OR NOT EXISTS (
+           SELECT 1 FROM installations i
+            WHERE i.id = installation_endpoints.installation_id
+              AND i.revoked_at IS NULL
+         ))`
+      : "";
   const result = await env.DB.prepare(
     `UPDATE installation_endpoints
         SET status = ?, generation = generation + 1,
@@ -748,6 +757,15 @@ async function deleteClaim(
 
     if (dnsRecordId) {
       if (dnsRecord) {
+        // Check again right before the first destructive call: the tunnel may
+        // have reconnected while the DNS record was being verified.
+        if (idleReclaim && tunnelId) {
+          const current = await verifiedTunnelForCleanup(env, claim, api, tunnelId);
+          if (current && !(await reclaimStillAllowed(env, config, claim, current))) {
+            await cancelReclaim(env, claim);
+            return "cancelled";
+          }
+        }
         await renewClaim(env, claim);
         await api.deleteDNSRecord(dnsRecordId);
       }
@@ -869,7 +887,8 @@ interface CleanupOutcome {
   result: DeleteOutcome | "failed" | "skipped";
 }
 
-async function cleanupEndpointRow(
+/** One sweep step for one installation. Exported for the race test. */
+export async function cleanupEndpointRow(
   env: Env,
   config: ControlPlaneConfig,
   installationId: string,
