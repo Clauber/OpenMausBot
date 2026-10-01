@@ -1040,10 +1040,11 @@ describe("managed companion endpoints", () => {
     expect(cleanupCalls(cloudflare)).toHaveLength(40);
     expect(cloudflare.calls.filter(isCapacityRead)).toHaveLength(2);
 
-    // The default (Workers Paid) processes twenty rows at ten calls each:
-    // about 200 of the token's 1,200 requests per five minutes.
+    // On Workers Paid (OMB_CLEANUP_SWEEP_LIMIT=20, the code default) a run
+    // processes twenty rows at ten calls each: about 200 of the token's 1,200
+    // requests per five minutes. wrangler.jsonc ships 4 until Paid is confirmed.
     cloudflare.calls.length = 0;
-    await runScheduledCleanup(worker);
+    await runScheduledCleanup(worker, { OMB_CLEANUP_SWEEP_LIMIT: "20" });
     expect(await counts()).toEqual([
       { count: 24, status: "deleted" },
       { count: 1, status: "deleting" },
