@@ -125,7 +125,7 @@ implicitly download a new release.
 
 ## Connect ChatGPT from the browser
 
-A browser paired as a super admin can connect an installed Codex CLI without opening a
+A browser paired with Full access can connect an installed Codex CLI without opening a
 terminal: **Settings → Engines → Codex → Connect ChatGPT**. OMB starts
 `codex login --device-auth` on the server and shows a one-time code. Choose
 **Open ChatGPT sign-in**, enter the code on OpenAI's page, and complete sign-in
@@ -152,7 +152,7 @@ pulled away; finish or cancel it first.
 ## Connect a custom domain in Settings
 
 For a self-hosted server, open **Settings → Remote access → Connect your
-domain** from a browser paired as a super admin. This is an address-setting and verification
+domain** from a browser paired with Full access. This is an address-setting and verification
 flow, not a DNS or hosting service. Enter the domain to see a compact DNS record
 with copy buttons for **Type**, **Name / Host**, and **Value / IP**. The full
 hostname is shown; providers that already append the DNS zone need only the
@@ -608,11 +608,11 @@ email sign-in list that names users — it narrows only whose answer counts,
 and only when the card can be traced to a person:
 
 - a card for a request a user sent, or in a thread a user opened, is
-  theirs to answer (admins and the super admin may answer any card);
+  theirs to answer (admins and the owner may answer any card);
 - a thread a bot opened while working on someone's request (a delegated or
   coordinated job) is traced back to that person, so the cards of work done
   for them are theirs too;
-- a card that names nobody — sent by the super admin on this machine, by a
+- a card that names nobody — sent by the owner on this machine, by a
   routine or webhook, from Slack (until Slack passes the asker through), or
   in a thread from before this existed — may be answered by any user, as
   before;
@@ -675,7 +675,7 @@ alone.
   share "everyone", so nothing changes until an admin restricts one. A bot a
   Chief creates (directly, or in a reviewed team setup) gets exactly the
   Chief's audience.
-- **Who sees everything.** Admin sessions, the super admin on this machine, and a
+- **Who sees everything.** Admin sessions, the owner on this machine, and a
   session-less local service (the Slack worker under `service` trust) see
   every bot. A pairing-code device with no email sees only bots everyone
   can see. Users never receive a bot's audience list.
@@ -797,7 +797,7 @@ engine reports none), and who asked: the email a person signed in with, the
 device label otherwise, a routine, another bot, or this computer. No message
 text is stored. **Settings → Usage → History** shows a period grouped by bot,
 model, person, day or engine, and **Export CSV** downloads one line per turn.
-Super admins can read the same over the API:
+Owners can read the same over the API:
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" \
@@ -813,7 +813,7 @@ current month to date.
 
 Every approval decision — a rule that let a tool call through, a card that
 was shown, and a person's answer, with who gave it (the session's email or
-device label, `loopback` for the super admin, `worker` for a session-less local
+device label, `loopback` for the owner, `worker` for a session-less local
 service) — is appended to `<data dir>/decisions/YYYY-MM.ndjson` (0600,
 credentials redacted). Month files are kept for at least 180 days; set
 `decisions.retentionDays` in `config.json` (or through `PUT /api/config`),
@@ -846,7 +846,7 @@ shutdown): settings
 sessions, webhooks, MCP servers, engines and keys, bots created, deleted or
 given different permissions, spend limits and prices, and who can see a bot.
 Each row names who acted — the session's email or device label, `This
-computer` for the super admin, `Command line` for `openmausbot` commands such as
+computer` for the owner, `Command line` for `openmausbot` commands such as
 `openmausbot access add` — and the values before and after. Values are
 redacted: anything under a key that names a credential, every value in a
 headers or environment map, the value after a flag such as `--api-key` or

@@ -51,7 +51,7 @@ export interface EmailSignIn {
   verify(email: string, code: string): Promise<{ ok: true; email: string; userId: string; scopes: Scope[] } | SignInFailure>;
 }
 
-const NOT_WELCOME: SignInFailure = { ok: false, status: 403, error: "this email is not on this server's sign-in list; ask the server's super admin to add it" };
+const NOT_WELCOME: SignInFailure = { ok: false, status: 403, error: "this email is not on this server's sign-in list; ask the server's owner to add it" };
 
 export function createEmailSignIn(options: {
   allow: SignInAllowList | (() => SignInAllowList);
