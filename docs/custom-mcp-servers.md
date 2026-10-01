@@ -32,9 +32,8 @@ lists its tools.
   OpenMausBot registers a fresh app for each sign-in. If it only accepts an
   app registered in advance, add that app as described below. A 401 without
   sign-in details keeps the old message: check the address and headers.
-- **Where you can sign in.** Only on the computer running the workspace,
-  because the browser comes back to a listener there. From another device
-  the app asks you to sign in from that computer.
+- **Where you can sign in.** On the workspace computer or from another
+  device using the redirect URL paste-back flow described below.
 - **Bots never sign in.** A server that needs sign-in is left out of every
   turn until someone signs in from this page. A signed-in server gets
   `Authorization: Bearer …` in place of any `Authorization` header you set,
@@ -46,6 +45,21 @@ lists its tools.
   the server offers that, then forgets them.
 - **Refresh.** A token is refreshed shortly before it expires. If the server
   refuses the refresh, the server goes back to **Needs sign-in**.
+
+For a headless or remote workspace (including an SSH tunnel), open **Signing
+in from another computer?** while sign-in is waiting. Finish approval in your
+browser. If it redirects to a localhost page that cannot connect, copy the
+**entire URL from the address bar**, paste it into **Redirect URL**, and choose
+**Complete sign-in**. The connection error is expected: that address refers to
+your computer, while OpenMausBot is on the server. No extra port forwarding or
+public callback address is needed. **Open sign-in page** reopens the approval
+page if your browser blocked the first attempt.
+
+Keep the redirect URL private. Complete the flow in the same OMB browser/session
+that started it, within five minutes. Cancellation or logging out ends the
+pending flow; a URL cannot be reused. Existing same-machine sign-in still
+finishes automatically. This works with dynamically registered and
+pre-registered sign-in apps.
 
 #### Servers that need an app registered in advance
 
