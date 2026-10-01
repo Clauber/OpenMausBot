@@ -5,7 +5,7 @@
 - Settings → People: who may sign in with an emailed code, their role, when
   each person was last seen, what they spent this month, and an invite link
   per person that opens the sign-in page with the address filled in.
-- The owner (or a bootstrap script on the box) names the first admin; from
+- The super admin (or a bootstrap script on the box) names the first admin; from
   then on any admin invites, promotes, demotes and removes people from the
   card. Promotions apply at the next sign-in; removal and lost permissions
   revoke existing account sessions immediately.
@@ -26,9 +26,9 @@ pnpm exec vitest run server/people-invite.test.ts server/email-signin.test.ts sr
 ```
 
 `server/people-invite.test.ts` boots the real server with no sign-in list and a
-stubbed control plane, then walks the card's own requests: the owner adds the
-first admin, the admin signs in with the emailed code and invites a member,
-the member's link serves the sign-in page, the member gets a chat-only cookie
+stubbed control plane, then walks the card's own requests: the super admin adds the
+first admin, the admin signs in with the emailed code and invites a user,
+the user's link serves the sign-in page, the user gets a chat-only cookie
 session and cannot change the list, a promotion applies to the next sign-in
 while the device already issued keeps its scopes, a removal refuses new
 sign-ins and revokes all old account cookies and tickets, and a `@domain` entry
