@@ -53,6 +53,9 @@ interface QueueEntry {
     /** Who the usage ledger books the turn these words start to, captured
      * when they were sent. Absent on rows queued before this existed. */
     trigger?: UsageTrigger;
+    /** The words were spoken in a Live call, not typed: the drained line
+     * says so, like an immediate send would. */
+    via?: "call";
     /** When the words were queued (epoch ms): drain-time coalescing splits
      * one sender's items when the gap between them outgrows the window. */
     queuedAt: number;
@@ -77,8 +80,11 @@ export function restoreSteeredMessages(): void {
     if (row.status !== "pending") continue;
     const entry = queues.get(row.threadId) ?? { botId: row.ownerId, items: [] };
     if (entry.botId !== row.ownerId) throw new Error("queued task belongs to another bot");
+    // a 1:1 line is only ever stamped "call"; "api" belongs to channel rows
+    const { via, ...payload } = row.payload;
     entry.items.push({
-      ...row.payload,
+      ...payload,
+      ...(via === "call" ? { via } : {}),
       messageId: row.id,
       prompt: row.payload.prompt ?? row.payload.text,
       // rows queued before timestamps were kept read as queued at restore
@@ -121,7 +127,7 @@ export function queueSteeredMessage(
   botId: string,
   threadId: string,
   text: string,
-  options: { prompt?: string; replyToId?: string; sendId?: string; reason?: SteerQueueReason; unattended?: boolean; peerAsk?: Message["peerAsk"]; sender?: ResolvedSender; trigger?: UsageTrigger } = {},
+  options: { prompt?: string; replyToId?: string; sendId?: string; reason?: SteerQueueReason; unattended?: boolean; peerAsk?: Message["peerAsk"]; sender?: ResolvedSender; trigger?: UsageTrigger; via?: "call" } = {},
 ): QueuedSteer {
   const id = newId();
   const entry = queues.get(threadId) ?? { botId, items: [] };
@@ -139,6 +145,7 @@ export function queueSteeredMessage(
     peerAsk: options.peerAsk,
     sender: options.sender,
     trigger: options.trigger,
+    via: options.via,
     queuedAt: Date.now(),
   };
   saveChatFollowup({ id, kind: "bot", ownerId: botId, threadId, payload: item });
@@ -168,6 +175,14 @@ export function queuedThreadPosition(botId: string, threadId: string): number | 
 export function hasQueuedSteeredMessages(botId: string, threadId: string): boolean {
   const entry = queues.get(threadId);
   return entry?.botId === botId && entry.items.length > 0;
+}
+
+/** Whether one send still waits in its thread's queue. False while it is
+ * out of the queue: drained onto the thread, held for a steer into the
+ * running turn, or cancelled (editing a queued line cancels it). */
+export function isSteeredMessageQueued(botId: string, threadId: string, queueId: string): boolean {
+  const entry = queues.get(threadId);
+  return entry?.botId === botId && entry.items.some((item) => item.messageId === queueId);
 }
 
 /** Drain every queue whose task is idle: append the held lines (leaf is now
@@ -229,6 +244,7 @@ export function drainSteeredMessages(
           queueId: item.messageId,
           peerAsk: item.peerAsk,
           sender: item.sender,
+          ...(item.via ? { via: item.via } : {}),
         }),
       );
     }

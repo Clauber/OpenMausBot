@@ -32,6 +32,7 @@ import {
   formatTime,
   messageVersions,
   openNotificationTarget,
+  openThread,
   visibleMessages,
   type Bot,
   type InstanceInfo,
@@ -79,6 +80,8 @@ import { ExportTranscriptMenu } from "./ExportTranscriptMenu";
 
 import { SpeakButton } from "./SpeakButton";
 import { CallButton, CallOverlay } from "./CallView";
+import { LiveCallBar } from "./LiveCallBar";
+import { LiveCallChip } from "./LiveCallPill";
 import { effectivePlace, toolPlace, type EffectivePlace } from "@/lib/place";
 import { cn } from "@/lib/cn";
 import { activeLocale, t } from "@/lib/i18n";
@@ -479,6 +482,11 @@ function Bubble({
                 <div className="mt-1 text-[11px] text-ink-tertiary" title={t("chat.sentMidTurnHint")}>
                   {t("chat.sentMidTurn")}
                 </div>
+              )}
+              {message.via === "call" && (
+                <span className="mt-1 text-[11px] text-ink-tertiary" title={t("chat.viaCall")}>
+                  {t("chat.viaCall")}
+                </span>
               )}
               {collapsible && (
                 <button onClick={() => setExpanded(true)} className="mt-1 text-[12.5px] text-ink-secondary hover:text-ink">
@@ -1239,7 +1247,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
 
   return (
     <main className="relative flex h-full min-w-0 flex-1 flex-col bg-app">
-      {/* Call mode covers the thread while the bot is on the line */}
+      {/* A take-turns call covers the thread while the bot is on the line */}
       <CallOverlay bot={bot} />
       {/* Header */}
       <div
@@ -1342,6 +1350,8 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
           <TaskPicker bot={bot} />
           <UsageChip bot={bot} />
           {!remoteClient && <ModelPicker key={bot.threadId} bot={bot} threadId={bot.threadId} />}
+          {/* below md the sidebar (and its Live call pill) is hidden */}
+          <LiveCallChip currentBotId={bot.id} onOpen={(botId, threadId) => openThread(dispatch, { botId, threadId }, state)} />
           <CallButton bot={bot} />
           <button
             data-tour="computer"
@@ -1570,6 +1580,10 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
           />
         </div>
       )}
+      {/* A Live call on this chat: its controls and captions sit above the
+          composer so the transcript stays in view. In the dock, so the
+          transcript pad grows with it. */}
+      <LiveCallBar bot={bot} />
       {canWrite === false ? (
         <NewConversationInstead onNew={() => dispatch({ type: "newTask", botId: bot.id })} />
       ) : (
