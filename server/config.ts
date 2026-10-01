@@ -401,6 +401,7 @@ const appConfigSchema = z.object({
     phone: z.enum(["ios", "android"]).optional(),
   }).optional(),
   mistral: z.object({ key: optionalText }).optional(),
+  cerebras: z.object({ key: optionalText }).optional(),
   xai: z.object({ key: optionalText, url: optionalText }).optional(),
   /** Anthropic API key for Claude Code billed per token, handed only to
    * Claude instances; `url` only for a proxy or a test double. Never a
@@ -571,6 +572,7 @@ export interface AppConfig {
   language?: string;
   xai?: { key?: string; url?: string };
   mistral?: { key?: string };
+  cerebras?: { key?: string };
   anthropic?: { key?: string; url?: string };
   budgets?: { monthlyUsd?: number; warnAtPercent?: number };
   decisions?: { retentionDays?: number };
@@ -1006,6 +1008,8 @@ export function loadConfig(): AppConfig {
   // shadow the save until the next launch.
   cfg.mistral = { ...cfg.mistral };
   if (process.env.MISTRAL_API_KEY !== undefined) cfg.mistral.key = process.env.MISTRAL_API_KEY;
+  cfg.cerebras = { ...cfg.cerebras };
+  if (process.env.CEREBRAS_API_KEY !== undefined) cfg.cerebras.key = process.env.CEREBRAS_API_KEY;
   cfg.xai = { ...cfg.xai };
   if (process.env.XAI_API_KEY !== undefined) cfg.xai.key = process.env.XAI_API_KEY;
   // Deliberately not ANTHROPIC_API_KEY: a key in the server's own env is
@@ -1060,6 +1064,7 @@ export function syncCredentialEnv(patch: Partial<Omit<AppConfig, "threads" | "ne
   const secrets: Array<[value: string | undefined, name: string]> = [
     [patch.xai?.key, "XAI_API_KEY"],
     [patch.mistral?.key, "MISTRAL_API_KEY"],
+    [patch.cerebras?.key, "CEREBRAS_API_KEY"],
     [patch.anthropic?.key, "OMB_ANTHROPIC_API_KEY"],
     [patch.openaiCompat?.key, "OPENAI_COMPAT_API_KEY"],
     [patch.composio?.apiKey, "COMPOSIO_API_KEY"],
@@ -1099,6 +1104,7 @@ export function syncCredentialEnv(patch: Partial<Omit<AppConfig, "threads" | "ne
 export const WORKSPACE_CREDENTIAL_ENV = [
   "XAI_API_KEY",
   "MISTRAL_API_KEY",
+  "CEREBRAS_API_KEY",
   "OMB_ANTHROPIC_API_KEY",
   "OMB_ANTHROPIC_API_URL",
   "OMB_HOSTED_MODEL_TOKEN",
@@ -1171,6 +1177,7 @@ export const PROVIDER_CREDENTIAL_ENV = [
   "OPENCODE_API_KEY",
   "XAI_API_KEY",
   "MISTRAL_API_KEY",
+  "CEREBRAS_API_KEY",
   "CURSOR_API_KEY",
   "CURSOR_AUTH_TOKEN",
 ] as const;
@@ -1209,7 +1216,7 @@ export function saveConfig(
   // back after we have successfully recognized the legacy list.
   const storedProfiles = storedBrowserProfilesSchema.safeParse(disk.browserProfiles);
   if (storedProfiles.success) disk.browserProfiles = storedProfiles.data;
-  for (const key of ["xai", "anthropic", "mistral", "openaiCompat", "composio", "box", "opencodeGo", "tts", "decider", "imageGen", "profile", "rooms", "threads", "context", "memory", "localVm", "features", "cloudOverflow", "budgets", "billing", "decisions", "onboarding", "browserEngine", "newBots"] as const) {
+  for (const key of ["xai", "anthropic", "mistral", "cerebras", "openaiCompat", "composio", "box", "opencodeGo", "tts", "decider", "imageGen", "profile", "rooms", "threads", "context", "memory", "localVm", "features", "cloudOverflow", "budgets", "billing", "decisions", "onboarding", "browserEngine", "newBots"] as const) {
     const section = checkedPatch[key];
     if (!section) continue;
     const current = jsonObjectSchema.safeParse(disk[key]);
@@ -1437,6 +1444,8 @@ export function instanceOwnsRouting(cfg: AppConfig, entry: { driver: string; con
         || ownUrl(cfg.openaiCompat?.url || process.env.OPENAI_COMPAT_URL || "https://openrouter.ai/api/v1");
     case "mistral":
       return own(entry.environment?.MISTRAL_API_KEY) || ownUrl("https://api.mistral.ai/v1");
+    case "cerebras":
+      return own(entry.environment?.CEREBRAS_API_KEY) || ownUrl("https://api.cerebras.ai/v1");
     case "grok":
       return own(entry.environment?.XAI_API_KEY) || (own(config.apiKeyEnv) && config.apiKeyEnv !== "XAI_API_KEY")
         || ownUrl("https://api.x.ai/v1", cfg.xai?.url);
@@ -1454,6 +1463,7 @@ export function instanceOwnsRouting(cfg: AppConfig, entry: { driver: string; con
 function injectedEnvironment(cfg: AppConfig, driver: string): Map<string, string> {
   const environment = new Map<string, string>();
   if (driver === "mistral" && cfg.mistral?.key) environment.set("MISTRAL_API_KEY", cfg.mistral.key);
+  if (driver === "cerebras" && cfg.cerebras?.key) environment.set("CEREBRAS_API_KEY", cfg.cerebras.key);
   if (driver === "grok" && cfg.xai?.key) environment.set("XAI_API_KEY", cfg.xai.key);
   // The workspace Anthropic key reaches Claude Code as the variable it
   // reads, carried in the instance environment so the driver can tell a
@@ -1505,6 +1515,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     computer: { driver: "boxAgent" },
     openaiCompat: { driver: "openai-compat" },
     mistral: { driver: "mistral" },
+    cerebras: { driver: "cerebras" },
     qwen: { driver: "qwenAgent" },
     hermes: { driver: "hermesAgent" },
     pi: { driver: "piAgent" },
@@ -1522,6 +1533,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     cursor: { driver: "cursorAgent" },
     openaiCompat: { driver: "openai-compat" },
     mistral: { driver: "mistral" },
+    cerebras: { driver: "cerebras" },
     ...CUSTOM_ONLY,
   } as const;
   const configured = cfg.instances && Object.keys(cfg.instances).length ? cfg.instances : null;
