@@ -14,9 +14,17 @@ export const PHONE_APPS: ReadonlyArray<{ id: "ios" | "android"; nameKey: LocaleK
   { id: "android", nameKey: "phoneApp.android", actionKey: "phoneApp.androidAction", url: ANDROID_APK_URL },
 ];
 
-/** `onConnect`: this window can pair a phone, so the dialog ends on that
- * next step; absent, it only says where the app is. */
-export function PhoneAppDialog({ open, onClose, onConnect }: { open: boolean; onClose: () => void; onConnect?: () => void }) {
+/** One place a phone can connect from here, as the menu offers it. */
+export interface PhoneAppConnect {
+  key: string;
+  /** where it connects: to your Cloud (always on), to this computer… */
+  subtitle: string;
+  onSelect: () => void;
+}
+
+/** `connect`: where this window can pair a phone, first one first; the
+ * dialog ends on that next step. Empty, it only says where the app is. */
+export function PhoneAppDialog({ open, onClose, connect = [] }: { open: boolean; onClose: () => void; connect?: PhoneAppConnect[] }) {
   const closeRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -62,19 +70,26 @@ export function PhoneAppDialog({ open, onClose, onConnect }: { open: boolean; on
             </li>
           ))}
         </ul>
-        {onConnect ? (
+        {connect.length ? (
           <div className="mt-4 flex flex-col gap-2">
             <p className="text-[13px] leading-relaxed text-ink-secondary">{t("phoneApp.next")}</p>
-            <button
-              type="button"
-              onClick={() => {
-                onClose();
-                onConnect();
-              }}
-              className="w-full rounded-xl bg-accent px-4 py-2 text-[13px] font-medium text-accent-ink hover:opacity-90"
-            >
-              {t("sidebar.menu.connectPhone")}
-            </button>
+            {connect.map((destination, index) => (
+              <button
+                key={destination.key}
+                type="button"
+                data-phone-app-connect={destination.key}
+                onClick={() => {
+                  onClose();
+                  destination.onSelect();
+                }}
+                className={index === 0
+                  ? "flex w-full flex-col items-center rounded-xl bg-accent px-4 py-2 text-[13px] font-medium text-accent-ink hover:opacity-90"
+                  : "flex w-full flex-col items-center rounded-xl border border-hairline/50 px-4 py-2 text-[13px] font-medium text-ink hover:bg-raised"}
+              >
+                <span>{t("sidebar.menu.connectPhone")}</span>
+                <span className="text-[12px] font-normal opacity-80">{destination.subtitle}</span>
+              </button>
+            ))}
           </div>
         ) : null}
         <button

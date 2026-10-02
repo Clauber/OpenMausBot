@@ -8,7 +8,12 @@
 // - the person's own OMB Cloud (open in this window, or a browser): that
 //   Cloud's own Remote access pairing code;
 // - any other server: its pairing code, only for a session that may make one.
+//
+// On this computer, someone with a paid Cloud that is Ready is offered both:
+// their Cloud first (always on), then this computer.
+import type { CloudAccountState } from "../../electron/cloud-account.mjs";
 import type { LocaleKey } from "@/locales";
+import { cloudPlanView } from "./cloud-plan";
 import type { Action } from "@/state/store";
 import { readMembership } from "./membership";
 import { isOwnerOrAdmin, readSessionState, type SessionState } from "./session";
@@ -70,6 +75,38 @@ const SUBTITLE: Record<PhonePairingTarget, LocaleKey> = {
 export function connectPhoneEntry(target: PhonePairingTarget, access: PhonePairingAccess | null): ConnectPhoneEntry | null {
   if (target !== "computer" && !(access && access.pairingCodes && isOwnerOrAdmin(access.session))) return null;
   return { target, subtitleKey: SUBTITLE[target] };
+}
+
+/** The person's own Cloud, as a second destination on this computer:
+ * "ready" (a paid plan, any tier, and the Cloud Ready: offered first),
+ * "not-ready" (paid, but the Cloud is setting up, stopped or unlisted: a
+ * hint only), or null (no paid plan, signed out, or not known yet). Read
+ * from the verified native snapshot only. */
+export type CloudPhoneDestination = "ready" | "not-ready" | null;
+
+export function cloudPhoneDestination(account: CloudAccountState | null | undefined): CloudPhoneDestination {
+  if (cloudPlanView(account).kind !== "paid") return null;
+  return account?.status === "connected" && account.machine?.status === "ready" ? "ready" : "not-ready";
+}
+
+/** One "Connect your phone" line. `id` "cloud": open the person's Cloud in
+ * this window on its phone pairing (the Settings card's Use your Cloud on
+ * your phone); "here": this window's own pairing. */
+export interface PhoneDestination extends ConnectPhoneEntry {
+  id: "cloud" | "here";
+  /** a quiet third line: why the Cloud is not offered yet */
+  noteKey?: LocaleKey;
+}
+
+/** The lines "Connect your phone" offers, in order. Only on this computer
+ * does the person's Cloud join in, and first; on the Cloud itself, or any
+ * other server, the window's own pairing is the only one. */
+export function phoneDestinations(entry: ConnectPhoneEntry | null, cloud: CloudPhoneDestination): PhoneDestination[] {
+  if (!entry) return [];
+  const here: PhoneDestination = { ...entry, id: "here" };
+  if (entry.target !== "computer" || !cloud) return [here];
+  if (cloud === "not-ready") return [{ ...here, noteKey: "sidebar.menu.connectPhone.cloudNotReady" }];
+  return [{ id: "cloud", target: "cloud", subtitleKey: "sidebar.menu.connectPhone.cloudAlwaysOn" }, here];
 }
 
 let pending: Promise<PhonePairingAccess> | null = null;

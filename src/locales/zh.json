@@ -244,6 +244,8 @@
   "sidebar.menu.connectPhone": "连接你的手机",
   "sidebar.menu.connectPhone.computer": "到这台电脑",
   "sidebar.menu.connectPhone.cloud": "到你的 Cloud",
+  "sidebar.menu.connectPhone.cloudAlwaysOn": "到你的 Cloud（始终在线）",
+  "sidebar.menu.connectPhone.cloudNotReady": "你的 Cloud 准备好后会显示在这里。",
   "sidebar.menu.connectPhone.server": "到此服务器",
   "sidebar.menu.getPhoneApp": "获取手机应用",
   "phoneApp.title": "获取手机应用",

@@ -332,6 +332,8 @@
   "sidebar.menu.connectPhone": "連接你的手機",
   "sidebar.menu.connectPhone.computer": "到這台電腦",
   "sidebar.menu.connectPhone.cloud": "到你的 Cloud",
+  "sidebar.menu.connectPhone.cloudAlwaysOn": "到你的 Cloud（隨時在線）",
+  "sidebar.menu.connectPhone.cloudNotReady": "你的 Cloud 準備好後會顯示在這裡。",
   "sidebar.menu.connectPhone.server": "到此伺服器",
   "sidebar.menu.getPhoneApp": "取得手機 App",
   "phoneApp.title": "取得手機 App",

@@ -856,6 +856,8 @@
   "sidebar.menu.connectPhone": "Connect your phone",
   "sidebar.menu.connectPhone.computer": "to this computer",
   "sidebar.menu.connectPhone.cloud": "to your Cloud",
+  "sidebar.menu.connectPhone.cloudAlwaysOn": "to your Cloud (always on)",
+  "sidebar.menu.connectPhone.cloudNotReady": "Your Cloud shows here once it is ready.",
   "sidebar.menu.connectPhone.server": "to this server",
   "sidebar.menu.getPhoneApp": "Get the phone app",
   "phoneApp.title": "Get the phone app",

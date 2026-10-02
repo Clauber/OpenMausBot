@@ -56,10 +56,10 @@ replayed from Settings).
 
 1. Get the phone app: the menu under your name → **Get the phone app** (App
    Store for iPhone, APK for Android).
-2. Open your Cloud in the app window: **Settings → OMB Cloud → Use your Cloud
-   on your phone**, or **Server → My Cloud**.
-3. The menu under your name → **Connect your phone** (*to your Cloud*) →
-   **Create pairing code**, and scan the QR code with the phone app.
+2. The same menu → **Connect your phone · to your Cloud (always on)**, or
+   **Settings → OMB Cloud → Use your Cloud on your phone**. The Cloud opens in
+   the app window at its phone pairing.
+3. **Create pairing code**, and scan the QR code with the phone app.
 
 How it fits together (`src/lib/phone-pairing.ts`):
 
@@ -69,6 +69,12 @@ How it fits together (`src/lib/phone-pairing.ts`):
   own pairing code (`ServerPairingCard`) on a Cloud home, and any other
   server's pairing code only for a session that may make one (the owner on
   that machine or an admin session, where pairing codes are on).
+- On this computer, when the verified snapshot shows a paid plan (any tier)
+  and a Ready Cloud, the menu has two **Connect your phone** lines: *to your
+  Cloud (always on)* first, which does what **Use your Cloud on your phone**
+  does, then *to this computer*. A paid plan whose Cloud is not Ready keeps
+  the single *to this computer* line, with a note that the Cloud will show
+  there. A failed switch opens Settings → OMB Cloud.
 - **Use your Cloud on your phone** shows for a paid plan. With a Ready Cloud it
   calls `cloud-account:connectHomeForPhone`, which takes no arguments and
   connects as **Connect to my Cloud** does, adding the one fixed request

@@ -244,6 +244,8 @@
   "sidebar.menu.connectPhone": "Connecter votre téléphone",
   "sidebar.menu.connectPhone.computer": "à cet ordinateur",
   "sidebar.menu.connectPhone.cloud": "à votre Cloud",
+  "sidebar.menu.connectPhone.cloudAlwaysOn": "à votre Cloud (toujours actif)",
+  "sidebar.menu.connectPhone.cloudNotReady": "Votre Cloud apparaîtra ici dès qu’il sera prêt.",
   "sidebar.menu.connectPhone.server": "à ce serveur",
   "sidebar.menu.getPhoneApp": "Obtenir l’app mobile",
   "phoneApp.title": "Obtenir l’app mobile",

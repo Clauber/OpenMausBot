@@ -244,6 +244,8 @@
   "sidebar.menu.connectPhone": "スマートフォンを接続",
   "sidebar.menu.connectPhone.computer": "このコンピュータへ",
   "sidebar.menu.connectPhone.cloud": "あなたの Cloud へ",
+  "sidebar.menu.connectPhone.cloudAlwaysOn": "あなたの Cloud へ（常時稼働）",
+  "sidebar.menu.connectPhone.cloudNotReady": "Cloud の準備ができると、ここに表示されます。",
   "sidebar.menu.connectPhone.server": "このサーバーへ",
   "sidebar.menu.getPhoneApp": "スマートフォンアプリを入手",
   "phoneApp.title": "スマートフォンアプリを入手",

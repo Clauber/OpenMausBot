@@ -324,6 +324,8 @@
   "sidebar.menu.connectPhone": "Telefon verbinden",
   "sidebar.menu.connectPhone.computer": "mit diesem Computer",
   "sidebar.menu.connectPhone.cloud": "mit deiner Cloud",
+  "sidebar.menu.connectPhone.cloudAlwaysOn": "mit deiner Cloud (immer an)",
+  "sidebar.menu.connectPhone.cloudNotReady": "Deine Cloud erscheint hier, sobald sie bereit ist.",
   "sidebar.menu.connectPhone.server": "mit diesem Server",
   "sidebar.menu.getPhoneApp": "Telefon-App holen",
   "phoneApp.title": "Telefon-App holen",

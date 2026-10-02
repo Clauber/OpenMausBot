@@ -244,6 +244,8 @@
   "sidebar.menu.connectPhone": "अपना फ़ोन कनेक्ट करें",
   "sidebar.menu.connectPhone.computer": "इस कंप्यूटर से",
   "sidebar.menu.connectPhone.cloud": "अपने Cloud से",
+  "sidebar.menu.connectPhone.cloudAlwaysOn": "अपने Cloud से (हमेशा चालू)",
+  "sidebar.menu.connectPhone.cloudNotReady": "आपका Cloud तैयार होते ही यहाँ दिखेगा।",
   "sidebar.menu.connectPhone.server": "इस सर्वर से",
   "sidebar.menu.getPhoneApp": "फ़ोन ऐप पाएँ",
   "phoneApp.title": "फ़ोन ऐप पाएँ",
