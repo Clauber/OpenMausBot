@@ -1,6 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it, vi } from "vitest";
 
 import {
+  phoneMenuItems,
   profileInitials,
   profileLabel,
   updateBusy,
@@ -8,7 +11,9 @@ import {
   updateLabel,
   updatePhase,
 } from "./SidebarProfileMenu";
-import { DOCS_URL, FEEDBACK_URL, HELP_CENTER_URL, platformLabel } from "@/lib/app-links";
+import { ANDROID_APK_URL, DOCS_URL, FEEDBACK_URL, HELP_CENTER_URL, IOS_APP_STORE_URL, platformLabel } from "@/lib/app-links";
+import { connectPhoneEntry, type PhonePairingAccess } from "@/lib/phone-pairing";
+import { PHONE_APPS, PhoneAppDialog } from "./PhoneAppDialog";
 import type { UpdaterState } from "@/lib/updater";
 
 const state = (patch: Partial<UpdaterState>): UpdaterState => ({ status: "idle", ...patch }) as UpdaterState;
@@ -165,5 +170,84 @@ describe("outward links", () => {
 
   it("sends Send Feedback to the Discord community", () => {
     expect(FEEDBACK_URL).toBe("https://discord.gg/9Wb8MEpXRs");
+  });
+});
+
+describe("the phone entries", () => {
+  const admin: PhonePairingAccess = { session: { kind: "session", id: "s", label: "Mac", scopes: ["admin", "client"], expiresAt: 1 }, pairingCodes: true };
+  const chatOnly: PhonePairingAccess = { session: { kind: "session", id: "s", label: "Phone", scopes: ["client"], expiresAt: 1 }, pairingCodes: true };
+  const items = (entry: ReturnType<typeof connectPhoneEntry>, connected = false) => {
+    const onConnect = vi.fn(), onGetApp = vi.fn();
+    return { list: phoneMenuItems({ entry, connected, onConnect, onGetApp }), onConnect, onGetApp };
+  };
+  const shown = (entry: ReturnType<typeof connectPhoneEntry>) => items(entry).list.map((item) => [item.label, item.subtitle ?? null]);
+
+  it("on this computer: Connect your phone, to this computer, then Get the phone app", () => {
+    expect(shown(connectPhoneEntry("computer", null))).toEqual([["Connect your phone", "to this computer"], ["Get the phone app", null]]);
+  });
+
+  it("on the person's own Cloud: Connect your phone, to your Cloud", () => {
+    expect(shown(connectPhoneEntry("cloud", admin))).toEqual([["Connect your phone", "to your Cloud"], ["Get the phone app", null]]);
+  });
+
+  it("on another server: to this server, and gone for a session that cannot make a pairing code", () => {
+    expect(shown(connectPhoneEntry("server", admin))).toEqual([["Connect your phone", "to this server"], ["Get the phone app", null]]);
+    expect(shown(connectPhoneEntry("server", chatOnly))).toEqual([["Get the phone app", null]]);
+    expect(shown(connectPhoneEntry("server", { ...admin, pairingCodes: false }))).toEqual([["Get the phone app", null]]);
+    expect(shown(connectPhoneEntry("cloud", chatOnly))).toEqual([["Get the phone app", null]]);
+  });
+
+  it("never offers the iOS-only entry it replaced", () => {
+    for (const entry of [connectPhoneEntry("computer", null), null]) {
+      expect(items(entry).list.map((item) => item.label)).not.toContain("Get OpenMausBot for iOS");
+    }
+  });
+
+  it("each opens its own thing", () => {
+    const { list, onConnect, onGetApp } = items(connectPhoneEntry("computer", null));
+    list[0]!.onSelect();
+    expect(onConnect).toHaveBeenCalledOnce();
+    expect(onGetApp).not.toHaveBeenCalled();
+    list[1]!.onSelect();
+    expect(onGetApp).toHaveBeenCalledOnce();
+  });
+
+  it("shows this computer's live phone, and only for this computer", () => {
+    expect(items(connectPhoneEntry("computer", null), true).list[0]!.trailing).toBeTruthy();
+    expect(items(connectPhoneEntry("computer", null), false).list[0]!.trailing).toBeUndefined();
+    expect(items(connectPhoneEntry("cloud", admin), true).list[0]!.trailing).toBeUndefined();
+  });
+});
+
+describe("Get the phone app", () => {
+  it("offers iPhone and Android with the links the website and Cloud page use", () => {
+    expect(PHONE_APPS.map((app) => [app.id, app.url])).toEqual([["ios", IOS_APP_STORE_URL], ["android", ANDROID_APK_URL]]);
+    expect(IOS_APP_STORE_URL).toBe("https://apps.apple.com/in/app/mausbot/id6803387923");
+    expect(ANDROID_APK_URL).toBe("https://github.com/milind-soni/OpenMausBot/releases/download/android-v1.5.0/OpenMausBot.apk");
+  });
+
+  const render = (onConnect?: () => void) => {
+    vi.stubGlobal("window", { addEventListener: () => {}, removeEventListener: () => {} });
+    try {
+      return renderToStaticMarkup(createElement(PhoneAppDialog, { open: true, onClose: () => {}, onConnect }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  };
+
+  it("draws a code to scan for each, and points on to Connect your phone where this window can pair", () => {
+    const html = render(() => {});
+    expect(html).toContain('data-phone-app="ios"');
+    expect(html).toContain('data-phone-app="android"');
+    expect(html.match(/<svg/g)?.length).toBe(2);
+    expect(html).toContain("Open in the App Store");
+    expect(html).toContain("Download the APK");
+    expect(html).toContain("Connect your phone");
+    // nothing to pair with here: the dialog only says where the app is
+    expect(render()).not.toContain("Connect your phone");
+  });
+
+  it("is not drawn while closed", () => {
+    expect(renderToStaticMarkup(createElement(PhoneAppDialog, { open: false, onClose: () => {} }))).toBe("");
   });
 });

@@ -8,10 +8,15 @@
 //
 // The update entry is the one item that reports progress in place, so it
 // keeps the menu open and re-labels itself as it works.
+//
+// The phone has two entries: Connect your phone, which opens the pairing
+// this window can do and says where the phone will connect (this computer,
+// your Cloud, this server), and Get the phone app (iPhone and Android).
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowDownToLine,
   Check,
+  Download,
   Info,
   HelpCircle,
   Keyboard,
@@ -24,6 +29,7 @@ import {
 import { InitialsAvatar } from "./Avatar";
 import { DiscordIcon } from "./DiscordIcon";
 import { AboutDialog } from "./AboutDialog";
+import { PhoneAppDialog } from "./PhoneAppDialog";
 import { SidebarPopoverMenu, type SidebarMenuItem } from "./SidebarPopoverMenu";
 import { ShortcutHint } from "./ShortcutHint";
 import { phoneSettingsAction, useSidebarPhoneStatus } from "./SidebarPhoneButton";
@@ -32,6 +38,13 @@ import { useUpdaterState, type UpdaterState } from "@/lib/updater";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import { FEEDBACK_URL, HELP_CENTER_URL, openExternalLink } from "@/lib/app-links";
+import {
+  connectPhoneEntry,
+  currentPhonePairingTarget,
+  loadPhonePairingAccess,
+  type ConnectPhoneEntry,
+  type PhonePairingAccess,
+} from "@/lib/phone-pairing";
 
 /** "Milind Soni" → "MS", "milind" → "M", "you@x.dev" → "Y", unset → "?" */
 export function profileInitials(profile?: { name?: string; email?: string }): string {
@@ -187,27 +200,82 @@ function useUpdateItem(): UpdateEntry | null {
   };
 }
 
+/** Connect your phone for this window, once it is known whether this
+ * session may pair one. This computer's own phone flow needs no asking. */
+function useConnectPhoneEntry(cloudHome: boolean): ConnectPhoneEntry | null {
+  const target = currentPhonePairingTarget(cloudHome);
+  const [access, setAccess] = useState<PhonePairingAccess | null>(null);
+  useEffect(() => {
+    if (target === "computer") return;
+    let alive = true;
+    void loadPhonePairingAccess().then((next) => {
+      if (alive) setAccess(next);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [target]);
+  return connectPhoneEntry(target, access);
+}
+
+/** The two phone entries at the top of the menu. Connect your phone is
+ * absent where this window cannot pair one (a chat-only session, a server
+ * whose people sign in through their organization). */
+export function phoneMenuItems({
+  entry,
+  connected,
+  onConnect,
+  onGetApp,
+}: {
+  entry: ConnectPhoneEntry | null;
+  /** a phone is connected to this computer right now */
+  connected: boolean;
+  onConnect: () => void;
+  onGetApp: () => void;
+}): SidebarMenuItem[] {
+  return [
+    ...(entry
+      ? [{
+          key: "connect-phone",
+          label: t("sidebar.menu.connectPhone"),
+          subtitle: t(entry.subtitleKey),
+          icon: <Smartphone size={18} />,
+          trailing:
+            entry.target === "computer" && connected ? (
+              <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-success" />
+            ) : undefined,
+          onSelect: onConnect,
+        } satisfies SidebarMenuItem]
+      : []),
+    {
+      key: "phone-app",
+      label: t("sidebar.menu.getPhoneApp"),
+      icon: <Download size={18} />,
+      onSelect: onGetApp,
+    },
+  ];
+}
+
 export function SidebarProfileMenu() {
   const { state, dispatch } = useStore();
   const phone = useSidebarPhoneStatus();
+  const connectPhone = useConnectPhoneEntry(state.config?.cloudHome === true);
   const update = useUpdateItem();
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [phoneAppOpen, setPhoneAppOpen] = useState(false);
   const triggerRef = useRef<HTMLSpanElement>(null);
 
   const profile = state.config?.profile;
   const name = profileLabel(profile);
+  const openPhonePairing = () => dispatch(phoneSettingsAction());
 
   const items: SidebarMenuItem[] = [
-    {
-      key: "phone",
-      label: phone.pairedCount ? t("sidebar.menu.yourPhone") : t("sidebar.menu.getIos"),
-      icon: <Smartphone size={18} />,
-      trailing:
-        phone.kind === "connected" ? (
-          <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-success" />
-        ) : undefined,
-      onSelect: () => dispatch(phoneSettingsAction()),
-    },
+    ...phoneMenuItems({
+      entry: connectPhone,
+      connected: phone.kind === "connected",
+      onConnect: openPhonePairing,
+      onGetApp: () => setPhoneAppOpen(true),
+    }),
     {
       key: "settings",
       label: t("sidebar.menu.settings"),
@@ -280,6 +348,11 @@ export function SidebarProfileMenu() {
         )}
       />
       <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
+      <PhoneAppDialog
+        open={phoneAppOpen}
+        onClose={() => setPhoneAppOpen(false)}
+        onConnect={connectPhone ? openPhonePairing : undefined}
+      />
     </>
   );
 }

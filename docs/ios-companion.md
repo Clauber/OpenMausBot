@@ -6,6 +6,24 @@ credentials, SQLite data, transcripts, and computers. The iPhone trusts a Mac
 by scanning the QR code shown in desktop **Settings → Remote access**; it does not need
 an OpenMausBot account of its own.
 
+## Use your Cloud on your phone
+
+With OMB Cloud, pair the phone with your Cloud instead of your computer, and
+it keeps working while the computer is off.
+
+1. In the desktop app, open the menu under your name and choose **Get the
+   phone app**: the App Store for iPhone, or the APK for Android. Scan its code
+   with the phone's camera.
+2. Open your Cloud in the app window: **Settings → OMB Cloud → Use your Cloud
+   on your phone** (or **Server → My Cloud** in the menu bar).
+3. Open the menu under your name again and choose **Connect your phone**. It
+   reads *to your Cloud*. Choose **Create pairing code** and scan the QR code
+   with the phone app.
+
+On your computer the same entry reads *to this computer* and pairs the phone
+with that computer instead. On another server it pairs with that server, and it
+is shown only to a session allowed to make pairing codes there.
+
 ## Current status
 
 The first version includes:
