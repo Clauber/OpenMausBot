@@ -124,7 +124,7 @@ import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
 import { buildRecall } from "./recall.ts";
 import { createMemoryUpkeep, upkeepEnabled } from "./memory-upkeep.ts";
 import { appendAboutMe, commitLearned, planLearned } from "./profile-learned.ts";
-import { canAccessTeam, canReachPeer, coordinatorSupervises, livePeerRoster, livePeerRosterBlock, peerAllowed, peerName, peerRosterSystemPrompt, peerStatus, peerStatusWords, reachablePeers, resolveTeammate, roomPeerRosterSystemPrompt, roomRosterLine, teammateAvailabilityPrompt, PEER_ACCESS_HELP } from "./peer-roster.ts";
+import { canAccessTeam, canReachPeer, coordinatorSupervises, livePeerRoster, livePeerRosterBlock, peerAllowed, peerName, peerRosterSystemPrompt, peerStatus, peerStatusWords, reachablePeers, resolveTeammate, roomPeerRosterSystemPrompt, roomRosterLine, PEER_ACCESS_HELP } from "./peer-roster.ts";
 import {
   containerComputerAction,
   containerComputerExists,
@@ -428,6 +428,7 @@ import {
   ROUTINE_EXECUTION_PROMPT,
   WEBHOOK_PROMPT,
   resolveComputerPromptKind,
+  teamAvailabilityPart,
 } from "./system-prompt.ts";
 import { readCuaConnection, readCuaUnavailableReason, gatedLocalComputer } from "./local-computer.ts";
 import {
@@ -3840,7 +3841,7 @@ function previewSystemPrompt(bot: BotRecord) {
     { id: "profile", label: "Profile changes", text: agentsMounted ? PROFILE_PROMPT : "" },
     { id: "section-context", label: "Section context", text: sectionContextSystemPrompt(bot.section) },
     { id: "team-memory", label: "Team memory", text: teamMemory.systemPrompt(bot.section) + (agentsMounted ? TEAM_MEMORY_PROMPT : "") },
-    { id: "availability", label: "Team availability", text: agentsMounted && coordination ? teammateAvailabilityPrompt(peers) : "" },
+    teamAvailabilityPart(agentsMounted && coordination ? peers : []),
     { id: "memory", label: "Memory", text: memorySystemPrompt(bot.id, { managedWrites: agentsMounted, fileTools: Boolean(privateWorkspace), enabled: bot.memoryEnabled !== false }) },
     { id: "skills", label: "Skills index", text: privateWorkspace ? skillsSystemPrompt(bot.id, skillsLibraryEnabled(cfg) ? bot.assignedSkills : undefined) : "" },
   ]);
@@ -10486,7 +10487,7 @@ async function startTurn(
         { id: "team-memory", label: "Team memory", text: teamMemory.systemPrompt(bot.section) + (integrations.agents ? TEAM_MEMORY_PROMPT : "") },
         // who on the team roster is busy right now; volatile, so a teammate
         // starting or finishing work never changes the stable half
-        { id: "availability", label: "Team availability", text: coordinationPrompt ? teammateAvailabilityPrompt(sectionPeers) : "" },
+        teamAvailabilityPart(coordinationPrompt ? sectionPeers : []),
         // what the bot said lately in its other conversations, so a task
         // never redoes — or forgets — what another one already did
         { id: "recent", label: "Recent work", text: recentWorkPrompt(recentWork(recentWorkSources(bot), bot, { userName: cfg.profile?.name?.trim() || "User", currentThreadId: threadId, ...recentWorkFilter() })) },
@@ -12822,7 +12823,7 @@ async function runGroupMemberTurn(
     { id: "cloud-home", label: "OMB Cloud", text: CLOUD_HOME ? cloudHomePrompt(Boolean(integrations.agents) && lendingEnabled()) : "" },
     { id: "browser", label: "Browser", text: integrations.browser ? BUILT_IN_BROWSER_SYSTEM_PROMPT : "" },
     { id: "recall", label: "Recall", text: integrations.agents && bot.memoryEnabled !== false ? SESSION_SEARCH_SYSTEM_PROMPT : "" },
-    { id: "availability", label: "Team availability", text: teammateAvailabilityPrompt(outsideRoom) },
+    teamAvailabilityPart(outsideRoom),
     { id: "recent", label: "Recent work", text: recentWorkPrompt(recentLines) },
     { id: "section-context", label: "Section context", text: sectionContextSystemPrompt(bot.section) },
     { id: "team-memory", label: "Team memory", text: teamMemory.systemPrompt(bot.section) + (integrations.agents ? TEAM_MEMORY_PROMPT : "") },

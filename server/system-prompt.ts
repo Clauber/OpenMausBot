@@ -6,6 +6,7 @@
 // The sentences that both the direct-turn and room-turn paths use live
 // here too, so neither path can drift from the other or from the preview.
 import { soulSystemPrompt } from "./bot-folder.ts";
+import { teammateAvailabilityPrompt, type RosterMember } from "./peer-roster.ts";
 import type { ConnectorToolGrant } from "../shared/wire.ts";
 
 export type PromptPart = { id: string; label: string; text: string };
@@ -32,6 +33,15 @@ export function userProfileSystemPrompt(profile?: { aboutMe?: string }): string 
  * turn that tagged a bot, and recent work did it on every turn of an active
  * bot, because its "2h ago" labels drift even when nothing else changed. */
 const VOLATILE_SECTIONS = new Set(["memory", "mentions", "outstanding", "recent", "availability"]);
+
+/** The team availability section, defined once for the direct turn, the room
+ * turn and the preview. Its id is what puts it in the volatile half: a call
+ * site that spelled it differently would put it back in the stable half,
+ * where one teammate starting work relaunches the engine. An empty team
+ * gives an empty section. */
+export function teamAvailabilityPart(team: readonly RosterMember[]): PromptPart {
+  return { id: "availability", label: "Team availability", text: teammateAvailabilityPrompt(team) };
+}
 
 export function buildSystemPrompt(
   persona: string,

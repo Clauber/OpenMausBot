@@ -21,7 +21,7 @@ import {
   type RosterMember,
 } from "./peer-roster.ts";
 import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
-import { buildSystemPrompt } from "./system-prompt.ts";
+import { buildSystemPrompt, teamAvailabilityPart } from "./system-prompt.ts";
 
 import type { LivePeer } from "./peer-roster.ts";
 
@@ -341,7 +341,8 @@ describe("teammate availability stays out of the cached prompt half", () => {
   // The stable half keys engine reuse: a change there relaunches Claude, makes
   // Codex re-send its developer instructions and makes ACP and pi re-send the
   // whole prompt. A teammate starting or finishing work is not a reason for
-  // any of that, so availability rides its own volatile section.
+  // any of that, so availability rides its own volatile section. The section
+  // is the same teamAvailabilityPart every real turn and the preview use.
   const team = (quill: Pick<RosterMember, "busy" | "activity">): RosterMember[] => [
     { id: "chief", name: "Atlas", section: "Work", chiefOfStaff: true },
     { id: "writer", name: "Quill", title: "Writer", description: "Drafts concise copy", section: "Work", ...quill },
@@ -353,7 +354,7 @@ describe("teammate availability stays out of the cached prompt half", () => {
     const chiefTeam = reachablePeers(bots, bots[0]!);
     const build = (coordination: string, members: RosterMember[]) => buildSystemPrompt("persona", "", [
       { id: "coordination", label: "Team", text: ` ${coordination}` },
-      { id: "availability", label: "Teammate availability", text: teammateAvailabilityPrompt(members) },
+      teamAvailabilityPart(members),
     ]);
     return {
       peer: build(peerRosterSystemPrompt(peers, true), peers),
