@@ -68,6 +68,27 @@ final class DecodingTests: XCTestCase {
         XCTAssertNil(fleet.bots.first?.hasMore)
     }
 
+    func testDecodesAnActivityPage() throws {
+        // A fixture harness has run no tools, so the page is empty; the shape
+        // is what matters, and an empty list must decode, not fail.
+        let page = try decode(ActivityPage.self, "bot-activity")
+        XCTAssertEqual(page.rows, [])
+    }
+
+    func testDecodesTeamMemory() throws {
+        let page = try decode(TeamMemoryPage.self, "team-memory")
+        XCTAssertEqual(page.section, "")
+        XCTAssertEqual(page.label, "General")
+        XCTAssertEqual(page.entries.map(\.kind), ["person", "place", "decision", "term"])
+        let ada = try XCTUnwrap(page.entries.first)
+        XCTAssertEqual(ada.name, "Ada Lovelace")
+        XCTAssertEqual(ada.aliases, ["Ada"])
+        XCTAssertEqual(ada.status, "accepted")
+        // the person's own entries carry no bot
+        XCTAssertEqual(ada.source.botName, "you")
+        XCTAssertGreaterThan(ada.updatedAt, 0)
+    }
+
     func testDecodesABotOverview() throws {
         let overview = try decode(BotOverview.self, "bot-overview")
         XCTAssertEqual(overview.who.name, "Kiwi")
@@ -466,6 +487,26 @@ final class DecodingTests: XCTestCase {
         var dismissed = card
         dismissed.dismissed = true
         XCTAssertFalse(dismissed.isPending)
+    }
+
+    func testAnExpiredProposalIsNotPending() throws {
+        // The shape the computer leaves when a routine, profile or team
+        // setup proposal goes stale: no answer, no dismissal, no options.
+        // Counting it as pending left a "waiting on you" card with nothing
+        // to tap, stuck in the chat and in Needs you for good (MOCA-282).
+        let json = """
+        {
+          "id": "m2", "role": "bot", "kind": "options", "at": 1786742413762,
+          "card": {
+            "title": "Create routine?", "subtitle": "Every morning at 8",
+            "options": [], "requestId": "req-2", "tool": "create_routine",
+            "expired": true, "held": "This proposal changed after it was made."
+          }
+        }
+        """
+        let card = try XCTUnwrap(try JSONDecoder().decode(Message.self, from: Data(json.utf8)).card)
+        XCTAssertEqual(card.expired, true)
+        XCTAssertFalse(card.isPending, "nothing can answer an expired proposal")
     }
 
     func testDecodesAReviewedSkillRequest() throws {
