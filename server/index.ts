@@ -218,6 +218,7 @@ import {
   type RuntimeEvent,
   type SteerOutcome,
   newId,
+  usesCloudComputer,
 } from "./contracts.ts";
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
 import { recoveryCapabilityError } from "./automatic-recovery.ts";
@@ -6942,7 +6943,7 @@ async function selectableComputers(bot: BotRecord) {
             status.image && status.imageMatches && status.network === "private" && status.mounts === "none" && status.security === "hardened");
           canCreate = Boolean(status?.configured && status.daemonUp && status.container === "missing");
           reason = status?.problem ?? reason;
-        } else if (boat.boatConfigured(cfg) && (caps?.usesCloudComputer === true || registry.instances().some(instance => instance.driverKind === "boxAgent"))) {
+        } else if (boat.boatConfigured(cfg) && ((caps !== undefined && usesCloudComputer(caps)) || registry.instances().some(instance => instance.driverKind === "boxAgent"))) {
           const status = await boat.boatStatus(cfg, bot.id);
           const lifecycle = boat.boatTurnLifecycleAction({ explicitCloud: true, canMount: true, state: status.box?.state ?? null });
           ready = lifecycle === "attach";
@@ -10166,15 +10167,15 @@ async function startTurn(
       // bridge may also reuse an already-ready Boat on Auto.
       if (teamComputer) {
         const attached = await attachTeamBoat(teamComputer, bot.id, resourceOwner,
-          instance.adapter.capabilities.usesCloudComputer === true, instance.adapter.capabilities.remoteAgent === true);
+          usesCloudComputer(instance.adapter.capabilities), instance.adapter.capabilities.remoteAgent === true);
         integrations.computer = attached.integration;
         previewCapture = attached.capture;
         computerKind = "box";
       }
-      if (!teamComputer && instance.adapter.capabilities.usesCloudComputer === true && (wants === "cloud" || wants === undefined) && cloudBackend === "box" && boat.boatConfigured(cfg)) {
+      if (!teamComputer && usesCloudComputer(instance.adapter.capabilities) && (wants === "cloud" || wants === undefined) && cloudBackend === "box" && boat.boatConfigured(cfg)) {
         const attached = await attachBotBoat(bot, resourceOwner, {
           explicitCloud: wants === "cloud",
-          canMount: instance.adapter.capabilities.usesCloudComputer === true,
+          canMount: usesCloudComputer(instance.adapter.capabilities),
           remoteAgent: instance.adapter.capabilities.remoteAgent === true,
         });
         if (attached) {
@@ -10482,7 +10483,6 @@ async function startTurn(
         startupRecovery: cfg.automaticRecovery?.enabled === true &&
           (opts?.automaticRecoveryIndex ?? 0) < ((liveBot ?? bot).fallback?.length || (cfg.automaticRecovery.backup ? 1 : 0)),
         text: withRecalled(recalled, dispatchContext.turnText),
-        refreshSystemPrompt: true,
         images: turnImages,
         approvalMode: approvalModeForTurn(bot, commsDepth > 0, threadId),
         toolScope,
@@ -12545,7 +12545,7 @@ async function runGroupMemberTurn(
 
   if (roomTeamComputer) {
     const attached = await attachTeamBoat(roomTeamComputer, readyBot.id, resourceOwner,
-      instance.adapter.capabilities.usesCloudComputer === true, instance.adapter.capabilities.remoteAgent === true);
+      usesCloudComputer(instance.adapter.capabilities), instance.adapter.capabilities.remoteAgent === true);
     if (isCancelled?.() || groupSpeakers.get(threadId) !== roomSpeaker ||
         activeInternalGenerationByThread.get(threadId) !== internalGeneration) return false;
     integrations.computer = attached.integration;
@@ -12587,7 +12587,7 @@ async function runGroupMemberTurn(
       if (!boat.boatConfigured(cfg)) throw new Error(BOAT_NOT_CONFIGURED);
       const remoteAgent = instance.adapter.capabilities.remoteAgent === true;
       const attached = await attachBotBoat(readyBot, resourceOwner, { explicitCloud: true,
-        canMount: instance.adapter.capabilities.usesCloudComputer === true, remoteAgent });
+        canMount: usesCloudComputer(instance.adapter.capabilities), remoteAgent });
       if (!roomSetupIsCurrent()) return false;
       if (!attached?.integration) throw new Error("the cloud computer could not be created or reached");
       integrations.computer = attached.integration;
@@ -12874,7 +12874,6 @@ async function runGroupMemberTurn(
         threadId,
         botId: readyBot.id,
         text: withRecalled(roomRecalled, text),
-        refreshSystemPrompt: true,
         images: turnImages,
         approvalMode: roomTurnApprovalMode(readyBot, threadId, orchestration),
         toolScope: toolScopeForTurn(readyBot.id),
