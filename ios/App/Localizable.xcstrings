@@ -5624,6 +5624,26 @@
           }
         }
       }
+    },
+    "Everyone in this room": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Todos nesta sala"
+          }
+        }
+      }
+    },
+    "Mention someone": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mencionar alguém"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
