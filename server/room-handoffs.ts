@@ -226,17 +226,10 @@ export class RoomHandoffs {
     if (path.some(n => n.botId === target.botId && (!n.groupId || !target.groupId || n.groupId === target.groupId))) {
       throw new Error("Cannot assign work back to an ancestor; results return automatically");
     }
+    // The caller derives the key from the request itself (destination,
+    // text, recipient), so under one parent the same key is the same request.
     const existing = this.children(parent.id).find(n => n.key === key);
-    if (existing) {
-      if (existing.groupId !== target.groupId || existing.botId !== target.botId || existing.text !== text ||
-        existing.kind !== kind || existing.requestBatchKey !== requestBatchKey) throw new Error("request_key was already used for different work");
-      return { node: existing, duplicate: true };
-    }
-    if (requestBatchKey && target.groupId) {
-      const batch = this.children(parent.id).filter(n => n.requestBatchKey === requestBatchKey && n.groupId === target.groupId);
-      if (batch.some(n => n.text !== text || n.threadId !== target.threadId)) throw new Error("request_key was already used for different room work");
-      if (batch.some(n => n.startedAt !== undefined)) throw new Error("This shared room request has already started; use a new request_key for additional recipients");
-    }
+    if (existing) return { node: existing, duplicate: true };
     if (!rework && this.children(parent.id).some(n => n.kind === kind &&
       n.groupId === target.groupId && n.botId === target.botId && n.status === "completed")) {
       throw new Error("This agent already completed your assignment. Do not send acknowledgements or approvals as new work. Finish with your decision; results return automatically. Only use rework=true for concrete additional work.");

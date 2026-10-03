@@ -249,15 +249,14 @@ const toolDefinitions = (externalRuntime: boolean) => [
   },
   {
     name: "coordinate_bots",
-    description: "Ask existing OpenMausBot teammates for advice or assign concrete work. From normal chat each distinct assignment starts a fresh thread for that teammate; from a room it defaults to this room. Give a self-contained brief. Use group_id from list_room_targets for a specific room. Give 1-4 bot_ids — teammate ids as list_bots or your roster prints them; a unique teammate name also resolves: they receive only your brief and use their own model, tools and permissions. Busy bots queue. They can consult their specialists; all results return here and resume you automatically. Include exact file paths, constraints and what must be verified. After sending all assignments, END your turn; do not poll or wait. On return, resolve tradeoffs, verify the requested outcome and request concrete corrections if necessary before giving one final answer. Do not send acknowledgements as new work.",
+    description: "Ask existing OpenMausBot teammates for advice or assign concrete work. In a room it defaults to this room. Outside a room, all you send a teammate from this conversation goes to your one thread with them, so they keep the earlier context; if they are busy, it runs next. Give a self-contained first brief. Use group_id from list_room_targets for a specific room. Give 1-4 bot_ids — teammate ids as list_bots or your roster prints them; a unique teammate name also resolves: they receive only your brief and use their own model, tools and permissions. Busy bots queue. They can consult their specialists; all results return here and resume you automatically. Include exact file paths, constraints and what must be verified. After sending all assignments, END your turn; do not poll or wait. On return, resolve tradeoffs, verify the requested outcome and request concrete corrections if necessary before giving one final answer. Do not send acknowledgements as new work.",
     inputSchema: { type: "object", additionalProperties: false, properties: {
-      group_id: { type: "string", description: "Optional destination room. Omit for this room, or a fresh thread for each teammate when chatting directly." },
+      group_id: { type: "string", description: "Optional destination room. Omit for this room, or for your one thread with each teammate when chatting directly." },
       bot_ids: { type: "array", items: { type: "string", description: "A teammate's id exactly as list_bots or your roster prints it ([id: …]). A teammate's unique display name also resolves; a name shared by two reachable teammates is refused." }, minItems: 1, maxItems: 4, uniqueItems: true },
       message: { type: "string", minLength: 1, maxLength: 4000, description: "Self-contained question or task for these teammates. Send separate requests when responsibilities differ." },
-      request_key: { type: "string", description: "A short unique assignment key. Reuse for an identical retry." },
       rework: { type: "boolean", description: "True only for concrete additional work from someone who already completed a request." },
-      label: { type: "string", description: "Optional short name (one line, at most 60 characters) for this job. Names the new direct assignment thread." },
-    }, required: ["bot_ids", "message", "request_key"] },
+      label: { type: "string", description: "Optional short name (one line, at most 60 characters) for a new thread with this teammate." },
+    }, required: ["bot_ids", "message"] },
   },
   {
     name: "send_to_bot",
@@ -835,7 +834,7 @@ const VOICE_TOOL_NAMES = new Set(["send_voice_note"]);
 // Ordinary direct chats use this same bounded coordinator. Goal-owned turns
 // retain their independent loop and cannot start a second coordinator.
 const ROOM_ONLY_TOOLS = new Set(["list_room_targets", "coordinate_bots", "send_to_bot"]);
-const ROOM_REPLACED_TOOLS = new Set(["ask_bot", "delegate_bot", "check_delegation", "wait_delegation", "start_thread", "send_to_thread", "wait_thread"]);
+const ROOM_REPLACED_TOOLS = new Set(["ask_bot", "delegate_bot", "check_delegation", "wait_delegation", "start_thread"]);
 const EXTERNAL_TOOL_NAMES = new Set(["list_bots", "ask_bot", "delegate_bot", "check_delegation", "wait_delegation"]);
 const WATCHER_TOOL_NAMES = new Set(["create_options_card"]);
 

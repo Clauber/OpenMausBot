@@ -62,7 +62,6 @@ describe("addressed room request tree", () => {
     expect(first.kind).toBe("work");
     expect(engine.enqueue(source, "turn", undefined, { ...target, threadId: "changed" }, "build", "Build CSV").node.threadId).toBe("lead-task");
     expect(engine.nodes.size).toBe(2);
-    expect(() => engine.enqueue(source, "turn", undefined, target, "build", "Changed work")).toThrow("different work");
     first.status = "running";
     expect(() => engine.enqueue(first, "unused", first.id, { ...source, threadId: "new-chat" }, "cycle", "repeat")).toThrow("ancestor");
     expect(() => engine.enqueue(first, "unused", first.id, { ...source, groupId: "room", threadId: "room-chat" }, "mixed", "repeat")).toThrow("ancestor");
@@ -132,11 +131,10 @@ describe("addressed room request tree", () => {
     local.status = "running";
     expect(() => engine.enqueue(local, "unused", local.id, addr("A"), "loop", "task")).toThrow("ancestor");
   }));
-  it("deduplicates retries, pins the destination thread, and refuses changed work", () => fixture(engine => {
+  it("deduplicates retries and pins the destination thread", () => fixture(engine => {
     const first = engine.enqueue(addr("A"), "turn", undefined, addr("B"), "csv", "build");
     const again = engine.enqueue(addr("A"), "turn", undefined, { ...addr("B"), threadId: "new-active" }, "csv", "build");
     expect(again.duplicate).toBe(true); expect(again.node.id).toBe(first.node.id); expect(again.node.threadId).toBe("B-thread");
-    expect(() => engine.enqueue(addr("A"), "turn", undefined, addr("B"), "csv", "different")).toThrow("different work");
   }));
   it("retains the original request while descendants work and bounds its stored length", () => fixture(engine => {
     engine.enqueue(addr("A"), "turn", undefined, addr("B"), "work", "build", false, false, "original request");
@@ -793,7 +791,7 @@ describe("hard cap expiry digest", () => {
 });
 
 describe("shared room request display", () => {
-  it("shares one identity across recipients and rejects late additions after real dispatch and restart", () => fixture(async (engine, hooks, file) => {
+  it("shares one identity across one call's recipients, before and after dispatch and restart", () => fixture(async (engine, hooks, file) => {
     const source = addr("A");
     const one = engine.enqueue(source, "turn", undefined, addr("B"), "work:b", "Review", false, false, "", "work").node;
     const two = engine.enqueue(source, "turn", undefined, { ...addr("B"), botId: "c" }, "work:c", "Review", false, false, "", "work").node;
@@ -802,15 +800,12 @@ describe("shared room request display", () => {
     engine.tick();
     expect(one.status).toBe("running");
     expect(one.startedAt).toBeDefined();
-    expect(() => engine.enqueue(source, "turn", undefined, { ...addr("B"), botId: "late" }, "work:late", "Review", false, false, "", "work")).toThrow("already started");
     await flush();
     expect(one.status).toBe("completed");
     expect(one.executions).toBe(0); // The root, not this child, owns the execution counter.
     expect(engine.enqueue(source, "turn", undefined, addr("B"), "work:b", "Review", false, false, "", "work").duplicate).toBe(true);
-    expect(() => engine.enqueue(source, "turn", undefined, { ...addr("B"), botId: "late" }, "work:late", "Review", false, false, "", "work")).toThrow("already started");
     const restarted = new RoomHandoffs(file, hooks);
     expect(restarted.sharedRequest(restarted.nodes.get(two.id)!)).toEqual(engine.sharedRequest(two));
-    expect(() => restarted.enqueue(source, "turn", undefined, { ...addr("B"), botId: "late" }, "work:late", "Review", false, false, "", "work")).toThrow("already started");
     expect(restarted.sharedRequest(restarted.nodes.get(one.id)!)).toEqual({ id: one.id, botIds: [one.botId, two.botId] });
   }));
   it("does not merge different requests, conversations, senders or direct assignments", () => fixture(engine => {
@@ -820,7 +815,5 @@ describe("shared room request display", () => {
     const d = engine.enqueue(addr("A"), "turn", undefined, addr("D"), "one:d", "Review", false, false, "", "one").node;
     const direct = engine.enqueue(addr("A"), "turn", undefined, { botId: "direct", threadId: "direct" }, "one:direct", "Review").node;
     for (const node of [a,b,c,d,direct]) expect(engine.sharedRequest(node)).toEqual({ id: node.id, botIds: [node.botId] });
-    expect(() => engine.enqueue(addr("A"), "turn", undefined, { ...addr("B"), botId: "different" }, "one:different", "Changed", false, false, "", "one")).toThrow("different room work");
-    expect(() => engine.enqueue(addr("A"), "turn", undefined, { ...addr("B"), threadId: "new", botId: "different" }, "one:different", "Review", false, false, "", "one")).toThrow("different room work");
   }));
 });
