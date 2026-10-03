@@ -909,17 +909,32 @@ body {
   color: var(--color-ink);
 }
 
+/* Scrollbars: a slim pill in each skin's own --color-scrollbar, never a
+   full-height slab. At rest it is a 2px line, enough to say "this scrolls";
+   with the pointer on it (anywhere across the 8px gutter, since the
+   transparent border is part of the thumb) or while dragged it widens to a
+   6px pill and darkens, as macOS and Windows 11 scrollbars do. The gutter
+   never changes width, so nothing reflows, and the track stays clear, so no
+   gray rail runs down a panel. (Widening on hover of the scrolling area
+   instead, via `*:hover::-webkit-scrollbar-thumb`, does not repaint in
+   Chromium, so it is not used.) */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--color-scrollbar);
-  border-radius: 4px;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+  background-color: var(--color-scrollbar);
 }
+::-webkit-scrollbar-thumb:vertical { min-height: 40px; }
+::-webkit-scrollbar-thumb:horizontal { min-width: 40px; }
 /* the thumb was inert — it never acknowledged the pointer */
-::-webkit-scrollbar-thumb:hover {
-  background: var(--color-raised-hover);
+::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:active {
+  border-width: 1px;
+  background-color: color-mix(in srgb, var(--color-scrollbar) 55%, var(--color-ink));
 }
 ::-webkit-scrollbar-track {
   background: transparent;
