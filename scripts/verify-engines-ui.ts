@@ -29,6 +29,7 @@ const instances: InstanceInfo[] = [
   ["droid", "droidAgent", "Droid", false, ""],
   ["cursor", "cursorAgent", "Cursor", false, ""],
   ["hermes", "hermesAgent", "Hermes", false, ""],
+  ["zcode", "zcodeAgent", "ZCode", false, ""],
   ["qwen", "qwenAgent", "Qwen", false, ""],
   ["pi", "piAgent", "Pi", false, ""],
 ].map(([id, driver, name, ready, version]) => ({

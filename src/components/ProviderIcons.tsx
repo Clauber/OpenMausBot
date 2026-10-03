@@ -127,6 +127,15 @@ export function PiMark({ size = 16, className }: IconProps) {
   );
 }
 
+/** ZCode mark — a plain geometric slab Z for the local zcode harness. */
+export function ZCodeMark({ size = 16, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 800 800" className={cn("fill-[var(--color-ink)]", className)} aria-hidden>
+      <path d="M120 140 H680 V250 L360 550 H680 V660 H120 V550 L440 250 H120 Z" />
+    </svg>
+  );
+}
+
 export function ProviderMark({ driverKind, size, className }: IconProps & { driverKind: string }) {
   switch (driverKind) {
     case "grok":
@@ -152,6 +161,8 @@ export function ProviderMark({ driverKind, size, className }: IconProps & { driv
       return <QwenMark size={size} className={className} />;
     case "hermesAgent":
       return <HermesMark size={size} className={className} />;
+    case "zcodeAgent":
+      return <ZCodeMark size={size} className={className} />;
     case "boxAgent":
       return <ComputerMark size={size} className={className} />;
     case "piAgent":

@@ -1665,11 +1665,13 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     ...API_KEY_FLEET,
     qwen: { driver: "qwenAgent" },
     hermes: { driver: "hermesAgent" },
+    zcode: { driver: "zcodeAgent" },
     pi: { driver: "piAgent" },
   };
   const CUSTOM_ONLY = {
     qwen: { driver: "qwenAgent" },
     hermes: { driver: "hermesAgent" },
+    zcode: { driver: "zcodeAgent" },
     pi: { driver: "piAgent" },
   } as const;
   // New default-fleet engines that existing product configs would otherwise
