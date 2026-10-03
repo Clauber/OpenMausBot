@@ -86,6 +86,9 @@ const MAX_ROOM_POSTS_PER_TURN = 3;
 // deciding. The harness holds the same ceiling; this copy exists so the
 // refusal reaches the model without a round trip.
 const MAX_THREADS_PER_TURN = 5;
+/** How many entries a memory_update reply names when its write moved some
+ * to the archive; the rest are counted. */
+const MOVED_ENTRIES_SHOWN = 5;
 
 const SHORT_WEEKDAYS = {
   mon: "monday",
@@ -1116,7 +1119,13 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     const full = r.truncated
       ? "\nSaved, but the lines that never move out of MEMORY.md (hand-written ones, health and safety facts) fill what loads each session, so the newest entries do not load. Ask the person to trim MEMORY.md in Settings."
       : "";
-    const movedNote = moved.length ? `\nTo stay within what loads each session, moved to memory/archive.md (session_search finds them):\n${moved.join("\n")}` : "";
+    // Named by their first line, a few at most: a file grown far past the
+    // budget by hand can move hundreds in one write.
+    const shown = moved.slice(0, MOVED_ENTRIES_SHOWN).map((text) => text.split("\n")[0]);
+    const more = moved.length > shown.length ? `\n…and ${moved.length - shown.length} more` : "";
+    const movedNote = moved.length
+      ? `\nTo stay within what loads each session, moved ${moved.length === 1 ? "1 older entry" : `${moved.length} older entries`} to memory/archive.md (session_search finds them):\n${shown.join("\n")}${more}`
+      : "";
     return { text: `Memory updated.${entry}${full}${movedNote}` };
   }
   if (name === "retry_thread") {

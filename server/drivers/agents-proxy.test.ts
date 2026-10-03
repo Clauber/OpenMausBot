@@ -91,7 +91,7 @@ let lastSessionSearchUrl = "";
 let lastSessionReadUrl = "";
 let lastMemoryBody: any = null;
 let lastMemoryLogBody: any = null;
-let memoryResponse: unknown = { ok: true, text: "- new fact", truncated: false, bytes: 10 };
+let memoryResponse: unknown = { ok: true, truncated: false };
 let memoryStatus = 200;
 let sessionSearchResponse: unknown = {
   hits: [
@@ -1334,12 +1334,12 @@ describe("agents-proxy MCP surface", () => {
       action: "replace", text: "- New preference", oldText: "- Old preference",
     });
     // the harness echoes the entry it wrote, so the model can replace it later by exact text
-    memoryResponse = { ok: true, text: "- new fact", truncated: false, bytes: 10, entry: '- 2026-09-10 · from chat "Setup" · New preference' };
+    memoryResponse = { ok: true, truncated: false, entry: '- 2026-09-10 · from chat "Setup" · New preference' };
     const echoed = await callTool("memory_update", { action: "supersede", text: "New preference", old_text: "- Old preference" });
     expect(echoed.result.isError).toBe(false);
     expect(echoed.result.content[0].text).toBe('Memory updated. Entry: - 2026-09-10 · from chat "Setup" · New preference');
     expect(lastMemoryBody).toMatchObject({ action: "supersede", text: "New preference", oldText: "- Old preference" });
-    memoryResponse = { ok: true, text: "- new fact", truncated: false, bytes: 10 };
+    memoryResponse = { ok: true, truncated: false };
     const append = await callTool("memory_update", { action: "append", text: "- Another fact" });
     expect(append.result.isError).toBe(false);
     expect(lastMemoryBody).toEqual({
@@ -1370,12 +1370,12 @@ describe("agents-proxy MCP surface", () => {
     expect(stale.result.isError).toBe(true);
     expect(stale.result.content[0].text).toContain("latest memory");
     memoryStatus = 200;
-    memoryResponse = { ok: true, text: "- new fact", truncated: false, bytes: 10 };
+    memoryResponse = { ok: true, truncated: false };
   });
 
   it("memory_update on a full file says what moved to the archive, and stays open however many writes a turn makes", async () => {
     memoryResponse = {
-      ok: true, text: "…", truncated: false, bytes: 23_990,
+      ok: true, truncated: false,
       entry: '- 2026-09-10 · from chat "Setup" · fact 201',
       moved: ["- 2026-08-01 · from chat \"A\" · fact 1"],
     };
@@ -1385,11 +1385,11 @@ describe("agents-proxy MCP surface", () => {
       expect(full.result.isError).toBe(false);
       expect(full.result.content[0].text).toBe(
         'Memory updated. Entry: - 2026-09-10 · from chat "Setup" · fact 201\n' +
-        'To stay within what loads each session, moved to memory/archive.md (session_search finds them):\n- 2026-08-01 · from chat "A" · fact 1',
+        'To stay within what loads each session, moved 1 older entry to memory/archive.md (session_search finds them):\n- 2026-08-01 · from chat "A" · fact 1',
       );
       expect(lastMemoryBody).toMatchObject({ action: "append", text: "fact 201" });
     }
-    memoryResponse = { ok: true, text: "- new fact", truncated: false, bytes: 10 };
+    memoryResponse = { ok: true, truncated: false };
   });
 
   it("memory_log appends to today's log through the harness and says so, never loading it anywhere", async () => {

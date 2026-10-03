@@ -23,6 +23,9 @@ export function alwaysCore(body: string): boolean {
 export interface MemoryEntryLine {
   /** Zero-based line number in the file. */
   line: number;
+  /** One past the entry's last line: the lines under it belong to it. */
+  end: number;
+  /** The dated line alone. */
   raw: string;
   /** `- 2026-09-25 · from chat "X" · ` */
   prefix: string;
@@ -44,19 +47,39 @@ export function untilMark(until: string | undefined): string {
   return until ? ` · until ${until}` : "";
 }
 
+/** A line with an odd number of fences opens or closes a code block. */
+const togglesFence = (line: string) => (line.match(/```/g)?.length ?? 0) % 2 === 1;
+
 /** Every dated entry in a MEMORY.md text, in file order. Hand-written lines
- * without a date are not entries and are never touched by upkeep. */
+ * without a date are not entries and are never touched by upkeep. An entry
+ * also owns the lines under it, up to the next dated line: indented ones
+ * (Markdown's list rule; how an entry with a code block is written) and a
+ * code block it opens, through its closing fence (how such entries were
+ * written before). A fence that never closes claims nothing. */
 export function parseMemoryEntries(text: string): MemoryEntryLine[] {
   const out: MemoryEntryLine[] = [];
-  text.split("\n").forEach((raw, line) => {
+  const lines = text.split("\n");
+  for (let line = 0; line < lines.length;) {
+    const raw = lines[line];
     const m = DATED.exec(raw);
-    if (!m) return;
+    if (!m) {
+      line += 1;
+      continue;
+    }
+    let open = togglesFence(raw);
+    let end = line + 1;
+    for (let next = line + 1; next < lines.length && !DATED.test(lines[next]); next += 1) {
+      if (!open && !/^[ \t]/.test(lines[next]) && !lines[next].startsWith("```")) break;
+      if (togglesFence(lines[next])) open = !open;
+      if (!open) end = next + 1;
+    }
     const rest = m[3];
     const struck = rest.startsWith("~~");
     const until = UNTIL_MARK.exec(rest)?.[1] ?? null;
     const body = rest.replace(TRAILING_MARKS, "").replace(/^~~/, "").replace(/~~$/, "").trim();
-    out.push({ line, raw, prefix: m[1], body, date: m[2], until, struck });
-  });
+    out.push({ line, end, raw, prefix: m[1], body, date: m[2], until, struck });
+    line = end;
+  }
   return out;
 }
 

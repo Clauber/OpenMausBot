@@ -157,11 +157,26 @@ describe("memory_update", () => {
       const result = await callTool("memory_update", { action: "append", text: `note ${i}` }, ctx);
       expect(result.isError, result.text).toBeFalsy();
       expect(result.text).toMatch(new RegExp(`^Memory updated\\. Entry: - \\d{4}-\\d{2}-\\d{2} · from chat "Turn" · note ${i}\\n`));
-      expect(result.text).toContain(`To stay within what loads each session, moved to memory/archive.md (session_search finds them):\n- 2026-09-01 · old ${i}`);
+      expect(result.text).toMatch(new RegExp(`\\nTo stay within what loads each session, moved 1 older entry to memory/archive\\.md \\(session_search finds them\\):\\n- 2026-09-01 · old ${i}$`));
     }
     const text = readMemoryFile(bot).text;
     for (let i = 0; i < 10; i += 1) expect(text).toContain(` · note ${i}\n`);
     expect(readMemoryTopic(bot, "archive.md")).toContain("- 2026-09-01 · old 9 · moved");
+  });
+
+  it("names only the first few entries a write moved, each by its first line, and counts the rest", async () => {
+    const bot = "bot-memory-grown";
+    // a file grown far past the budget by hand: one write moves hundreds
+    const grown = Array.from({ length: 600 }, (_, i) => `- 2026-09-01 · old ${i}`);
+    grown[0] = "- 2026-08-01 · Deploy command:\n  ```sh\n  railway up\n  ```";
+    writeMemoryFile(bot, `${grown.join("\n")}\n`);
+    const result = await callTool("memory_update", { action: "append", text: "one more" }, context({ botId: bot, client: harness(bot) }));
+    expect(result.isError).toBeFalsy();
+    expect(result.text.split("\nTo stay")[1]).toBe(
+      " within what loads each session, moved 401 older entries to memory/archive.md (session_search finds them):\n" +
+      "- 2026-08-01 · Deploy command:\n- 2026-09-01 · old 1\n- 2026-09-01 · old 2\n- 2026-09-01 · old 3\n- 2026-09-01 · old 4\n…and 396 more",
+    );
+    expect(readMemoryTopic(bot, "archive.md")).toContain("- 2026-08-01 · Deploy command: · moved");
   });
 
   it("tells the bot plainly when hand-written lines fill what loads", async () => {

@@ -33,6 +33,7 @@ import {
   memoryLineCount,
   memorySourceLabel,
   MEMORY_ENTRY_MAX_CHARS,
+  MEMORY_ENTRY_MAX_LINES,
   MEMORY_MAX_BYTES,
   MEMORY_MAX_LINES,
   WORKSPACES_DIR,
@@ -186,9 +187,10 @@ describe("workspace", () => {
     // Human editor writes remain the canonical file the next tool update reads,
     // and a file left without a final newline gets exactly one before the entry.
     writeMemoryFile(BOT, "- Edited by the user");
-    expect(updateMemory(BOT, { action: "append", text: "Another thread's fact" }, opts)).toMatchObject({
-      ok: true, text: '- Edited by the user\n- 2026-09-10 · from chat "Setup" · Another thread\'s fact\n', truncated: false,
+    expect(updateMemory(BOT, { action: "append", text: "Another thread's fact" }, opts)).toEqual({
+      ok: true, truncated: false, entry: '- 2026-09-10 · from chat "Setup" · Another thread\'s fact', moved: [],
     });
+    expect(readMemoryFile(BOT).text).toBe('- Edited by the user\n- 2026-09-10 · from chat "Setup" · Another thread\'s fact\n');
   });
 
   it("formats an entry as one dated, sourced line and keeps fenced blocks whole", () => {
@@ -199,8 +201,9 @@ describe("workspace", () => {
     expect(memoryEntry("Deploys on Fridays", { now })).toBe("- 2026-09-10 · Deploys on Fridays");
     // a multi-line note folds onto one line; a title with the separator in it is scrubbed
     expect(memoryEntry("first line\n   second line", { source: 'chat "A · B"', now })).toBe('- 2026-09-10 · from chat "A - B" · first line second line');
+    // a code block keeps its lines, indented under the entry so they belong to it
     const fenced = memoryEntry("Deploy command:\n```sh\nrailway up\n```", { now });
-    expect(fenced).toBe("- 2026-09-10 · Deploy command:\n```sh\nrailway up\n```");
+    expect(fenced).toBe("- 2026-09-10 · Deploy command:\n  ```sh\n  railway up\n  ```");
   });
 
   it("names an entry's source by room, then thread title, then thread id", () => {
@@ -275,6 +278,10 @@ describe("workspace", () => {
     expect(long).toMatchObject({ ok: false, code: "invalid" });
     expect(long.ok ? "" : long.error).toContain("1001 characters");
     expect(updateMemory(BOT, { action: "replace", oldText: "repeated repeated", text: "y".repeat(MEMORY_ENTRY_MAX_CHARS + 1) })).toMatchObject({ ok: false, code: "invalid" });
+    // lines too: a short code block can still fill what loads by itself
+    const tall = updateMemory(BOT, { action: "append", text: `Snippet\n\`\`\`\n${"x\n".repeat(MEMORY_ENTRY_MAX_LINES - 2)}\`\`\`` });
+    expect(tall).toMatchObject({ ok: false, code: "invalid" });
+    expect(tall.ok ? "" : tall.error).toContain(`${MEMORY_ENTRY_MAX_LINES + 1} lines`);
     expect(readMemoryFile(BOT).text).toBe("repeated repeated");
     expect(updateMemory(BOT, { action: "append", text: "x".repeat(MEMORY_ENTRY_MAX_CHARS) })).toMatchObject({ ok: true });
   });
@@ -296,7 +303,8 @@ describe("workspace", () => {
     expect(withinBudget(text)).toBe(true);
     expect(text.startsWith("# Memory\n- 2026-09-02 · fact 0\n")).toBe(true);
     expect(text).toContain('- 2026-10-03 · from chat "Full" · one fact too many\n');
-    expect(archive()).toContain("description: older notes moved out of MEMORY.md; search with session_search");
+    // no header: the topic index labels the archive
+    expect(archive()).toBe("- 2026-09-01 · The staging host is kestrel · moved 2026-10-03\n");
     expect(archive()).toContain("- 2026-09-01 · The staging host is kestrel · moved 2026-10-03\n");
     expect(searchMemoryFiles(BOT, "kestrel")).toEqual([expect.objectContaining({ file: "memory/archive.md" })]);
     // what loads is what is stored
@@ -334,6 +342,36 @@ describe("workspace", () => {
     expect(text).toContain("- 2026-10-03 · Office: Rome\n");
     expect(withinBudget(text)).toBe(true);
     expect(archive().split("\n").filter((line) => line.endsWith(" · moved 2026-10-03"))).toHaveLength(4);
+  });
+
+  it("moves an entry with a code block whole, never leaving its fence behind", () => {
+    const now = new Date(2026, 9, 3, 12);
+    const old = { now: new Date(2026, 0, 1, 12) };
+    const filler = (count: number) => Array.from({ length: count }, (_, i) => `- 2026-09-02 · fact ${i}`);
+    // written by memory_update: the block is indented under its entry
+    expect(updateMemory(BOT, { action: "append", text: "Deploy command:\n```\npnpm deploy --prod\n```" }, old)).toMatchObject({ ok: true });
+    writeMemoryFile(BOT, `${readMemoryFile(BOT).text}${filler(MEMORY_MAX_LINES - 4).join("\n")}\n`);
+    const saved = updateMemory(BOT, { action: "append", text: "one more" }, { now });
+    expect(saved).toMatchObject({ ok: true, truncated: false, moved: ["- 2026-01-01 · Deploy command:\n  ```\n  pnpm deploy --prod\n  ```"] });
+    expect(readMemoryFile(BOT).text.startsWith("- 2026-09-02 · fact 0\n")).toBe(true);
+    expect(archive()).toBe("- 2026-01-01 · Deploy command: · moved 2026-10-03\n  ```\n  pnpm deploy --prod\n  ```\n");
+    expect(searchMemoryFiles(BOT, "pnpm deploy")).toEqual([expect.objectContaining({ file: "memory/archive.md" })]);
+    // written before that, with the block unindented, it moves whole too
+    for (const legacy of [["- 2026-01-01 · Deploy command:", "```sh", "railway up", "```"], ["- 2026-01-01 · Snippet ```", "railway up", "```"]]) {
+      writeMemoryFile(BOT, `${[...legacy, ...filler(MEMORY_MAX_LINES - legacy.length)].join("\n")}\n`);
+      expect(updateMemory(BOT, { action: "append", text: "one more" }, { now })).toMatchObject({ ok: true, truncated: false, moved: [legacy.join("\n")] });
+      expect(readMemoryFile(BOT).text).not.toContain("railway up");
+      expect(withinBudget(readMemoryFile(BOT).text)).toBe(true);
+    }
+    // entries with code blocks never pile up into lines that cannot move: a later fact still loads
+    rmSync(join(ensureWorkspace(BOT), "MEMORY.md"));
+    for (let i = 0; i < 20; i += 1) {
+      const block = `Snippet ${i}\n\`\`\`\n${"x\n".repeat(MEMORY_ENTRY_MAX_LINES - 3)}\`\`\``;
+      expect(updateMemory(BOT, { action: "append", text: block }, { now })).toMatchObject({ ok: true, truncated: false });
+    }
+    expect(updateMemory(BOT, { action: "append", text: "the important later fact" }, { now })).toMatchObject({ ok: true, truncated: false });
+    expect(loadMemory(BOT, { now })?.text).toContain("the important later fact");
+    expect(withinBudget(readMemoryFile(BOT).text)).toBe(true);
   });
 
   it("saves the entry even when hand-written lines alone fill what loads, and says so", () => {
@@ -409,12 +447,13 @@ describe("workspace", () => {
     expect(memory).toMatchObject({ truncated: true, lines: MEMORY_MAX_LINES + 50 });
     const managed = memorySystemPrompt(BOT, { managedWrites: true });
     expect(managed).toContain(`[MEMORY.md is ${MEMORY_MAX_LINES + 50} lines and ${memory!.bytes} bytes; only the first ${MEMORY_MAX_LINES} lines / ${MEMORY_MAX_BYTES} bytes are shown above.]`);
-    expect(managed).toContain(`up to ${MEMORY_MAX_LINES} lines / 24 KB; it never fills up: when an update would push it past that, its oldest entries move to memory/archive.md, which session_search still finds.`);
+    expect(managed).toContain(`It is shown to you at the start of every session, up to ${MEMORY_MAX_LINES} lines / 24 KB.`);
+    // how memory_update makes room is said once, in its own description
+    expect(managed).not.toContain("archive");
     expect(managed).not.toContain("Consolidate");
     expect(managed).not.toContain("short and curated");
     // a bot that edits the file with its own tools still keeps it short itself
-    expect(memorySystemPrompt(BOT)).toContain("so keep it short and curated.");
-    expect(memorySystemPrompt(BOT)).not.toContain("never fills up");
+    expect(memorySystemPrompt(BOT)).toContain("Keep MEMORY.md short and curated.");
     // a file of exactly the budget with a final newline is not over it
     writeFileSync(join(dir, "MEMORY.md"), `${lines.slice(0, MEMORY_MAX_LINES).join("\n")}\n`);
     expect(loadMemory(BOT)?.truncated).toBe(false);
@@ -616,18 +655,15 @@ describe("workspace", () => {
     writeMemoryFile(BOT, "# Memory\n- The user prefers CSV exports.\n");
     const prompt = memorySystemPrompt(BOT, { managedWrites: true, fileTools: false });
     expect(prompt).toContain("The user prefers CSV exports.");
-    expect(prompt).toContain("Use memory_update");
-    expect(prompt).toContain("use session_search to find the current passage");
-    expect(prompt).not.toContain("read the current file");
+    expect(prompt).toContain("Change MEMORY.md only with memory_update; on a conflict, find the current passage with session_search.");
     expect(prompt).not.toContain("update it with your file tools");
   });
 
   it("opts concurrent agents into targeted memory updates while retaining legacy guidance", () => {
+    // the rest (shared across threads, append/replace/remove, conflicts) is
+    // memory_update's own description, not repeated here
     const managed = memorySystemPrompt(BOT, { managedWrites: true });
-    expect(managed).toContain("shared across your independent threads");
-    expect(managed).toContain("Use memory_update");
-    expect(managed).toContain("never direct file tools or whole-file overwrites");
-    expect(managed).toContain("read the current file and retry only your intended change");
+    expect(managed).toContain("Change MEMORY.md only with memory_update.");
     expect(managed).not.toContain("update it with your file tools");
     expect(memorySystemPrompt(BOT)).toContain("update it with your file tools");
   });

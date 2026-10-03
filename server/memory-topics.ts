@@ -104,7 +104,7 @@ export function renderTopicIndex(topics: ReadonlyArray<{ name: string; header: T
       omitted += 1;
       continue;
     }
-    const about = name === "archive.md" && !header.title && !header.description
+    const about = name === "archive.md"
       ? "older notes moved out of MEMORY.md, kept for the record"
       : [header.title, header.description].filter(Boolean).join(" — ");
     const also = header.aliases.length ? ` (also: ${header.aliases.join(", ")})` : "";

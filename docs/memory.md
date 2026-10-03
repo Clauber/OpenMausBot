@@ -56,12 +56,15 @@ sentence *only the first 200 lines load each turn*.
 (`memory_update`, and capture) keeps the file within the budget in the same
 step: when the new entry would push it past, the oldest dated entries move to
 `memory/archive.md` — struck-through ones first, then expired ones, then the
-oldest live ones — each marked `· moved <date>`. The archive is written before
+oldest live ones — each marked `· moved <date>`. An entry moves whole, with
+the lines indented under it (a code block) or, in older entries, the code block
+right below it. The archive is written before
 `MEMORY.md`, so a line is never out of one without already being in the other,
 and `session_search` still finds it. Lines you wrote by hand (no date), health
 and safety facts, and the entry just written never move. The bot is told which
-lines moved, so it can add back anything that should stay loaded. One entry is
-at most 1,000 characters, so a single note cannot push the rest out. The gauge
+entries moved (the first few, and how many), so it can add back anything that
+should stay loaded. One entry is at most 1,000 characters and 20 lines, so a
+single note cannot push the rest out. The gauge
 can only go red when the lines that never move fill the budget by themselves
 (or a bot edited the file with its own file tools): then the entry is still
 saved, and the bot asks you to trim `MEMORY.md`.
