@@ -1,7 +1,7 @@
 // Config + data dirs. One file, ~/.openmausbot/config.json, env fallbacks:
 //   { "xai": {"key":"xai-…"}, "composio": {"apiKey":"ak_…"}, "box": {"token":"…"},
 //     "instances": { "<instanceId>": {"driver":"grok", …} } }
-import { readFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
+import { readFileSync, mkdirSync, existsSync, renameSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -1121,6 +1121,29 @@ export function loadConfig(): AppConfig {
     if (process.env.OMB_SIGNIN_MEMBER_EMAILS !== undefined) cfg.signIn.members = splitEmails(process.env.OMB_SIGNIN_MEMBER_EMAILS);
   }
   return cfg;
+}
+
+/** `derive(loadConfig())`, worked out again only when config.json changes:
+ * a new file (every save renames one into place), a new size or a new
+ * modification time. For values read on every request or stream frame,
+ * where parsing the file each time costs more than the work itself. A file
+ * that is missing, unreadable or saved in the last two seconds is read on
+ * every call, so a second write inside one clock tick is never missed. */
+export function cacheUntilConfigChanges<T>(derive: (config: AppConfig) => T): () => T {
+  let cached: { stamp: string; value: T } | null = null;
+  return () => {
+    let stamp: string | null = null;
+    try {
+      const file = statSync(join(DATA_DIR, "config.json"), { bigint: true });
+      if (Date.now() - Number(file.mtimeMs) >= 2_000) stamp = `${file.ino}:${file.size}:${file.mtimeNs}`;
+    } catch {
+      // Missing or unreadable: read it the way loadConfig() always has.
+    }
+    if (stamp !== null && cached?.stamp === stamp) return cached.value;
+    const value = derive(loadConfig());
+    cached = stamp === null ? null : { stamp, value };
+    return value;
+  };
 }
 
 /** After saveConfig() writes a credential, the running process's env must
