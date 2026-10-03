@@ -11,6 +11,7 @@ import {
   Crown,
   Download,
   Gauge,
+  ListChecks,
   MessageSquareReply,
   Monitor,
   MoreHorizontal,
@@ -108,6 +109,7 @@ import { webhookMessageView } from "@/lib/webhook-message";
 import { splitTranscriptAttachments } from "@/lib/composer-attachments";
 import { BOTTOM_FOLLOW_THRESHOLD, shouldResumeBottomFollow, useBottomFollowResize } from "@/lib/bottom-follow";
 import { useComposerDockPad } from "@/lib/composer-dock";
+import { GlassBar, GlassScrollFrame } from "./GlassScrollFrame";
 import {
   TRANSCRIPT_WINDOW_SIZE,
   expandWindowStart,
@@ -1284,6 +1286,13 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
     <main className="relative flex h-full min-w-0 flex-1 flex-col bg-app">
       {/* A take-turns call covers the thread while the bot is on the line */}
       <CallOverlay bot={bot} />
+      {/* The transcript scrolls on under the header (and the banners that
+          hang from it), which is liquid glass tinted with the chat's own
+          background, and under the composer, which already floats. */}
+      <GlassScrollFrame className="flex-1 [--glass-tint:var(--color-app)]">
+      {/* Above anything raised inside the transcript (the room set-up card
+          is z-20 so its menus clear the composer), below the CallOverlay (z-30). */}
+      <GlassBar edge="top" className="z-[25]">
       {/* Header */}
       <div
         style={headerDragStyle}
@@ -1424,12 +1433,13 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
       />
 
 
+      </GlassBar>
+
       {/* Messages + composer share one pane so bubbles scroll into the pill
           instead of dying on a rectangular clip above a black dock. */}
-      <div className="relative min-h-0 flex-1">
       <div
         ref={scrollRef}
-        className="h-full overflow-x-hidden overflow-y-auto overscroll-y-contain px-5 [overflow-anchor:none]"
+        className="glass-scroller h-full overflow-x-hidden overflow-y-auto overscroll-y-contain px-5 [overflow-anchor:none]"
         onPointerDown={(e) => {
           // grabbing the scrollbar is a scroll gesture too — the lane lives
           // past the content box (clientWidth excludes it)
@@ -1462,7 +1472,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
       >
         <div
           ref={transcriptRef}
-          className="flex w-full flex-col gap-3"
+          className="glass-scroller-content flex w-full flex-col gap-3"
           style={{ paddingBottom: composerDock.pad }}
           role="log"
           // off: a polite log re-reads every tick and chip while the bot
@@ -1613,7 +1623,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
       />
       )}
       </div>
-      </div>
+      </GlassScrollFrame>
 
     </main>
   );
@@ -1716,11 +1726,18 @@ function ChatHeaderMenu({ bot, messages, findOpen, onFind }: {
       onSelect: () => dispatch({ type: "toggleSettings", open: true, section: "usage" }),
     } satisfies SidebarMenuItem] : []),
     ...(remoteClient ? [] : [{
+      key: "activity",
+      label: "Activity",
+      icon: <ListChecks size={16} />,
+      active: state.activityOpen,
+      separatorBefore: !usage,
+      onSelect: () => dispatch({ type: "toggleActivity" }),
+    } satisfies SidebarMenuItem, {
       key: "inspector",
       label: t("chat.inspector"),
       icon: <Bug size={16} />,
       active: advanced && state.inspectorOpen,
-      separatorBefore: !usage,
+      separatorBefore: true,
       heading: usage ? undefined : advancedOnly,
       disabled: !advanced,
       onSelect: () => dispatch({ type: "toggleInspector" }),
@@ -1737,7 +1754,7 @@ function ChatHeaderMenu({ bot, messages, findOpen, onFind }: {
           data-testid="chat-more"
           className={cn(
             "flex rounded-md p-1.5 hover:bg-raised",
-            open || findOpen || state.inspectorOpen ? "text-accent" : "text-ink-secondary hover:text-ink",
+            open || findOpen || state.inspectorOpen || state.activityOpen ? "text-accent" : "text-ink-secondary hover:text-ink",
           )}
           title={t("chat.more")}
         >
