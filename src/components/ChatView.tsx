@@ -729,6 +729,7 @@ const MessagesList = memo(function MessagesList({
   onReply: (message: Message) => void;
 }) {
   const { state, dispatch } = useStore();
+  const advanced = useAdvancedMode();
   const showToolCalls = showToolCallsEnabled(state.config);
   // Finished tool chips become compact runs; settled assistant narration
   // becomes one reversible turn row while the terminal answer stays visible.
@@ -751,7 +752,8 @@ const MessagesList = memo(function MessagesList({
       {messages.length === 0 && !bot.busy && (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 py-24 text-center">
           <BotAvatar bot={bot} state="idle" size={64} motion="none" motionKey={0} />
-          <RenameTitle
+          {/* Simple mode renames in the bot's settings only. */}
+          {!advanced ? <div className="text-[17px] font-semibold text-ink">{bot.name}</div> : <RenameTitle
             value={bot.name}
             onCommit={(name) => {
               if (window.ogb?.remoteClient?.active) {
@@ -764,7 +766,7 @@ const MessagesList = memo(function MessagesList({
             }}
             className="text-[17px] font-semibold text-ink"
             inputClassName="rounded bg-inset px-1.5 py-0.5 text-center text-[17px] font-semibold"
-          />
+          />}
           <div className="max-w-[360px] text-[14px] text-ink-secondary">
             {bot.description || t("chat.emptyPrompt")}
           </div>
@@ -983,6 +985,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   const transcriptRef = useRef<HTMLDivElement>(null);
   const composerDockRef = useRef<HTMLDivElement>(null);
   const composerDock = useComposerDockPad(composerDockRef);
+  const advanced = useAdvancedMode();
   // A guest on an OMB Cloud home writes only in conversations it opened.
   const canWrite = useCanWriteIn(bot.threadId);
 
@@ -1308,9 +1311,14 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
         {/* The chip group does not shrink, so in a narrow column (a phone,
             or a panel beside the chat) the name truncated to nothing and the
             rename pencil landed under the export button. Below 30rem the
-            header wraps: name line on top, chips underneath on the right. */}
-        <div data-chathead-row className="flex items-center justify-between @max-[30rem]/chathead:flex-wrap @max-[30rem]/chathead:gap-y-1">
-        <div data-chathead-identity className="flex min-w-0 items-center gap-2.5 rounded-lg px-1.5 py-1 @max-[30rem]/chathead:basis-full" style={headerNoDragStyle}>
+            header wraps: name line on top, chips underneath on the right.
+            From 30rem the bot sits in the middle of the header: three
+            columns, the left one empty, so the name is centred on the chat
+            itself. The controls' column never goes below their own width;
+            when room is short it takes it from the empty side, which slides
+            the name left rather than under the controls. */}
+        <div data-chathead-row className="flex items-center justify-between @max-[30rem]/chathead:flex-wrap @max-[30rem]/chathead:gap-y-1 @min-[30rem]/chathead:grid @min-[30rem]/chathead:grid-cols-[minmax(0,1fr)_minmax(0,auto)_minmax(max-content,1fr)]">
+        <div data-chathead-identity className="flex min-w-0 items-center gap-2.5 rounded-lg px-1.5 py-1 @max-[30rem]/chathead:basis-full @min-[30rem]/chathead:col-start-2 @min-[30rem]/chathead:justify-self-center" style={headerNoDragStyle}>
           <button
             onClick={() => dispatch({ type: "toggleSettings", open: true })}
             className="flex size-10 shrink-0 items-center justify-center rounded-lg hover:bg-raised/50"
@@ -1325,7 +1333,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
               motionKey={mascotMotion?.nonce ?? 0}
             />
           </button>
-          <RenameTitle
+          {advanced ? <RenameTitle
             value={bot.name}
             onCommit={(name) => {
               if (window.ogb?.remoteClient?.active) {
@@ -1340,7 +1348,20 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
             showEditButton
             className="truncate text-[15px] font-semibold text-ink"
             inputClassName="max-w-[220px] rounded bg-inset px-1.5 py-0.5 text-[15px] font-semibold"
-          />
+          /> : (
+            // Simple mode renames in the bot's settings, not in place: the
+            // name opens them, like the avatar beside it.
+            <button
+              type="button"
+              data-chathead-name
+              onClick={() => dispatch({ type: "toggleSettings", open: true })}
+              title={t("chat.openProfile")}
+              aria-label={t("chat.openProfileAria", { name: bot.name })}
+              className="min-w-0 truncate text-left text-[15px] font-semibold text-ink"
+            >
+              {bot.name}
+            </button>
+          )}
           {bot.chiefOfStaff && (
             // One line, never shrinking with the name (it wrapped "Chief / of /
             // Staff", #1871); folds to the crown like the chips beside it do,
@@ -1354,7 +1375,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
         </div>
         <div
           data-chathead-controls
-          className="flex shrink-0 items-center gap-2 @max-[30rem]/chathead:ml-auto @max-[30rem]/chathead:flex-wrap @max-[30rem]/chathead:justify-end"
+          className="flex shrink-0 items-center gap-2 @max-[30rem]/chathead:ml-auto @max-[30rem]/chathead:flex-wrap @max-[30rem]/chathead:justify-end @min-[30rem]/chathead:col-start-3 @min-[30rem]/chathead:justify-self-end"
           // The caption buttons sit over the header's right end; drop this
           // icon row 16px (visual only — the header keeps its height) so the
           // buttons clear the 26px overlay while the rest of the layout stays.
