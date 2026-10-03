@@ -137,8 +137,8 @@ const handoffs = (): any[] => JSON.parse(readFileSync(join(home, ".openmausbot",
 const coordinated = async (headers: Record<string, string>, botId: string, message: string) => {
   const response = await api("POST", "/api/internal/coordinate-bots", { botIds: [botId], message }, headers);
   expect(response.status, JSON.stringify(response.body)).toBe(200);
-  expect(response.body.accepted).toHaveLength(1);
-  return handoffs().find(node => node.id === response.body.accepted[0].requestId);
+  expect(response.body.receipts).toHaveLength(1);
+  return handoffs().find(node => node.id === response.body.receipts[0].requestId);
 };
 
 const createBot = async (name: string, instanceId: string, model = "claude-sonnet-5") => {
@@ -486,7 +486,13 @@ describe("coordinate_bots on a teammate", () => {
       for (const bot of [other, far, near]) expect((await botState(bot.id)).tasks).toHaveLength(1);
       const first = await coordinated(token, near.id, "Check it.");
       const retry = await send([near.id]);
-      expect(retry.body.accepted).toEqual([expect.objectContaining({ requestId: first.id, duplicate: true })]);
+      expect(retry.body.receipts).toEqual([expect.objectContaining({ requestId: first.id, detail: expect.stringContaining("already sent") })]);
+      expect((await botState(near.id)).tasks).toHaveLength(2);
+      // The person archives that thread; a repeat still lands on the request
+      // in it, and the thread opened for the repeat is not left behind.
+      expect((await api("PATCH", `/api/bots/${near.id}/tasks/${first.threadId}`, { archivedAt: Date.now() })).status).toBe(200);
+      const afterArchive = await send([near.id]);
+      expect(afterArchive.body.receipts).toEqual([expect.objectContaining({ requestId: first.id, threadId: first.threadId, detail: expect.stringContaining("already sent") })]);
       expect((await botState(near.id)).tasks).toHaveLength(2);
       expect((await messages(pm.threadId)).filter(message => message.threadRef?.threadId === first.threadId)).toHaveLength(1);
     } finally {

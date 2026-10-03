@@ -226,10 +226,11 @@ export class RoomHandoffs {
     if (path.some(n => n.botId === target.botId && (!n.groupId || !target.groupId || n.groupId === target.groupId))) {
       throw new Error("Cannot assign work back to an ancestor; results return automatically");
     }
-    // The caller derives the key from the request itself (destination,
-    // text, recipient), so under one parent the same key is the same request.
-    const existing = this.children(parent.id).find(n => n.key === key);
-    if (existing) return { node: existing, duplicate: true };
+    // The same text to the same teammate and place under one parent is one
+    // request, so a repeat lands on it. Only rework=true runs a finished or
+    // failed one again.
+    const existing = this.children(parent.id).findLast(n => n.botId === target.botId && n.groupId === target.groupId && n.text === text);
+    if (existing && !(rework && terminal(existing))) return { node: existing, duplicate: true };
     if (!rework && this.children(parent.id).some(n => n.kind === kind &&
       n.groupId === target.groupId && n.botId === target.botId && n.status === "completed")) {
       throw new Error("This agent already completed your assignment. Do not send acknowledgements or approvals as new work. Finish with your decision; results return automatically. Only use rework=true for concrete additional work.");

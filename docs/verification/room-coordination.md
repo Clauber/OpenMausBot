@@ -44,20 +44,20 @@ specialists; it never inherits the parent Chief's cross-team access or permissio
 Advice is not a verification
 receipt: the lead must ask the reviewer to run the requested checks.
 
-Outside a room, a conversation has one thread with each recipient. The first
-request opens it, titled for the sender and optional `label` (otherwise
-“@Clive · work”); every later request from that conversation — a follow-up,
-a change of plan, rework — continues it, so the recipient keeps the earlier
-context and is told the request continues its earlier work. If the recipient
-is still working there, the request waits and runs next; the same work never
-runs twice in parallel. A different conversation of the sender gets its own
-thread. Successful reported work closes in the sidebar but remains readable,
-and reopens when the next request arrives; failed or withheld work remains
-visible. Each receipt names the thread the request went into. The server
-derives each request's identity from its destination and text within the
-sending turn and the turns that resume it, so an identical call there runs
-once, even after it failed. Room requests continue to use their explicit
-destination thread.
+Outside a room, a conversation has one thread with each recipient, titled
+“@Clive · work”. The first request opens it; every later request from that
+conversation — a follow-up, a change of plan, rework — goes into it, so the
+recipient has the earlier work in its own history. If the recipient is still
+working there, the request waits and runs next; the same work never runs twice
+in parallel. A different conversation of the sender gets its own thread.
+Successful reported work closes in the sidebar but remains readable, and
+reopens when the next request arrives; failed or withheld work remains
+visible. Each receipt names the thread the request went into. Within the
+sending turn and the turns that resume it, the same text to the same
+recipient and place is one request: a repeat while it is live is not sent
+again, and a repeat after it finished or failed runs again only with
+`rework=true`. Room requests continue to use their explicit destination
+thread.
 
 The chat shows an avatar and “Sent to Eli · Delivery”; clicking opens the
 receiving conversation. Same-room receipts have no unnecessary navigation.

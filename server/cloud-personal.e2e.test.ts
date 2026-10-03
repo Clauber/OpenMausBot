@@ -638,7 +638,7 @@ it("a follow-up from the same conversation continues the teammate's thread inste
   await until(async () => ((await api("GET", "/api/bots", { token: owner })).body.bots as any[]).find((bot) => bot.id === before.lead.id)?.busy === false, "the lead to stop");
   const followUp = await send("Change of plan: keep it short.", "Keep the launch post under 100 words.");
   expect(followUp).toMatchObject({ outcome: "queued", threadId: first.threadId });
-  expect(followUp.detail).toContain("continues your earlier work");
+  expect(followUp.detail).toContain('sent to "@');
   expect(await writerTasks()).toHaveLength(opened + 1);
   await settleAll(owner);
 }, 60_000);

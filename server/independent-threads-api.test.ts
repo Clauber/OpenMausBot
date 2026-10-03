@@ -118,16 +118,15 @@ describe("independent bot tasks through the isolated control surface", () => {
       botIds: [peer.id], message: "MAILBOX_REVIEW: check the release notes.",
     });
     expect(queued.status).toBe(200);
-    expect(queued.body.accepted).toHaveLength(1);
-    const requestId = queued.body.accepted[0].requestId;
+    const requestId = queued.body.receipts[0].requestId;
     // The receipt is the sender's honest answer at send time: this peer is
     // queued behind its open approval card, so nothing has been delivered.
     expect(queued.body.receipts).toEqual([{
       botId: peer.id,
       botName: "Mailbox Peer",
       outcome: "queued",
-      detail: "opened \"@Mailbox Chief · work\"; the teammate's turn has not started yet",
-      requestId,
+      detail: "sent to \"@Mailbox Chief · work\"; it runs after anything still running there",
+      requestId: expect.any(String),
       threadId: expect.any(String),
     }]);
     const handoff = () => JSON.parse(readFileSync(join(session.info.dataDir, "room-handoffs.json"), "utf8"))

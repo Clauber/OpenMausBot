@@ -282,7 +282,7 @@ it("returns a provider failure to the sender and resumes it to handle the failur
 // same failing request would otherwise loop until the tree's budget ends).
 it("receipts a retried duplicate of a failed hand-off as failed, not queued behind a resume that never comes", () => withRooms(async f => {
   f.plan[f.target.id].fail = true;
-  f.plan[f.sender.id].resumeSteps = [{ arguments: f.plan[f.sender.id].steps[0].arguments }];
+  f.plan[f.sender.id].resumeSteps = [{ arguments: f.plan[f.sender.id].steps[0].arguments, expectError: true }];
   await f.start(); expect((await f.wait()).status).toBe("settled");
   expect(f.provider().map((turn: any) => turn.botId)).toEqual([f.sender.id, f.target.id, f.sender.id]);
   const [assigned, retried] = f.provider().filter((turn: any) => turn.botId === f.sender.id);
@@ -290,10 +290,10 @@ it("receipts a retried duplicate of a failed hand-off as failed, not queued behi
   const first = JSON.parse(assigned.evidence.find((entry: any) => entry.step).response.result.content[0].text);
   expect(first.receipts[0]).toMatchObject({ botId: f.target.id, outcome: "queued" });
   expect(retried.resumed).toBe(true);
-  const retry = JSON.parse(retried.evidence.find((entry: any) => entry.step).response.result.content[0].text);
-  expect(retry.accepted[0]).toMatchObject({ botId: f.target.id, duplicate: true, status: "failed" });
-  expect(retry.receipts[0]).toMatchObject({ botId: f.target.id, outcome: "failed" });
-  expect(retry.receipts[0].detail).toContain("failed, and repeating it will not rerun it or resume you");
+  // Nothing was sent, so the call is refused with the way to retry.
+  const retry = retried.evidence.find((entry: any) => entry.step).response.result;
+  expect(retry.isError).toBe(true);
+  expect(retry.content[0].text).toContain("not sent again: it failed; send it with rework=true to retry");
   expect(f.nodes().filter((n: any) => n.parentId)).toHaveLength(1);
 }), 45_000);
 

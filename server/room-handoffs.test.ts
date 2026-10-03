@@ -165,6 +165,11 @@ describe("addressed room request tree", () => {
     expect(engine.enqueue(addr("A"), "turn", undefined, addr("B"), "build", "build").duplicate).toBe(true);
     expect(() => engine.enqueue(addr("A"), "turn", undefined, addr("B"), "ack", "approved")).toThrow("already completed");
     expect(engine.enqueue(addr("A"), "turn", undefined, addr("B"), "fix", "Fix the missing boundary case", false, true).node.status).toBe("queued");
+    // rework=true runs a finished brief again; while that run is live, even
+    // another rework repeat lands on it rather than beside it.
+    const rerun = engine.enqueue(addr("A"), "turn", undefined, addr("B"), "build", "build", false, true);
+    expect(rerun.duplicate).toBe(false);
+    expect(engine.enqueue(addr("A"), "turn", undefined, addr("B"), "build", "build", false, true)).toEqual({ node: rerun.node, duplicate: true });
   }));
   it("resumes the parent only after all sibling results have been delivered", () => fixture(async (engine, hooks) => {
     const delivered: string[] = [];

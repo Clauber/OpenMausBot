@@ -520,13 +520,13 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
       && typeof canonical.message === "string" && canonical.message.trim().length > 0;
     if (!usable) {
       return {
-        text: `coordinate_bots takes snake_case arguments: bot_ids (an array of 1-4 teammate ids) and message are required; group_id, rework and label are optional. Received: ${Object.keys(args).join(", ") || "none"}.`,
+        text: `coordinate_bots takes snake_case arguments: bot_ids (an array of 1-4 teammate ids) and message are required; group_id and rework are optional. Received: ${Object.keys(args).join(", ") || "none"}.`,
         isError: true,
       };
     }
     const r = await api("/api/internal/coordinate-bots", { method: "POST", body: JSON.stringify({
       groupId: canonical.group_id, botIds: ids, message: canonical.message,
-      rework: canonical.rework, label: canonical.label,
+      rework: canonical.rework,
     }) });
     return { text: JSON.stringify(r), ...(r.error ? { isError: true } : {}) };
   }

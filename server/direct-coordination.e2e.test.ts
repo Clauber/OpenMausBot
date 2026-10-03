@@ -469,7 +469,7 @@ it("continues one recipient thread for every follow-up from the same conversatio
   f.plan[f.chief.id] = { turns: [
     { steps: [{ arguments: { bot_ids: [f.lead.id], message: "Implement the CSV export" } }], reply: "Assigned the build" },
     { reply: "The export is implemented" },
-    { steps: [{ arguments: { bot_ids: [f.lead.id], message: "Add the header row to that export", label: "Header" } }], reply: "Assigned the header row" },
+    { steps: [{ arguments: { bot_ids: [f.lead.id], message: "Add the header row to that export" } }], reply: "Assigned the header row" },
     { reply: "The header row is in" },
     { steps: [{ arguments: { bot_ids: [f.lead.id], message: "Document the export you just built" } }], reply: "Assigned the write-up" },
     { reply: "It is documented" },
@@ -489,8 +489,7 @@ it("continues one recipient thread for every follow-up from the same conversatio
   await send("Now ask them to document it.");
   const tasks = await leadTasks();
   expect(tasks).toHaveLength(2);
-  // Reopened for each request and closed again once it was reported; the
-  // label only names a thread when it is first opened.
+  // Reopened for each request and closed again once it was reported.
   expect(tasks.find((task: any) => task.threadId === first.threadId)).toMatchObject({ title: "@Clive · work", closedBy: { botId: f.chief.id } });
   expect(f.nodes().filter((node: any) => node.botId === f.lead.id).map((node: any) => node.threadId)).toEqual([first.threadId, first.threadId, first.threadId]);
   const briefs = ["Implement the CSV export", "Add the header row to that export", "Document the export you just built"];
@@ -502,17 +501,13 @@ it("continues one recipient thread for every follow-up from the same conversatio
   const leadTurns = f.evidence().filter((turn: any) => turn.botId === f.lead.id);
   expect(leadTurns.map((turn: any) => turn.threadId)).toEqual([first.threadId, first.threadId, first.threadId]);
   for (const [index, brief] of briefs.entries()) expect(leadTurns[index].prompt.message.content).toContain(brief);
-  expect(leadTurns[0].prompt.message.content).not.toContain("continues your earlier work");
-  expect(leadTurns[1].prompt.message.content).toContain("This continues your earlier work in this thread");
-  expect(leadTurns[2].prompt.message.content).toContain("This continues your earlier work in this thread");
   expect(leadTurns.every((turn: any) => turn.system.includes("current request and returned results arrive in the user turn"))).toBe(true);
   expect(leadTurns.every((turn: any) => turn.snapshotMode === "off")).toBe(true);
   for (const brief of briefs) expect(leadTurns.every((turn: any) => !turn.system.includes(brief))).toBe(true);
   // Every receipt names the thread the request went into.
   const receipts = sendReceipts(f, f.chief.id);
   expect(receipts.map((receipt: any) => receipt.threadId)).toEqual([first.threadId, first.threadId, first.threadId]);
-  expect(receipts[0].detail).toContain('opened "@Clive · work"');
-  expect(receipts[1].detail).toContain('continues your earlier work in "@Clive · work"');
+  for (const receipt of receipts) expect(receipt.detail).toBe('sent to "@Clive · work"; it runs after anything still running there');
   const chips = (await f.messages(f.chief.activeTaskId)).filter((message: any) => message.threadRef?.threadId === first.threadId);
   expect(chips.filter((message: any) => message.tool?.name === "Sent to Engineering lead")).toHaveLength(3);
   expect((await leadTasks()).find((task: any) => task.threadId === f.lead.activeTaskId)).not.toHaveProperty("closedBy");
@@ -541,7 +536,7 @@ it.each<[string, NodeJS.ProcessEnv]>([
   await expect.poll(() => chiefTurns().length, { timeout: 15_000 }).toBe(1);
   await f.api(`/api/bots/${f.chief.id}/messages`, { text: "Change of plan: the export also needs a header row.", threadId: f.chief.activeTaskId });
   await expect.poll(() => chiefTurns().length, { timeout: 20_000 }).toBe(2);
-  expect(chiefTurns()[1].system).toContain("send just that to the same teammate with coordinate_bots");
+  expect(chiefTurns()[1].system).toContain("send the change to the same teammate with coordinate_bots");
   const [running, followUp] = f.nodes().filter((node: any) => node.botId === f.lead.id);
   expect(followUp.threadId).toBe(running.threadId);
   expect(sendReceipts(f, f.chief.id)[1]).toMatchObject({ outcome: "queued", threadId: running.threadId });
@@ -556,7 +551,6 @@ it.each<[string, NodeJS.ProcessEnv]>([
   // started, so 0 then 1 in one thread means one ran after the other.
   const leadTurns = f.evidence().filter((turn: any) => turn.botId === f.lead.id);
   expect(leadTurns.map((turn: any) => [turn.turnIndex, turn.threadId])).toEqual([[0, running.threadId], [1, running.threadId]]);
-  expect(leadTurns[1].prompt.message.content).toContain("This continues your earlier work in this thread");
   expect((await f.api("/api/bots")).bots.find((bot: any) => bot.id === f.lead.id).tasks).toHaveLength(2);
   // The thread folds away once, after its last request reported, never
   // while the next one was already waiting in it.
@@ -572,7 +566,7 @@ it("runs two assignments to one teammate from one turn in its thread, one after 
   f.plan[f.lead.id] = { turns: [{ reply: "Export implemented" }, { reply: "Benchmark finished" }] };
   f.plan[f.chief.id] = { steps: [
     { arguments: { bot_ids: [f.lead.id], message: "Implement the CSV export" } },
-    { arguments: { bot_ids: [f.lead.id], message: "Benchmark the exporter on the large fixture", label: "Benchmark" } },
+    { arguments: { bot_ids: [f.lead.id], message: "Benchmark the exporter on the large fixture" } },
   ], reply: "Both assignments are out", resumeReply: "Both came back" };
   await f.start();
   expect((await f.wait()).status).toBe("settled");
@@ -617,6 +611,44 @@ it("runs an identical call made twice in one turn once, without an extra recipie
   expect(repeated).toMatchObject({ requestId: sent.requestId, threadId: sent.threadId });
   expect(repeated.detail).toContain("already sent");
 }), 45_000);
+
+// A repeat of work that already ran is not sent again unless the
+// coordinator asks for it with rework=true; then the same brief runs again
+// in the same thread, as a re-check after a fix or a retry after a failure.
+it.each<[string, Record<string, unknown>, string]>([
+  ["finished", { reply: "3 tests fail" }, "not sent again: it already finished and its result stands; send it with rework=true to run it again"],
+  ["failed", { fail: true }, "not sent again: it failed; send it with rework=true to retry"],
+])("runs an identical brief again only with rework=true once its first run %s", (how, firstRun, refusal) => fixture(async f => {
+  const brief = "Run the full test suite and report every failure";
+  f.plan[f.lead.id] = { turns: [firstRun, { reply: "All tests pass" }] };
+  f.plan[f.chief.id] = { turns: [
+    { steps: [{ arguments: { bot_ids: [f.lead.id], message: brief } }], reply: "Sent" },
+    { steps: [
+      { arguments: { bot_ids: [f.lead.id], message: brief }, expectError: true },
+      // An acknowledgement to a teammate that finished is refused in full.
+      ...(how === "finished" ? [{ arguments: { bot_ids: [f.lead.id], message: "Thanks, approved" }, expectError: true }] : []),
+      { arguments: { bot_ids: [f.lead.id], message: brief, rework: true } },
+    ], reply: "Sent again" },
+    { reply: "The suite is green" },
+  ] };
+  await f.start();
+  await expect.poll(() => f.evidence().filter((turn: any) => turn.botId === f.chief.id).length, { timeout: 30_000 }).toBe(3);
+  expect((await f.wait()).status).toBe("settled");
+  // Nothing was sent by the plain repeat, so the call is refused with the
+  // way to run it again; the rework call runs the brief in the same thread.
+  const results = f.evidence().filter((turn: any) => turn.botId === f.chief.id)
+    .flatMap((turn: any) => turn.evidence.filter((entry: any) => entry.step)).map((entry: any) => entry.response.result);
+  const [sent, repeated] = results;
+  const rerun = results.at(-1);
+  expect(repeated.isError).toBe(true);
+  expect(repeated.content[0].text).toContain(refusal);
+  if (how === "finished") expect(results[2].content[0].text).toContain("Only use rework=true for concrete additional work.");
+  const [first, again] = [sent, rerun].map((result: any) => JSON.parse(result.content[0].text).receipts[0]);
+  expect(again).toMatchObject({ outcome: "queued", threadId: first.threadId });
+  expect(again.requestId).not.toBe(first.requestId);
+  expect(f.evidence().filter((turn: any) => turn.botId === f.lead.id).map((turn: any) => turn.threadId)).toEqual([first.threadId, first.threadId]);
+  expect((await f.messages(f.chief.activeTaskId)).some((message: any) => message.text === "The suite is green")).toBe(true);
+}), 60_000);
 
 it("dispatches to a spare recipient thread without waiting for unrelated work", () => fixture(async f => {
   await f.api("/api/config", { threads: { maxConcurrentPerBot: 2 } }, "PUT");
