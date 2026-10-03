@@ -1361,7 +1361,8 @@ describe("agents-proxy MCP surface", () => {
     // minimal satisfier instead of the intended text — the same class of
     // failure as the schema-conversion issues behind the flat-schema rule.
     // Blank text is still rejected by the handler (asserted above).
-    expect(schema.properties.text).toMatchObject({ minLength: 1 });
+    // one fact per call, the same cap updateMemory holds (MEMORY_ENTRY_MAX_CHARS)
+    expect(schema.properties.text).toMatchObject({ minLength: 1, maxLength: 1000 });
     expect(schema.properties.text).not.toHaveProperty("pattern");
     memoryStatus = 409;
     memoryResponse = { error: "oldText must match exactly once in the latest memory." };
@@ -1372,36 +1373,23 @@ describe("agents-proxy MCP surface", () => {
     memoryResponse = { ok: true, text: "- new fact", truncated: false, bytes: 10 };
   });
 
-  it("memory_update relays a full-file refusal with the newest entries and closes after three refusals in a turn", async () => {
-    memoryStatus = 413;
+  it("memory_update on a full file says what moved to the archive, and stays open however many writes a turn makes", async () => {
     memoryResponse = {
-      ok: false, code: "over-budget",
-      error: "MEMORY.md would be 201 lines and 9000 bytes; only the first 200 lines / 24000 bytes load at the start of a session, and nothing past that is ever read. Consolidate now: replace or remove older entries, or move detail to a memory/<topic>.md file; do not retry the same append.",
-      lines: 201, bytes: 9000, budget: { lines: 200, bytes: 24000 },
-      recent: ["- 2026-09-09 · from chat \"A\" · fact 199", "- 2026-09-10 · from chat \"B\" · fact 200"],
+      ok: true, text: "…", truncated: false, bytes: 23_990,
+      entry: '- 2026-09-10 · from chat "Setup" · fact 201',
+      moved: ["- 2026-08-01 · from chat \"A\" · fact 1"],
     };
-    const full = await callTool("memory_update", { action: "append", text: "fact 201" });
-    expect(full.result.isError).toBe(true);
-    expect(full.result.content[0].text).toContain("Consolidate now: replace or remove older entries, or move detail to a memory/<topic>.md file; do not retry the same append.");
-    expect(full.result.content[0].text).toContain("Most recent entries, oldest first:\n- 2026-09-09 · from chat \"A\" · fact 199\n- 2026-09-10");
-    // The proxy lives for one turn and an earlier test already spent one
-    // refusal; keep refusing until the tool closes, which must take at most
-    // three refusals from a fresh counter.
-    let closed = "";
-    for (let attempt = 0; attempt < 3 && !closed; attempt += 1) {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
       lastMemoryBody = null;
-      const again = await callTool("memory_update", { action: "append", text: "fact 201" });
-      expect(again.result.isError).toBe(true);
-      if (again.result.content[0].text.includes("closed for the rest of this turn")) closed = again.result.content[0].text;
+      const full = await callTool("memory_update", { action: "append", text: "fact 201" });
+      expect(full.result.isError).toBe(false);
+      expect(full.result.content[0].text).toBe(
+        'Memory updated. Entry: - 2026-09-10 · from chat "Setup" · fact 201\n' +
+        'To stay within what loads each session, moved to memory/archive.md (session_search finds them):\n- 2026-08-01 · from chat "A" · fact 1',
+      );
+      expect(lastMemoryBody).toMatchObject({ action: "append", text: "fact 201" });
     }
-    expect(closed).toContain("3 were refused. Do not retry.");
-    // closed means closed: nothing reached the harness for that call
-    expect(lastMemoryBody).toBeNull();
-    memoryStatus = 200;
     memoryResponse = { ok: true, text: "- new fact", truncated: false, bytes: 10 };
-    const after = await callTool("memory_update", { action: "append", text: "one more" });
-    expect(after.result.isError).toBe(true);
-    expect(lastMemoryBody).toBeNull();
   });
 
   it("memory_log appends to today's log through the harness and says so, never loading it anywhere", async () => {

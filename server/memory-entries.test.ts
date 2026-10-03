@@ -92,7 +92,7 @@ describe("topic headers and the index", () => {
     ]);
     expect(text.split("\n")).toEqual([
       "- memory/dining.md — Dining (also: food)",
-      "- memory/archive.md — expired and replaced notes, kept for the record",
+      "- memory/archive.md — older notes moved out of MEMORY.md, kept for the record",
     ]);
     const many = Array.from({ length: TOPIC_INDEX_MAX_TOPICS + 5 }, (_, i) => ({ name: `t${String(i).padStart(2, "0")}.md`, header: { aliases: [] } }));
     expect(renderTopicIndex(many)).toContain("…and 5 more in memory/");

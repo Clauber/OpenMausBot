@@ -2,13 +2,23 @@
 // `- YYYY-MM-DD · from <source> · text[ · until YYYY-MM-DD]`, with a
 // struck-through body for a superseded fact. Pure helpers shared by the
 // prompt loader (which hides expired lines), background capture (which
-// must not add a fact the notebook already holds) and the nightly tidy-up.
+// must not add a fact the notebook already holds), the nightly tidy-up and
+// the rule that keeps MEMORY.md within what loads (server/workspace.ts).
 
 export const UNTIL_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const DATED = /^(- (\d{4}-\d{2}-\d{2}) · (?:from [^·\n]* · )?)(.*)$/;
 const UNTIL_MARK = / · until (\d{4}-\d{2}-\d{2})(?= · |$)/;
-const TRAILING_MARKS = /(?: · (?:updated|confirmed|until|expired|superseded) \d{4}-\d{2}-\d{2})+$/;
+const TRAILING_MARKS = /(?: · (?:updated|confirmed|until|expired|superseded|moved) \d{4}-\d{2}-\d{2})+$/;
 const BULLET = /^\s*(?:[-*•]|\d+[.)])\s+/;
+/** A safety or health fact must load into every turn: neither the organize
+ * step nor the size rule moves one out of MEMORY.md, whatever else happens.
+ * Seen live — a model moved "is vegetarian" into a food topic despite being
+ * told diet is core. */
+const ALWAYS_CORE = /\b(?:allerg\w*|anaphyla\w*|intoleran\w*|vegetarian|vegan|halal|kosher|gluten|lactose|diet\w*|diabet\w*|asthma\w*|epilep\w*|pregnan\w*|medicat\w*|medicine|medical|disabilit\w*|wheelchair|blind|deaf|health)\b/i;
+
+export function alwaysCore(body: string): boolean {
+  return ALWAYS_CORE.test(body);
+}
 
 export interface MemoryEntryLine {
   /** Zero-based line number in the file. */

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { MEMORY_MAX_LINES, readMemoryFile, readMemoryTopic, updateMemory, writeMemoryFile } from "../workspace.ts";
 import { callTool, type ToolCallContext } from "./agents-call.ts";
 
 function context(overrides: Partial<ToolCallContext> = {}): ToolCallContext {
@@ -17,7 +18,6 @@ function context(overrides: Partial<ToolCallContext> = {}): ToolCallContext {
       createdThisTurn: 0,
       roomPostsThisTurn: 0,
       threadsOpenedThisTurn: 0,
-      memoryRefusalsThisTurn: 0,
       delegationTaskIdsThisTurn: new Set(),
     },
     ...overrides,
@@ -130,5 +130,46 @@ describe("propose_profile", () => {
         },
       },
     ]);
+  });
+});
+
+describe("memory_update", () => {
+  // The harness route, in process: the real updateMemory behind the tool.
+  const harness = (botId: string): ToolCallContext["client"] => ({
+    api: async () => ({}),
+    apiResponse: async (_path, init) => {
+      const body = JSON.parse(String(init?.body));
+      const result = updateMemory(botId, { action: body.action, text: body.text, oldText: body.oldText }, { source: 'chat "Turn"' });
+      return { ok: result.ok, status: result.ok ? 200 : result.code === "conflict" ? 409 : 400, body: result };
+    },
+  });
+
+  it("saves every note in a turn on a full file, saying what moved to the archive, and never closes the tool", async () => {
+    const bot = "bot-memory-full";
+    writeMemoryFile(bot, Array.from({ length: MEMORY_MAX_LINES }, (_, i) => `- 2026-09-01 · old ${i}\n`).join(""));
+    const ctx = context({ botId: bot, client: harness(bot) });
+    // refusals of another kind (a stale passage) do not close it either
+    for (let i = 0; i < 4; i += 1) {
+      const stale = await callTool("memory_update", { action: "remove", old_text: "no such passage" }, ctx);
+      expect(stale).toMatchObject({ isError: true });
+    }
+    for (let i = 0; i < 10; i += 1) {
+      const result = await callTool("memory_update", { action: "append", text: `note ${i}` }, ctx);
+      expect(result.isError, result.text).toBeFalsy();
+      expect(result.text).toMatch(new RegExp(`^Memory updated\\. Entry: - \\d{4}-\\d{2}-\\d{2} · from chat "Turn" · note ${i}\\n`));
+      expect(result.text).toContain(`To stay within what loads each session, moved to memory/archive.md (session_search finds them):\n- 2026-09-01 · old ${i}`);
+    }
+    const text = readMemoryFile(bot).text;
+    for (let i = 0; i < 10; i += 1) expect(text).toContain(` · note ${i}\n`);
+    expect(readMemoryTopic(bot, "archive.md")).toContain("- 2026-09-01 · old 9 · moved");
+  });
+
+  it("tells the bot plainly when hand-written lines fill what loads", async () => {
+    const bot = "bot-memory-hand";
+    writeMemoryFile(bot, Array.from({ length: MEMORY_MAX_LINES }, (_, i) => `- note ${i}\n`).join(""));
+    const result = await callTool("memory_update", { action: "append", text: "kept anyway" }, context({ botId: bot, client: harness(bot) }));
+    expect(result.isError).toBeFalsy();
+    expect(result.text).toMatch(/^Memory updated\. Entry: - \d{4}-\d{2}-\d{2} · from chat "Turn" · kept anyway\nSaved, but the lines that never move out of MEMORY\.md \(hand-written ones, health and safety facts\) fill what loads each session, so the newest entries do not load\. Ask the person to trim MEMORY\.md in Settings\.$/);
+    expect(readMemoryFile(bot).text).toContain(" · kept anyway\n");
   });
 });
