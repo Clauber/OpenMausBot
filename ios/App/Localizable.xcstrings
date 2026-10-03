@@ -11196,6 +11196,16 @@
           }
         }
       }
+    },
+    "Tap to play": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Toque para reproduzir"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
