@@ -90,19 +90,26 @@ describe("Advanced mode in the header menu", () => {
 });
 
 describe("header name", () => {
-  it("renames only from the bot's settings in Simple mode: no pencil, and the name opens them", () => {
+  it("renames only from the bot's settings in Simple mode: no pencil, and the whole pill opens them", () => {
     fixture.advanced = false;
     const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
     expect(markup).not.toContain('aria-label="Rename Pepper"');
-    expect(markup).toMatch(/data-chathead-name="true"[^>]*aria-label="Open Pepper&#x27;s profile"/);
+    // one button holds the avatar and the name together
+    const pill = markup.match(/<button[^>]*data-chathead-pill="true"[^>]*>([\s\S]*?)<\/button>/);
+    expect(pill?.[0]).toContain('aria-label="Open Pepper&#x27;s profile"');
+    expect(pill?.[1]).toContain(">Pepper</span>");
+    expect(pill?.[0]).toContain("rounded-full");
     fixture.advanced = true;
   });
 
-  it("keeps the rename pencil in Advanced mode", () => {
+  it("keeps the rename pencil in Advanced mode, inside the same pill as the avatar and name", () => {
     fixture.advanced = true;
     const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
-    expect(markup).toContain("Rename Pepper");
-    expect(markup).not.toContain("data-chathead-name");
+    const start = markup.indexOf('<div data-chathead-pill="true"');
+    expect(start).toBeGreaterThan(-1);
+    const pill = markup.slice(start, markup.indexOf("data-chathead-controls"));
+    expect(pill).toContain('aria-label="Open Pepper&#x27;s profile"');
+    expect(pill).toContain("Rename Pepper");
   });
 
   it("centres the bot in the header's middle column, with the controls in the last", () => {
