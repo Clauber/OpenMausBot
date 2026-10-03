@@ -389,7 +389,7 @@ describe("teammate availability stays out of the cached prompt half", () => {
     expect(teammateAvailabilityPrompt([])).toBe("");
     const crowd = Array.from({ length: 15 }, (_, i) => ({ id: `bot${i}`, name: `Bot ${i}`, busy: true }));
     const line = teammateAvailabilityPrompt(crowd);
-    expect(line).toContain("Bot 11 (working right now) [id: bot11], and 3 more busy (see list_bots)");
+    expect(line).toContain("Bot 11 (working right now) [id: bot11], and 3 more not free (see list_bots)");
     expect(line).not.toContain("Bot 12");
   });
 
