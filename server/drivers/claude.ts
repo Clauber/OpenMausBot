@@ -20,6 +20,7 @@ import { writeFileAtomic } from "../atomic.ts";
 import { augmentedPath } from "../env-path.ts";
 import { brokerSocketPath, describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
 import { classifyResumeFailure, mayReplay, recoveryPromptFor } from "../resume-recovery.ts";
+import { announcesAction, CONTINUATION_NUDGE } from "./announced-action.ts";
 import { ClaudeLoginController } from "./claude-login-auth.ts";
 
 import type {
@@ -1246,6 +1247,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         authFailed?: boolean;
         updateRequired?: boolean;
         stopRequested?: boolean;
+        /** The latest assistant message of this turn — what the announced-
+         * action nudge reads at `result`. Subagent narration never sets it. */
+        lastReply?: string | null;
+        /** One announced-action continuation per turn: a nudge already sent
+         * must never send another, whatever the continuation announces. */
+        nudged?: boolean;
         /** Steered messages, by the uuid this driver sent them with, that no
          * model call has taken in yet as far as the driver can tell. With
          * --replay-user-messages the CLI echoes each one as a call takes it
@@ -2009,6 +2016,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               // The CLI's own report of any other API error is still shown,
               // but marked: the model never produced it.
               const synthetic = o.is_api_error_message === true || typeof o.error === "string" ? { synthetic: true } : {};
+              // subagent narration is dropped from the transcript, so it must
+              // not stand in as the turn's own last reply either
+              if (session.turn && !o.parent_tool_use_id) session.turn.lastReply = text;
               // fallback delta for CLIs/paths that never streamed the block
               if (!session.turn?.sawStreamDelta) {
                 emit({ ...base(threadId, currentTurnId()), ...synthetic, type: "content.delta", streamKind: "assistant_text", delta: text });
@@ -2148,6 +2158,41 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               };
               t.armGrace();
               appendNative(threadId, { dir: "out", source: "claude.session", msg: { hold: `result: a steered message is still queued (queued_turn_count ${o.queued_turn_count ?? "absent"})` } });
+              break;
+            }
+            // The announced-action nudge: a turn that ends on "Now let me run
+            // the build." gets one continuation message in the same turn —
+            // the nudge the person would otherwise have to type. This round's
+            // result is held as `deferred`; the continuation's own `result`
+            // settles the turn with both summed, so only one completion ever
+            // reaches the transcript.
+            if (t && native.ok && !t.settled && !t.stopRequested && !session.closing && !t.nudged &&
+                !t.authFailed && !t.updateRequired &&
+                typeof t.lastReply === "string" && announcesAction(t.lastReply)) {
+              t.nudged = true;
+              t.deferred = sumNativeTurnResults(t.deferred, native);
+              void writeUser(session, threadId, claudeUserMessage(CONTINUATION_NUDGE, undefined)).then((wrote) => {
+                // The nudge never reached the CLI: the round that ran stands.
+                if (!wrote) {
+                  const held = t.deferred;
+                  if (session.turn === t && !t.settled && held) settleResult(held);
+                  return;
+                }
+                if (session.turn !== t || t.settled) return;
+                // Bounded like a steered continuation: the CLI announces the
+                // next call with `init` within milliseconds or never — and
+                // handleLine clears this timer on the continuation's first
+                // frame, so the held result cannot stand on a speaking turn.
+                t.continuationSilence = setTimeout(() => {
+                  const held = t.deferred;
+                  if (session.turn !== t || t.settled || !held) return;
+                  if (t.stopRequested || session.closing) return;
+                  t.continuationSilence = null;
+                  emit({ ...base(threadId, t.turnId), type: "runtime.error", message: "Claude went silent after the continuation nudge; the turn was closed." });
+                  settleResult(held);
+                }, STEERED_CONTINUATION_SILENCE_MS * steerSilenceScale());
+                t.continuationSilence.unref?.();
+              });
               break;
             }
             settleResult(sumNativeTurnResults(t?.deferred ?? null, native));

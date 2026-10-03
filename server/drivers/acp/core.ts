@@ -31,6 +31,7 @@ import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { createHash } from "node:crypto";
 
 import { PROVIDER_CREDENTIAL_ENV, stripControlPlaneEnv, WORKSPACE_CREDENTIAL_ENV } from "../../config.ts";
+import { announcesAction, CONTINUATION_NUDGE } from "../announced-action.ts";
 import { decodeInjectId } from "../local-inject.ts";
 import { deletePromptSplitReceipt, promptHalves, readPromptSplitReceipt, splitSessionPrompt, writePromptSplitReceipt } from "../prompt-split.ts";
 import type { PromptSplitReceipt } from "../prompt-split.ts";
@@ -261,6 +262,12 @@ export interface AcpSupport {
   effortLevels?: readonly EffortLevel[];
   /** Discover and select opaque model variants through ACP config options. */
   modelVariants?: boolean;
+  /** Some agents announce their next step ("Now let me run the build") and
+   *  end the turn instead of doing it. When set, such a trailing reply gets
+   *  one automatic continuation prompt inside the same turn — the nudge the
+   *  person would otherwise have to type. A question, or anything longer,
+   *  ends the turn like before. */
+  nudgeAnnouncedAction?: boolean;
   /** Default CLI binary name if the instance config doesn't override it. */
   defaultCli: string;
   /** Optional live model catalog. A failed lookup keeps the last usable catalog.
@@ -2080,9 +2087,9 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             acknowledge();
             const promptIdleMs = promptIdleTimeoutMs();
             const quiet = startQuietWatch(threadId, session, current);
-            const result = await request(
+            const requestPrompt = (promptText: string, blocks: unknown[] = imageBlocks) => request(
               "session/prompt",
-              { sessionId, prompt: [{ type: "text", text }, ...imageBlocks] },
+              { sessionId, prompt: [{ type: "text", text: promptText }, ...blocks] },
               undefined,
               undefined,
               promptIdleMs,
@@ -2093,59 +2100,74 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                   "Send the message again to retry. On a self-hosted server, OPENMAUS_ACP_PROMPT_IDLE_TIMEOUT_MS sets this limit (0 turns it off).";
               },
               );
-            if (pendingSplitReceipt) {
-              // session/prompt resolving is the acceptance boundary: a
-              // rejected prompt leaves the receipt unwritten, so the next
-              // turn redelivers what this one never received. After a
-              // compaction, drop it so the next turn re-sends the full prompt.
-              if (state.usageCompacted) {
-                deletePromptSplitReceipt(DRIVER_KIND, pendingSplitReceipt.key);
-              } else {
-                const previousLastUsed = typeof pendingSplitReceipt.previous?.lastUsed === "number"
-                  ? pendingSplitReceipt.previous.lastUsed
-                  : undefined;
-                const lastUsed = state.usageLast ?? previousLastUsed;
-                writePromptSplitReceipt(
-                  DRIVER_KIND,
-                  pendingSplitReceipt.key,
-                  {
-                    ...pendingSplitReceipt.receipt,
-                    ...(lastUsed === undefined ? {} : { lastUsed }),
-                    ...(state.usagePeak === null ? {} : { peakUsed: state.usagePeak }),
-                  },
-                );
+            const notePromptResult = (promptResult: any) => {
+              if (pendingSplitReceipt) {
+                // session/prompt resolving is the acceptance boundary: a
+                // rejected prompt leaves the receipt unwritten, so the next
+                // turn redelivers what this one never received. After a
+                // compaction, drop it so the next turn re-sends the full prompt.
+                if (state.usageCompacted) {
+                  deletePromptSplitReceipt(DRIVER_KIND, pendingSplitReceipt.key);
+                } else {
+                  const previousLastUsed = typeof pendingSplitReceipt.previous?.lastUsed === "number"
+                    ? pendingSplitReceipt.previous.lastUsed
+                    : undefined;
+                  const lastUsed = state.usageLast ?? previousLastUsed;
+                  writePromptSplitReceipt(
+                    DRIVER_KIND,
+                    pendingSplitReceipt.key,
+                    {
+                      ...pendingSplitReceipt.receipt,
+                      ...(lastUsed === undefined ? {} : { lastUsed }),
+                      ...(state.usagePeak === null ? {} : { peakUsed: state.usagePeak }),
+                    },
+                  );
+                }
               }
-            }
-            // opencode 1.18.18 reports usage at the result root; grok and
-            // gemini put it under _meta. Read both rather than lose the count.
-            const usage = result?.usage ?? result?._meta ?? {};
-            if (typeof usage.inputTokens === "number" || typeof usage.outputTokens === "number") {
-              // opencode 1.18.25 keeps only the uncached share in inputTokens
-              // and reports cache reads beside it (omitted when 0); some
-              // agents count them inside inputTokens. `input` is the whole
-              // prompt with `cachedInput` naming its cached part — the same
-              // convention as the Claude driver and the store — and
-              // totalTokens tells the two wire shapes apart. Cache writes
-              // stay out of `input`, exactly as in the Claude driver, and an
-              // absent cache count emits the bare shape with no cachedInput
-              // key: absent is not zero.
-              const input = usage.inputTokens ?? 0;
-              const output = usage.outputTokens ?? 0;
-              const cachedRead = typeof usage.cachedReadTokens === "number" && usage.cachedReadTokens > 0
-                ? usage.cachedReadTokens
-                : null;
-              const exclusive = cachedRead !== null
-                && (typeof usage.totalTokens !== "number"
-                  || usage.totalTokens >= input + output + cachedRead);
-              emit({
-                ...base(threadId, turnId),
-                type: "thread.token-usage.updated",
-                input: cachedRead !== null && exclusive ? input + cachedRead : input,
-                output,
-                ...(cachedRead !== null
-                  ? { cachedInput: exclusive ? cachedRead : Math.min(cachedRead, input) }
-                  : {}),
-              });
+              // opencode 1.18.18 reports usage at the result root; grok and
+              // gemini put it under _meta. Read both rather than lose the count.
+              const usage = promptResult?.usage ?? promptResult?._meta ?? {};
+              if (typeof usage.inputTokens === "number" || typeof usage.outputTokens === "number") {
+                // opencode 1.18.25 keeps only the uncached share in inputTokens
+                // and reports cache reads beside it (omitted when 0); some
+                // agents count them inside inputTokens. `input` is the whole
+                // prompt with `cachedInput` naming its cached part — the same
+                // convention as the Claude driver and the store — and
+                // totalTokens tells the two wire shapes apart. Cache writes
+                // stay out of `input`, exactly as in the Claude driver, and an
+                // absent cache count emits the bare shape with no cachedInput
+                // key: absent is not zero.
+                const input = usage.inputTokens ?? 0;
+                const output = usage.outputTokens ?? 0;
+                const cachedRead = typeof usage.cachedReadTokens === "number" && usage.cachedReadTokens > 0
+                  ? usage.cachedReadTokens
+                  : null;
+                const exclusive = cachedRead !== null
+                  && (typeof usage.totalTokens !== "number"
+                    || usage.totalTokens >= input + output + cachedRead);
+                emit({
+                  ...base(threadId, turnId),
+                  type: "thread.token-usage.updated",
+                  input: cachedRead !== null && exclusive ? input + cachedRead : input,
+                  output,
+                  ...(cachedRead !== null
+                    ? { cachedInput: exclusive ? cachedRead : Math.min(cachedRead, input) }
+                    : {}),
+                });
+              }
+            };
+            let result = await requestPrompt(text);
+            notePromptResult(result);
+            // An agent that announces its next step and ends the turn ("Now
+            // let me run the build") gets one continuation prompt inside the
+            // same turn — the nudge the person would otherwise have to type.
+            // Flush first so the nudge round's reply does not concatenate
+            // onto the announcement's text buffer.
+            if (result?.stopReason === "end_turn" && support.nudgeAnnouncedAction &&
+                !state.stopped && !session.closing && announcesAction(state.text)) {
+              current.flushAssistantText();
+              result = await requestPrompt(CONTINUATION_NUDGE, []);
+              notePromptResult(result);
             }
             const reason = result?.stopReason;
             if (reason === "end_turn") settle(threadId, session, true, null);

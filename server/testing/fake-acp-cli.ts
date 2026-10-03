@@ -21,6 +21,13 @@
 //                     not found, and the prompt completes only after that
 //                     rejection arrives)
 //                   | interleave (message → tool → message → tool → message)
+//                   | announce-continue (first prompt is answered with "Now
+//                     let me verify the build passes." and end_turn — the
+//                     announced-action nudge must follow up; later prompts
+//                     reply "done — received: <their text>")
+//                   | announce-twice (like announce-continue, but the nudge
+//                     round announces AGAIN — the driver must settle instead
+//                     of nudging a second time)
 //                   | no-session-config (reject session/set_mode + set_model
 //                     with -32601, i.e. an agent predating those methods)
 //                   | ask-peer (spawn the injected "agents" MCP server from
@@ -421,6 +428,7 @@ type McpEntry = { command: string; args?: string[]; env?: Array<{ name: string; 
 let agentsMcp: McpEntry | null = null;
 // the session this process established, for FAKE_ACP_REJECT_LIVE_LOAD_FILE
 let liveSession: string | null = null;
+let announcePrompts = 0;
 let rpcFailure: unknown = null;
 function emitUsageUpdates(): void {
   const usageFile = process.env.FAKE_ACP_USAGE_UPDATES_FILE;
@@ -835,6 +843,24 @@ function handle(msg: any) {
             : { stopReason: "end_turn", _meta: { inputTokens: 10, outputTokens: 5 } },
         );
       };
+      if (mode === "announce-continue" || mode === "announce-twice") {
+        // The announced-action nudge: round one "announces" a next step and
+        // ends the turn. The nudge round proves its prompt arrived by
+        // echoing it back; announce-twice announces AGAIN so the driver must
+        // settle instead of nudging a second time.
+        announcePrompts += 1;
+        const promptText = String(msg.params?.prompt?.[0]?.text ?? "");
+        const reply = announcePrompts === 1
+          ? "Now let me verify the build passes."
+          : mode === "announce-twice" && announcePrompts === 2
+            ? "Still just announcing. round 2 got: " + promptText
+            : announcePrompts === 2
+              ? "done — received: " + promptText
+              : "unexpected extra prompt: " + promptText;
+        out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: reply } } } });
+        complete();
+        return;
+      }
       if (mode === "quiet-then-answer") {
         const lines: string[] = process.env.FAKE_ACP_QWEN_LOG ? JSON.parse(process.env.FAKE_ACP_QWEN_LOG) : [];
         let logTimer: ReturnType<typeof setInterval> | null = null;

@@ -267,6 +267,39 @@ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});`)
     expect(readFileSync(receipt, "utf8")).toBe("agents:list_bots\nnotes:read_notes\nagents:list_bots\nnotes:read_notes\n");
   });
 
+  it("keeps going after an announced next step without a person typing continue", async () => {
+    const dump = join(scratch, "announce.json"); process.env.FAKE_CODEX_DUMP = dump;
+    await create({ mode: "announce" });
+    await instance.adapter.sendTurn({ threadId: "codex-nudge", text: "fix the build" });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    expect(recorder.events.at(-1)).toMatchObject({ type: "turn.completed", ok: true });
+    // Round one's announcement is its own row; the continuation round's reply
+    // echoes the exact nudge prompt it received.
+    const texts = recorder.events
+      .filter((e) => e.type === "item.completed" && (e as { itemType?: string }).itemType === "assistant_text")
+      .map((e) => (e as { text?: string }).text ?? "");
+    expect(texts[0]).toBe("Now let me verify the build passes.");
+    expect(texts[1]).toContain("done — received: You announced your next step but ended the turn");
+    const { calls } = JSON.parse(readFileSync(dump, "utf8")) as { calls: Array<{ method: string }> };
+    expect(calls.filter((call) => call.method === "turn/start")).toHaveLength(2);
+  });
+
+  it("nudges at most once per turn", async () => {
+    const dump = join(scratch, "announce-twice.json"); process.env.FAKE_CODEX_DUMP = dump;
+    await create({ mode: "announce-twice" });
+    await instance.adapter.sendTurn({ threadId: "codex-nudge-twice", text: "fix the build" });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    expect(recorder.events.at(-1)).toMatchObject({ type: "turn.completed", ok: true });
+    const texts = recorder.events
+      .filter((e) => e.type === "item.completed" && (e as { itemType?: string }).itemType === "assistant_text")
+      .map((e) => (e as { text?: string }).text ?? "");
+    expect(texts.at(-1)).toContain("round 2 got: You announced your next step but ended the turn");
+    const { calls } = JSON.parse(readFileSync(dump, "utf8")) as { calls: Array<{ method: string }> };
+    expect(calls.filter((call) => call.method === "turn/start")).toHaveLength(2);
+  });
+
   afterEach(async () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();

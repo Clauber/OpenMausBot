@@ -17,9 +17,11 @@
 // Models: zcode takes no --model flag; its model comes from the personal
 // provider config (desktop ~/.zcode/v2/provider_config.json carries every
 // provider the app offers). resolveModels lists that catalog — prefixed
-// `<provider>::<model>` — and configureSession pins the pick per turn via
+// `<providerId>::<model>` — and configureSession pins the pick per turn via
 // the adapter's session/set_model, which rotates a copy of the config. The
-// bare "zcode-default" keeps the config's own default.
+// bare "zcode-default" keeps the config's own default. Each row carries the
+// provider's display name on `provider`, so the picker renders the same
+// provider-grouped list the zcode app itself shows.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -49,6 +51,7 @@ interface ZcodeProviderConfig {
   providerOrder?: unknown;
   providerConfigRules?: { providerRules?: Array<{
     providerId?: unknown;
+    providerName?: unknown;
     config?: { modelOrder?: unknown; personalModelIds?: unknown };
   }> };
 }
@@ -65,7 +68,9 @@ function providerConfigCandidates(env: Record<string, string | undefined>): stri
   ].filter((p): p is string => Boolean(p));
 }
 
-function readProviderCatalog(env: Record<string, string | undefined>): Array<{ providerId: string; modelId: string }> {
+function readProviderCatalog(
+  env: Record<string, string | undefined>,
+): Array<{ providerId: string; providerName: string; modelId: string }> {
   for (const path of providerConfigCandidates(env)) {
     let parsed: unknown;
     try {
@@ -76,7 +81,7 @@ function readProviderCatalog(env: Record<string, string | undefined>): Array<{ p
     const config = ((parsed as { config?: ZcodeProviderConfig })?.config ?? parsed) as ZcodeProviderConfig;
     if (!config || typeof config !== "object") continue;
     const rules = Array.isArray(config.providerConfigRules?.providerRules) ? config.providerConfigRules.providerRules : [];
-    const byId = new Map<string, string[]>();
+    const byId = new Map<string, { name: string; models: string[] }>();
     for (const rule of rules) {
       if (typeof rule?.providerId !== "string" || !rule.providerId) continue;
       const inner = rule.config && typeof rule.config === "object" ? rule.config : {};
@@ -84,7 +89,14 @@ function readProviderCatalog(env: Record<string, string | undefined>): Array<{ p
         ? inner.modelOrder
         : (Array.isArray(inner.personalModelIds) ? inner.personalModelIds : []);
       const clean = models.filter((m): m is string => typeof m === "string" && m.length > 0);
-      if (clean.length) byId.set(rule.providerId, clean);
+      if (clean.length) {
+        byId.set(rule.providerId, {
+          // The desktop app names its rows this way ("AvelloCC",
+          // "CCPro (ngaicode)"); the raw id is often a UUID.
+          name: typeof rule.providerName === "string" && rule.providerName ? rule.providerName : rule.providerId,
+          models: clean,
+        });
+      }
     }
     if (!byId.size) continue;
     const order = [
@@ -92,9 +104,11 @@ function readProviderCatalog(env: Record<string, string | undefined>): Array<{ p
       ...byId.keys(),
     ].filter((id): id is string => typeof id === "string" && byId.has(id))
       .filter((id, i, all) => all.indexOf(id) === i);
-    const entries: Array<{ providerId: string; modelId: string }> = [];
+    const entries: Array<{ providerId: string; providerName: string; modelId: string }> = [];
     for (const providerId of order) {
-      for (const modelId of byId.get(providerId)!) entries.push({ providerId, modelId });
+      for (const modelId of byId.get(providerId)!.models) {
+        entries.push({ providerId, providerName: byId.get(providerId)!.name, modelId });
+      }
     }
     return entries;
   }
@@ -104,13 +118,16 @@ function readProviderCatalog(env: Record<string, string | undefined>): Array<{ p
 /** The picker catalog: every model the provider config offers, plus the
  *  passthrough default. `custom: true` is not cosmetic — the model picker
  *  renders a custom-only agent's custom pane exclusively, and that pane
- *  lists only options carrying the flag. */
+ *  lists only options carrying the flag. Rows keep the bare model id as
+ *  their label and the provider's display name on `provider`, so the picker
+ *  groups them into provider sections like zcode's own picker. */
 export function zcodeModelCatalog(env: Record<string, string | undefined>): ModelCatalog {
   const options = [
     { id: ZCODE_DEFAULT_MODEL_ID, label: "ZCode default (provider config)", custom: true as const },
-    ...readProviderCatalog(env).map(({ providerId, modelId }) => ({
+    ...readProviderCatalog(env).map(({ providerId, providerName, modelId }) => ({
       id: `${providerId}::${modelId}`,
-      label: `${modelId} · ${providerId}`,
+      label: modelId,
+      provider: providerName,
       custom: true as const,
     })),
   ];
@@ -157,6 +174,11 @@ const support: AcpSupport = {
   pickAuthMethod: () => null,
   authFailure: "continue",
   isAuthenticated: (env) => zcodeAuthProbe(env),
+  // zcode ends the turn wherever its model stops, which is often right
+  // after announcing the next step ("Now let me run the tests."). One
+  // automatic continuation prompt keeps the work going without the person
+  // having to type "continue".
+  nudgeAnnouncedAction: true,
   async configureSession({ request, sessionId, turn }) {
     if (!turn.model || turn.model === ZCODE_DEFAULT_MODEL_ID) return;
     await applySetting(request, "session/set_model", { sessionId, modelId: turn.model }, `model "${turn.model}"`);

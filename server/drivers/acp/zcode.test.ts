@@ -50,6 +50,7 @@ describe("zcodeModelCatalog", () => {
           providerConfigRules: { providerRules: [
             { providerId: "router", providerName: "Router", config: { modelOrder: ["cc/claude-opus-5", "glm-5.3"], access: { type: "api-key", apiKey: "k" } } },
             { providerId: "direct", providerName: "Direct", config: { personalModelIds: ["deepseek-chat"] } },
+            { providerId: "uuid-9f2c", config: { modelOrder: ["opus-5"] } },
             { providerId: "empty", providerName: "No models", config: {} },
           ] },
         },
@@ -58,9 +59,10 @@ describe("zcodeModelCatalog", () => {
       expect(catalog.default).toBe(ZCODE_DEFAULT_MODEL_ID);
       expect(catalog.options).toEqual([
         { id: "zcode-default", label: "ZCode default (provider config)", custom: true },
-        { id: "router::cc/claude-opus-5", label: "cc/claude-opus-5 · router", custom: true },
-        { id: "router::glm-5.3", label: "glm-5.3 · router", custom: true },
-        { id: "direct::deepseek-chat", label: "deepseek-chat · direct", custom: true },
+        { id: "router::cc/claude-opus-5", label: "cc/claude-opus-5", provider: "Router", custom: true },
+        { id: "router::glm-5.3", label: "glm-5.3", provider: "Router", custom: true },
+        { id: "direct::deepseek-chat", label: "deepseek-chat", provider: "Direct", custom: true },
+        { id: "uuid-9f2c::opus-5", label: "opus-5", provider: "uuid-9f2c", custom: true },
       ]);
     } finally {
       await removeTempDir(scratch);
@@ -72,6 +74,43 @@ describe("zcodeModelCatalog", () => {
     expect(catalog.options).toEqual([
       { id: "zcode-default", label: "ZCode default (provider config)", custom: true },
     ]);
+  });
+
+  it("resolves the provider-named catalog through the real instance create path", async () => {
+    const scratch = mkdtempSync(join(tmpdir(), "omb-zcode-catalog-"));
+    try {
+      const configPath = join(scratch, "provider_config.json");
+      writeFileSync(configPath, JSON.stringify({
+        schemaVersion: 1,
+        config: {
+          providerOrder: ["9router", "deepseek"],
+          providerConfigRules: { providerRules: [
+            { providerId: "9router", providerName: "9Router", config: { modelOrder: ["opus-5", "z-ai/GLM-5.3-Flash"] } },
+            { providerId: "deepseek", providerName: "DeepSeek", config: { modelOrder: ["deepseek-chat"] } },
+          ] },
+        },
+      }));
+      const instance = await ZCodeAgentDriver.create({
+        instanceId: "zcode-catalog",
+        displayName: "ZCode",
+        environment: { ZCODE_ACP_PROVIDER_CONFIG: configPath },
+        enabled: true,
+        config: { cli: FAKE_CLI, fullAuto: false },
+      });
+      try {
+        expect(instance.models.default).toBe(ZCODE_DEFAULT_MODEL_ID);
+        expect(instance.models.options).toEqual([
+          { id: "zcode-default", label: "ZCode default (provider config)", custom: true },
+          { id: "9router::opus-5", label: "opus-5", provider: "9Router", custom: true },
+          { id: "9router::z-ai/GLM-5.3-Flash", label: "z-ai/GLM-5.3-Flash", provider: "9Router", custom: true },
+          { id: "deepseek::deepseek-chat", label: "deepseek-chat", provider: "DeepSeek", custom: true },
+        ]);
+      } finally {
+        await instance.dispose();
+      }
+    } finally {
+      await removeTempDir(scratch);
+    }
   });
 });
 
@@ -123,6 +162,8 @@ describe("ZCodeAgentDriver turns (fake adapter CLI)", () => {
 
   afterEach(async () => {
     delete process.env.FAKE_ACP_DUMP;
+    delete process.env.FAKE_ACP_MODE;
+    delete process.env.FAKE_ACP_RPC_APPEND_FILE;
     recorder?.stop();
     await instance?.dispose();
     await removeTempDir(scratch);
@@ -157,5 +198,45 @@ describe("ZCodeAgentDriver turns (fake adapter CLI)", () => {
     // deny-by-default credential hygiene: the adapter never inherits
     // another provider's billing key
     expect(seen.env.XAI_API_KEY).toBeUndefined();
+  });
+
+  const promptCount = (rpcLog: string) =>
+    readFileSync(rpcLog, "utf8").trim().split("\n")
+      .map((line) => JSON.parse(line) as { method: string })
+      .filter((entry) => entry.method === "session/prompt").length;
+
+  const assistantTexts = () =>
+    recorder.events
+      .filter((e) => e.type === "item.completed" && (e as { itemType?: string }).itemType === "assistant_text")
+      .map((e) => (e as { text?: string }).text ?? "");
+
+  it("keeps going after an announced next step without a person typing continue", async () => {
+    process.env.FAKE_ACP_MODE = "announce-continue";
+    const rpcLog = join(scratch, "rpc-nudge.jsonl");
+    process.env.FAKE_ACP_RPC_APPEND_FILE = rpcLog;
+    await create();
+    await instance.adapter.sendTurn({ threadId: "t-zcode-nudge", text: "fix the build" });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    expect(recorder.events.at(-1)).toMatchObject({ type: "turn.completed", ok: true });
+    // Round one's announcement is its own row; the continuation round's
+    // reply echoes the exact nudge prompt it received.
+    const texts = assistantTexts();
+    expect(texts[0]).toBe("Now let me verify the build passes.");
+    expect(texts[1]).toContain("done — received: You announced your next step but ended the turn");
+    expect(promptCount(rpcLog)).toBe(2);
+  });
+
+  it("nudges at most once per turn", async () => {
+    process.env.FAKE_ACP_MODE = "announce-twice";
+    const rpcLog = join(scratch, "rpc-nudge-twice.jsonl");
+    process.env.FAKE_ACP_RPC_APPEND_FILE = rpcLog;
+    await create();
+    await instance.adapter.sendTurn({ threadId: "t-zcode-nudge-twice", text: "fix the build" });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    expect(recorder.events.at(-1)).toMatchObject({ type: "turn.completed", ok: true });
+    expect(assistantTexts().at(-1)).toContain("round 2 got: You announced your next step but ended the turn");
+    expect(promptCount(rpcLog)).toBe(2);
   });
 });
