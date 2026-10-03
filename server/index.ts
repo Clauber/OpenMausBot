@@ -103,6 +103,7 @@ import { fitsOnOneLine, parseBotProfilePatch } from "./bot-profile.ts";
 import { groupTurnCwd } from "./room-cwd.ts";
 import { RoomTurnDeadline, RoomTurnStallRegistry, roomTurnTimeoutMessage } from "./room-turn-timeout.ts";
 import * as boat from "./boat.ts";
+import { cloudComputerRpc } from "./cloud-computer-tools.ts";
 import { TeamComputers, teamComputerAssignment, teamComputerCreate, teamComputerOwner, type TeamComputerRecord } from "./team-computers.ts";
 import { isEffortLevel, type BotVisibility, type CardAnswerer, type ResolvedSender, type SteerQueueReason, type WireBot, type WireGroup, type WireTask } from "../shared/wire.ts";
 import { isPersistentQuestionCard, QUESTION_DISMISS_MESSAGE, shouldSettleRequestCard } from "../shared/ask-question.ts";
@@ -123,7 +124,6 @@ import { buildRecall } from "./recall.ts";
 import { createMemoryUpkeep, upkeepEnabled } from "./memory-upkeep.ts";
 import { appendAboutMe, commitLearned, planLearned } from "./profile-learned.ts";
 import { canAccessTeam, canReachPeer, coordinatorSupervises, livePeerRoster, livePeerRosterBlock, peerAllowed, peerName, peerRosterSystemPrompt, peerStatus, peerStatusWords, reachablePeers, resolveTeammate, roomPeerRosterSystemPrompt, roomRosterLine, PEER_ACCESS_HELP } from "./peer-roster.ts";
-import { openMausStatusSystemPrompt } from "./openmaus-status-capsule.ts";
 import {
   containerComputerAction,
   containerComputerExists,
@@ -145,6 +145,7 @@ import {
 } from "./container-computer.ts";
 import { attachForTurn, saveBotAttachment } from "./bot-attachment.ts";
 import {
+  cacheUntilConfigChanges,
   ensureDirs,
   instanceConfigs,
   loadConfig,
@@ -216,6 +217,7 @@ import {
   type ModelSelection,
   type RequestOutcome,
   type RuntimeEvent,
+  type SendTurnInput,
   type SteerOutcome,
   newId,
 } from "./contracts.ts";
@@ -519,7 +521,7 @@ import { startAutoVmClaim, type AutoVmClaimTable } from "./auto-vm-claims.ts";
 import { computerFreeAfterText, computerParkedText, computerStoppedWaitingText, computerWaitingText, type ComputerHolder } from "./computer-wait.ts";
 import { CloudOverflowConsent, CloudSeatLease, cloudOverflowAction, cloudOverflowConsentText, cloudOverflowOfferText, cloudSeatStartedText, cloudSeatStoppedText, type CloudOverflowSituation } from "./cloud-overflow.ts";
 import { modelContextWindow } from "./model-context-window.ts";
-import { parseSurface, resolveSurface, surfaceLabel, surfaceOfComputerKind, surfacePrompt, type Surface } from "./surface.ts";
+import { cloudPlaceDriverError, parseSurface, PlaceUnavailableError, placeUnavailable, resolveSurface, surfaceLabel, surfaceOfComputerKind, surfacePrompt, type PlaceSource, type Surface } from "./surface.ts";
 import {
   PendingTurnCancellations,
   ProviderTurnGenerationRegistry,
@@ -672,10 +674,12 @@ const workspaceMaintenance = new WorkspaceBackupMaintenance();
 // Remote clients (server/request-auth.ts, server/sessions.ts): a stable identity
 // for this server, the paired sessions, and the cookie the served UI uses.
 const ENVIRONMENT_ID = loadEnvironmentId(DATA_DIR);
-function signInAllowList() {
-  const current = loadConfig().signIn;
-  return { admins: parseAllowList(current?.admins?.join(",")), members: parseAllowList(current?.members?.join(",")) };
-}
+// Every stream frame and request rechecks email sessions against this list,
+// so config.json is parsed again only when the file changes.
+const signInAllowList = cacheUntilConfigChanges((config) => ({
+  admins: parseAllowList(config.signIn?.admins?.join(",")),
+  members: parseAllowList(config.signIn?.members?.join(",")),
+}));
 const sessions = new SessionRegistry({
   file: join(DATA_DIR, "sessions.json"),
   emailScopesSnapshot: () => {
@@ -2142,6 +2146,9 @@ type InternalCapability = {
   orphanExpiresAt: number;
   localVmTarget?: LocalVmTarget;
   teamComputerId?: string;
+  /** The Boat this turn's cloud computer tools act on
+   * (/api/internal/computer/mcp); only ever set by the harness at attach. */
+  boxId?: string;
   browserSession?: string;
   roomHandoffId?: string;
   roomCoordination?: boolean;
@@ -3148,8 +3155,8 @@ async function browserIntegration(botId: string, profile: string | undefined, tu
   const token = mintInternalCapability({ botId, ...turn, browserSession: session,
     kind: "browser", depth: 0, skillAuthoring: false, createdBots: 0, openedThreads: 0 });
   return { profile: partitionId, session, spec, integration: {
-    command: process.execPath, args: [SPAWNED_PROXIES.browser], env: {
-      ...AGENTS_NODE_FLAG, OMB_BROWSER_TOKEN: token, OMB_HARNESS_URL: `http://127.0.0.1:${PORT}`,
+    command: process.execPath, args: [SPAWNED_PROXIES.harnessMcp, "browser"], env: {
+      ...AGENTS_NODE_FLAG, OMB_MCP_TOKEN: token, OMB_HARNESS_URL: `http://127.0.0.1:${PORT}`,
     },
   } };
 }
@@ -3254,8 +3261,10 @@ const routineRequestEnvelopeSchema = z.discriminatedUnion("action", [
   ),
 ]);
 
-/** The loopback endpoint a bot's computer proxy polls before acting. */
-function controlIntegration(botId: string, threadId: string, generation: string, localVmTarget?: LocalVmTarget) {
+/** The loopback endpoint a bot's computer proxy polls before acting. With a
+ * Boat id, the same turn-scoped token also serves that Boat's tools at
+ * /api/internal/computer/mcp, and is revoked when the turn ends. */
+function controlIntegration(botId: string, threadId: string, generation: string, localVmTarget?: LocalVmTarget, boxId?: string) {
   return {
     url: `http://127.0.0.1:${PORT}/api/internal/computer-control?botId=${encodeURIComponent(botId)}`,
     token: mintInternalCapability({
@@ -3265,6 +3274,7 @@ function controlIntegration(botId: string, threadId: string, generation: string,
       depth: 0,
       kind: "computer",
       ...(localVmTarget ? { localVmTarget } : {}),
+      ...(boxId ? { boxId } : {}),
       ...(teamComputerTurns.get(threadId) ? { teamComputerId: teamComputerTurns.get(threadId)!.computerId } : {}),
       skillAuthoring: false,
       createdBots: 0,
@@ -3763,7 +3773,7 @@ function previewSystemPrompt(bot: BotRecord) {
   ]
     .filter(Boolean)
     .join(" ");
-  const instance = turnInstance(bot);
+  const instance = registry.get(bot.modelSelection.instanceId);
   const caps = instance?.adapter.capabilities;
   const teamComputer = inheritedTeamComputer(bot);
   const previewComputer = teamComputer ? "cloud" : bot.computer;
@@ -3771,12 +3781,11 @@ function previewSystemPrompt(bot: BotRecord) {
     kind: previewComputer === "vm" ? "vm" : previewComputer === "cloud"
       ? bot.cloudBackend === "vps" ? "vps" : "box" : previewComputer === "local" ? "local" : null,
     driverKind: instance?.driverKind,
-    cloudComputerMcp: caps?.cloudComputerMcp,
     vmPrivate: localVmMode(cfg) === "per-bot",
   });
   const peers = reachablePeers(store.bots, bot);
   const coordination = bot.chiefOfStaff
-    ? chiefOfStaffSystemPrompt(bot.id, store.bots, true, openMausStatusSystemPrompt())
+    ? chiefOfStaffSystemPrompt(bot.id, store.bots, true)
     : peers.length > 0
       ? peerRosterSystemPrompt(peers)
       : "";
@@ -4765,7 +4774,7 @@ function outstandingAssignmentsPrompt(threadId: string): string {
     assignment: node.text.slice(0, 1_000),
     status: node.status === "queued" ? "waiting for that teammate to be free" : "working on it now",
   }));
-  return ` Assignments you already sent are still outstanding, and nothing in this conversation cancelled them: ${JSON.stringify(listed)}. Do not send them again, do not poll or wait for them, and do not tell the user they were lost. Each result returns to this conversation on its own and resumes you then. Answer the message above with that work still in flight.`;
+  return ` Assignments you already sent are still outstanding, and nothing in this conversation cancelled them: ${JSON.stringify(listed)}. Do not resend them, do not poll or wait for them, and do not tell the user they were lost. Each result returns to this conversation on its own and resumes you then. To change or add to one, send the change to the same teammate with coordinate_bots; it runs after the current work. Answer the message above with that work still in flight.`;
 }
 
 const roomHandoffs = new RoomHandoffs(join(DATA_DIR, "room-handoffs.json"), {
@@ -4831,9 +4840,10 @@ const roomHandoffs = new RoomHandoffs(join(DATA_DIR, "room-handoffs.json"), {
     }
     // A successful direct work thread closes after its result is reported:
     // folded out of the sidebar, never deleted, and reopened if addressed.
-    // Failed or withheld work stays visible.
+    // Failed or withheld work stays visible, and so does a thread whose
+    // next request is already waiting there.
     const childTask = store.taskByThread(child.botId, child.threadId);
-    if (!child.groupId && child.status === "completed" && !problem && !childTask?.closedBy
+    if (!child.groupId && child.status === "completed" && !problem && !childTask?.closedBy && !roomHandoffs.activeDirect(child.threadId)
       && childTask?.openedBy?.kind === "work" && childTask.openedBy.botId === parent.botId) {
       store.setTaskClosedBy(child.botId, child.threadId,
         { botId: parent.botId, name: store.bot(parent.botId)?.name ?? childTask.openedBy.name, at: Date.now() });
@@ -5964,8 +5974,8 @@ const watchdog = new TurnWatchdog({
     const bot = botForThread(turn.botId, turn.threadId);
     const routineRun = activeRoutineRunForThread(turn.threadId);
     const instance = bot
-      ? runningTurnInstance(bot, turn.threadId, routineRun?.runOn)
-      : routineRun?.runOn === "cloud" ? registry.instances().find((candidate) => candidate.driverKind === "boxAgent") : null;
+      ? runningTurnInstance(bot, turn.threadId)
+      : runningTurnEngines.get(turn.threadId) ?? null;
     void instance?.adapter.interruptTurn(turn.threadId).catch(() => {});
     const minutes = Math.round(TURN_STALL_MS / 60_000);
     if (routineRun?.target === "bot") {
@@ -6676,8 +6686,27 @@ async function attachTeamBoat(computer: TeamComputerRecord, botId: string, owner
   if (turnResourceOwners.get(owner.threadId)?.generation !== owner.generation ||
       !turnResources.owns(`computer:box:${machine.id}`, owner)) throw new Error("This computer turn ended while its machine was starting");
   return {
-    integration: { kind: "box" as const, boxId: machine.id, token: boat.boatAccount(cfg)?.token ?? "", control: controlIntegration(botId, owner.threadId, owner.generation) },
+    mount: cloudComputerMount(botId, owner, machine.id, remoteAgent),
     capture: () => boat.screenshotBoat(cfg, ownerId, machine!.id),
+  };
+}
+
+/** How a turn's engine reaches a cloud computer. The Computer engine runs its
+ * whole turn on the Boat. Every other engine keeps its own model and sign-in
+ * and gets the Boat as one more stdio computer server (harness-mcp-proxy
+ * computer), in the same slot a Local VM or VPS uses: one mechanism on a
+ * desktop, a headless server and an OMB Cloud. The agent process holds only a
+ * turn-scoped capability naming this Boat, never a Boat credential. */
+function cloudComputerMount(botId: string, owner: TurnOwner, boxId: string, remoteAgent: boolean): Pick<NonNullable<SendTurnInput["integrations"]>, "computer" | "localComputer"> {
+  if (remoteAgent) return { computer: { kind: "box", boxId } };
+  const control = controlIntegration(botId, owner.threadId, owner.generation, undefined, boxId);
+  return {
+    localComputer: {
+      command: process.execPath,
+      args: [SPAWNED_PROXIES.harnessMcp, "computer"],
+      env: { ...AGENTS_NODE_FLAG, OMB_HARNESS_URL: `http://127.0.0.1:${PORT}`, OMB_MCP_TOKEN: control.token },
+      platform: "linux",
+    },
   };
 }
 
@@ -6787,9 +6816,7 @@ async function attachBotBoat(
   await bindTurnComputer(owner, `computer:box:${machine.id}`, opts.remoteAgent);
   return {
     capture: () => boat.screenshotBoat(cfg, bot.id, machine.id),
-    integration: opts.canMount
-      ? { kind: "box" as const, boxId: machine.id, token: boat.boatAccount(cfg)?.token ?? "", control: controlIntegration(bot.id, owner.threadId, owner.generation) }
-      : null,
+    mount: opts.canMount ? cloudComputerMount(bot.id, owner, machine.id, opts.remoteAgent) : null,
   };
 }
 
@@ -6872,17 +6899,6 @@ function turnProvider(bot: BotRecord, runOn?: RoutineRunOn, threadId?: string): 
   return bot.cloudBackend === "vps" ? "vps" : wants === "cloud" ? "box" : null;
 }
 
-/** A driver with a Boat bridge keeps the selected model. Other engines use
- * Boat's native runner. Start and interrupt must resolve the same owner. */
-function turnInstance(bot: BotRecord, runOn?: RoutineRunOn, threadId?: string): ReturnType<typeof registry.get> {
-  const selected = registry.get(bot.modelSelection.instanceId);
-  if (selected?.adapter.capabilities.cloudComputerMcp) return selected;
-  const onBoat = turnProvider(bot, runOn, threadId) === "box";
-  return onBoat
-    ? registry.instances().find((candidate) => candidate.driverKind === "boxAgent") ?? null
-    : registry.get(bot.modelSelection.instanceId);
-}
-
 /** Preview requests carry the selected conversation, not whichever thread
  * happens to be the bot's default. A query never grants lifecycle authority. */
 function computerPreviewBot(botId: string, url: URL): BotRecord | null {
@@ -6942,7 +6958,7 @@ async function selectableComputers(bot: BotRecord) {
             status.image && status.imageMatches && status.network === "private" && status.mounts === "none" && status.security === "hardened");
           canCreate = Boolean(status?.configured && status.daemonUp && status.container === "missing");
           reason = status?.problem ?? reason;
-        } else if (boat.boatConfigured(cfg) && (caps?.usesCloudComputer === true || registry.instances().some(instance => instance.driverKind === "boxAgent"))) {
+        } else if (boat.boatConfigured(cfg) && caps?.usesCloudComputer === true) {
           const status = await boat.boatStatus(cfg, bot.id);
           const lifecycle = boat.boatTurnLifecycleAction({ explicitCloud: true, canMount: true, state: status.box?.state ?? null });
           ready = lifecycle === "attach";
@@ -7006,8 +7022,9 @@ function continueComputerSelection(threadId: string, generation: string | undefi
 /** The engine that dispatched each live turn. A bot's settings may change
  * mid-turn; an interrupt or steer must reach the engine actually running. */
 const runningTurnEngines = new Map<string, NonNullable<ReturnType<typeof registry.get>>>();
-function runningTurnInstance(bot: NonNullable<ReturnType<typeof store.bot>>, threadId: string, runOn?: RoutineRunOn): ReturnType<typeof registry.get> {
-  return runningTurnEngines.get(threadId) ?? turnInstance(bot, runOn, threadId);
+function runningTurnInstance(bot: NonNullable<ReturnType<typeof store.bot>>, threadId: string): ReturnType<typeof registry.get> {
+  // A turn always runs on the bot's own engine, wherever it works.
+  return runningTurnEngines.get(threadId) ?? registry.get(bot.modelSelection.instanceId);
 }
 
 function providerTransitionForTurn(
@@ -8227,7 +8244,7 @@ function markTaskContextExternallyUpdated(bot: BotRecord, threadId: string): voi
   const owner = task.lastInstanceId;
   const record = owner ? task.handedMessages?.[owner] : undefined;
   if (owner && record?.session !== undefined && record.session === task.resumeCursors[owner] &&
-    turnInstance(botForThread(bot.id, threadId) ?? bot, undefined, threadId)?.instanceId === owner &&
+    (botForThread(bot.id, threadId) ?? bot).modelSelection.instanceId === owner &&
     registry.get(owner)?.adapter.capabilities.strictResume) {
     store.patchTask(bot.id, threadId, { unread: true });
     return;
@@ -8268,7 +8285,7 @@ function directContext(bot: BotRecord, threadId: string, messages: Message[]): C
  * thread deletion. A durable record is committed only to its original branch. */
 async function compactConversation(input: {
   bot: BotRecord; threadId: string; generation: string;
-  instance: NonNullable<ReturnType<typeof turnInstance>>; model: string;
+  instance: NonNullable<ReturnType<typeof registry.get>>; model: string;
   excludedIds: ReadonlySet<string>; manual: boolean;
 }): Promise<void> {
   const { bot, threadId, generation, instance, model, excludedIds, manual } = input;
@@ -9288,8 +9305,8 @@ async function startTurn(
     excludeMessageIds?: string[];
     /** Routines run in detached tasks; pin the destination for the whole turn. */
     threadId?: string;
-    /** Cloud routines use the bot's Boat VM. Capable API drivers bridge its
-     * tools; other engines delegate the turn to the native Boat runner. */
+    /** Cloud routines use the bot's Boat VM, driven by the bot's own engine
+     * through its computer tools (the Computer engine runs on it). */
     runOn?: RoutineRunOn;
     /** Lets the system prompt put externally supplied payloads behind an
      * explicit untrusted-data boundary without changing ordinary chat. */
@@ -9397,14 +9414,10 @@ async function startTurn(
   if (!task) throw Object.assign(new Error("no such task"), { status: 404 });
   if (hostedModels && !hostedModels.allows(bot.modelSelection)) throw Object.assign(new Error(hostedModels.error()), { status: 409 });
   const plan = turnSurfacePlan(bot, opts?.runOn, threadId);
-  const instance = turnInstance(bot, opts?.runOn, threadId);
+  const instance = registry.get(bot.modelSelection.instanceId);
   if (!instance) {
     throw Object.assign(
-      new Error(
-        turnProvider(bot, opts?.runOn, threadId) === "box"
-          ? "the Cloud VM runner is unavailable — configure Boat in App Settings"
-          : `provider instance "${bot.modelSelection.instanceId}" is unavailable — pick another model in settings`,
-      ),
+      new Error(`provider instance "${bot.modelSelection.instanceId}" is unavailable — pick another model in settings`),
       { status: 409 },
     );
   }
@@ -9463,13 +9476,12 @@ async function startTurn(
   if (providerInstancesChanging.has(instanceId)) {
     throw Object.assign(new Error("this provider account is being updated — try again shortly"), { status: 409 });
   }
-  const switchedEngine = instance.instanceId !== bot.modelSelection.instanceId;
-  const useInstanceDefaults = switchedEngine || (opts?.runOn === "cloud" && !instance.adapter.capabilities.cloudComputerMcp);
-  const model = useInstanceDefaults ? instance.models.default : bot.modelSelection.model;
-  // A native cloud runner borrows its instance defaults; a Boat bridge keeps
-  // the bot's selected model, effort and variant.
-  const effort = useInstanceDefaults ? undefined : bot.modelSelection.effort;
-  const variant = useInstanceDefaults ? undefined : bot.modelSelection.variant;
+  // A turn always runs on the bot's own engine, model, effort and variant,
+  // wherever it works: a cloud computer is a tool it mounts, never a reason
+  // to swap the engine (the provider_not_configured incident).
+  const model = bot.modelSelection.model;
+  const effort = bot.modelSelection.effort;
+  const variant = bot.modelSelection.variant;
   assertModelVariantSupported({ variant, effort }, instance.adapter.capabilities);
   // A selection can be persisted while its engine is offline. Re-check when
   // the engine returns so an old or unsupported value never reaches a CLI.
@@ -9791,24 +9803,24 @@ async function startTurn(
       }
       const privateWorkspace = worksInWorkspace ? ensureTaskWorkspace(bot.id, threadId) : undefined;
       const skillInstructions = renderSkillInstructions(selectedSkills, {
-        includeRoot: worksInWorkspace && opts?.runOn !== "cloud",
+        includeRoot: worksInWorkspace,
       });
       const packagePlaybooks = installedPlaybookInstructions(providerText, bot.playbooks);
       // An explicit working folder wins for new tasks; otherwise they use
       // the private bot workspace. A legacy task with an existing provider
       // session deliberately pins to null (the old home-folder behavior),
       // because moving a live session would break resume.
-      // A cloud run happens on the boat, where a host folder means nothing:
-      // pin the task to the default so the header chip never shows the
-      // bot's folder for a task that runs elsewhere.
-      if (opts?.runOn === "cloud") store.pinTaskCwd(bot.id, threadId, undefined, { none: true });
+      // A cloud run keeps the bot's own engine on this host, with the cloud
+      // computer as one more tool, so it works in the same folder as any
+      // other turn (only the Computer engine runs on the Boat, and it has no
+      // workspace files).
       // On a Cloud home a conversation a guest opened is pinned to its own
       // folder when it first runs, not the bot's project folder the owner's
       // conversations share (what it leaves there reaches none of them). One
       // that ran before keeps its pin, unless the session that opened it was
       // revoked: then it was unpinned at boot (server/cloud-owner.ts).
       const pinnedCwd =
-        privateWorkspace && opts?.runOn !== "cloud"
+        privateWorkspace
           ? store.pinTaskCwd(bot.id, threadId, privateWorkspace, { privateOnly: cloudGuestOpened(threadId) })
           : null;
       const cwd = pinnedCwd ?? undefined;
@@ -9824,8 +9836,8 @@ async function startTurn(
       // tools that would fail on every call or spawn an unnecessary proxy.
       const dwebUrl = process.env.DWEB_URL?.trim();
       if (dwebUrl) integrations.dweb = { url: dwebUrl };
-      // Cloud routines always use Boat/BoatAgent. The per-bot backend applies
-      // only to ordinary turns that mount a computer into the local agent.
+      // Cloud routines always use the bot's Boat. The per-bot backend applies
+      // only to ordinary turns.
       const teamComputer = inheritedTeamComputer(bot);
       const cloudBackend = teamComputer || opts?.runOn === "cloud" || bot.cloudBackend !== "vps" ? "box" : "vps";
       const mountsComputerMcp = instance.adapter.capabilities.computerMcp === true;
@@ -9851,6 +9863,19 @@ async function startTurn(
         : wants === "cloud" ? (cloudBackend === "vps" ? "vps" : "box") : undefined;
       const placeRefusal = wantedKind && computerPlaceRefusal(wantedKind);
       if (placeRefusal) throw Object.assign(new Error(placeRefusal.message), { status: 409, code: placeRefusal.code });
+      // Where an explicit place came from, so its failure names the one
+      // control that changes it (and a failed Auto-recorded pin is cleared).
+      // Auto and a team's shared computer are nobody's per-turn choice.
+      const placeSource: PlaceSource | undefined = teamComputer || wants === undefined || wants === "off" ? undefined
+        : opts?.runOn === "cloud" ? "routine"
+        : plan.pinned ? (dispatchTask?.surfaceSource === "auto" ? "auto-pin" : "pin")
+        : "works-on";
+      // An engine that cannot use the cloud computer is refused here, before
+      // anything is created or woken — never handed to another engine.
+      if (wants === "cloud" && placeSource) {
+        const unsupported = cloudPlaceDriverError(instance.adapter.capabilities, cloudBackend, placeSource);
+        if (unsupported) throw new PlaceUnavailableError("cloud", placeSource, unsupported);
+      }
       let previewCapture: (() => Promise<{ png: string; format: string }>) | null = null;
       let browserCapture: (() => Promise<{ png: string; format: string }>) | null = null;
       let computerKind: "box" | "vps" | "vm" | "local" | null = null;
@@ -10104,21 +10129,22 @@ async function startTurn(
           return false;
         }
       };
-      if (wants === "vm") {
-        if (await attachLocalVm(true)) computerKind = "vm";
-      } else if (wants === "local") {
-        integrations.localComputer = await mountHostComputer(resourceOwner, bot.id, mountsLocalComputer);
-        computerKind = "local";
-      }
+      // An explicit place that cannot be attached fails the turn with its
+      // cause and the next action; it never quietly moves the work elsewhere.
+      try {
+        if (wants === "vm") {
+          if (await attachLocalVm(true)) computerKind = "vm";
+        } else if (wants === "local") {
+          integrations.localComputer = await mountHostComputer(resourceOwner, bot.id, mountsLocalComputer);
+          computerKind = "local";
+        }
 
-      // A VPS is a local-agent computer mount, never a remote agent runner.
-      // Explicit Cloud may prepare/start it. Auto remains read-only unless
-      // the person explicitly opted this bot into remote lifecycle actions.
-      if ((wants === "cloud" || (wants === undefined && managedPolicy.computerAllowed("vps"))) && cloudBackend === "vps") {
-        const unsupported = vps.vpsDriverError(instance.driverKind, mountsComputerMcp);
-        if (unsupported && wants === "cloud") throw new Error(unsupported);
-        if (unsupported && wants === undefined) autoVpsProblem = unsupported;
-        if (!unsupported) {
+        // A VPS is a local-agent computer mount, never a remote agent runner.
+        // Explicit Cloud may prepare/start it. Auto remains read-only unless
+        // the person explicitly opted this bot into remote lifecycle actions.
+        // On Auto an engine that cannot use a computer simply skips it.
+        if ((wants === "cloud" || (wants === undefined && managedPolicy.computerAllowed("vps"))) && cloudBackend === "vps" &&
+            !cloudPlaceDriverError(instance.adapter.capabilities, "vps")) {
           // The VPS "computer" is the desktop inside this bot's managed
           // container, and only screen work needs that desktop to itself.
           // So the lease is claimed on the first computer call, through the
@@ -10160,36 +10186,40 @@ async function startTurn(
             autoVpsProblem = mounted.problem ?? "the VPS computer could not be reached";
           }
         }
-      }
 
-      // Cloud is strict when selected. Native Boat and drivers with a Boat
-      // bridge may also reuse an already-ready Boat on Auto.
-      if (teamComputer) {
-        const attached = await attachTeamBoat(teamComputer, bot.id, resourceOwner,
-          instance.adapter.capabilities.usesCloudComputer === true, instance.adapter.capabilities.remoteAgent === true);
-        integrations.computer = attached.integration;
-        previewCapture = attached.capture;
-        computerKind = "box";
-      }
-      if (!teamComputer && instance.adapter.capabilities.usesCloudComputer === true && (wants === "cloud" || wants === undefined) && cloudBackend === "box" && boat.boatConfigured(cfg)) {
-        const attached = await attachBotBoat(bot, resourceOwner, {
-          explicitCloud: wants === "cloud",
-          canMount: instance.adapter.capabilities.usesCloudComputer === true,
-          remoteAgent: instance.adapter.capabilities.remoteAgent === true,
-        });
-        if (attached) {
+        // Cloud is strict when selected. Every engine that can use it may also
+        // reuse an already-ready Boat on Auto.
+        if (teamComputer) {
+          const attached = await attachTeamBoat(teamComputer, bot.id, resourceOwner,
+            instance.adapter.capabilities.usesCloudComputer === true, instance.adapter.capabilities.remoteAgent === true);
+          Object.assign(integrations, attached.mount);
           previewCapture = attached.capture;
-          if (attached.integration) {
-            integrations.computer = attached.integration;
-            computerKind = "box";
+          computerKind = "box";
+        }
+        if (!teamComputer && instance.adapter.capabilities.usesCloudComputer === true && (wants === "cloud" || (wants === undefined && !computerPlaceRefusal("box"))) && cloudBackend === "box" && boat.boatConfigured(cfg)) {
+          const attached = await attachBotBoat(bot, resourceOwner, {
+            explicitCloud: wants === "cloud",
+            canMount: instance.adapter.capabilities.usesCloudComputer === true,
+            remoteAgent: instance.adapter.capabilities.remoteAgent === true,
+          });
+          if (attached) {
+            previewCapture = attached.capture;
+            if (attached.mount) {
+              Object.assign(integrations, attached.mount);
+              computerKind = "box";
+            }
           }
         }
-      }
-      if (wants === "cloud" && cloudBackend === "box" && !boat.boatConfigured(cfg)) {
-        throw new Error(BOAT_NOT_CONFIGURED);
-      }
-      if (wants === "cloud" && cloudBackend === "box" && !integrations.computer) {
-        throw new Error("the cloud computer could not be created or reached");
+        if (wants === "cloud" && cloudBackend === "box" && !boat.boatConfigured(cfg)) {
+          throw new Error(BOAT_NOT_CONFIGURED);
+        }
+        if (wants === "cloud" && cloudBackend === "box" && computerKind !== "box") {
+          throw new Error("the cloud computer could not be created or reached");
+        }
+      } catch (error) {
+        if (!placeSource || wants === undefined || wants === "off" || error instanceof DirectTurnSetupCancelled ||
+            error instanceof ComputerWaitParked || error instanceof PlaceUnavailableError) throw error;
+        throw placeUnavailable(wants, placeSource, error instanceof Error ? error.message : String(error));
       }
 
       // Auto-only host fallback. Electron owns cua-driver/TCC attribution;
@@ -10291,7 +10321,6 @@ async function startTurn(
             bot.id,
             store.bots,
             Boolean(integrations.agents),
-            openMausStatusSystemPrompt(),
             boundedCoordination,
           )
         : integrations.agents && sectionPeers.length > 0
@@ -10400,7 +10429,6 @@ async function startTurn(
       const computerPromptKind = resolveComputerPromptKind({
         kind: computerKind,
         driverKind: instance.driverKind,
-        cloudComputerMcp: instance.adapter.capabilities.cloudComputerMcp,
         vmPrivate: localVmMode(cfg) === "per-bot",
       });
       const coordinationNode = opts?.coordination ? roomHandoffs.nodes.get(opts.coordination.id) : undefined;
@@ -10414,7 +10442,7 @@ async function startTurn(
         // to a turn whose engine actually mounted them (setupMode is already
         // false when they are not — see agentsMounted above)
         { id: "setup", label: "Setup", text: setupSystemPrompt(setupMode, { skills: skillAuthoring, cwd: liveBot?.cwd ?? bot.cwd }) },
-        { id: "files", label: "File locations", text: worksInWorkspace && opts?.runOn !== "cloud" ? workspaceLocationsPrompt(bot.id, cwd, liveBot?.cwd ?? bot.cwd) : "" },
+        { id: "files", label: "File locations", text: worksInWorkspace ? workspaceLocationsPrompt(bot.id, cwd, liveBot?.cwd ?? bot.cwd) : "" },
         { id: "computer", label: "Computer", text: computerPrompt(computerPromptKind) },
         { id: "team-computer", label: "Team computer", text: teamComputerPrompt(teamComputer) },
         { id: "plan", label: "Surface", text: surfacePrompt({ computer: mountedComputer, browser: Boolean(integrations.browser) }, { pinned: plan.pinned, note: plan.note, canSelect: computerSelectionTurns.has(threadId), cloudHome: Boolean(CLOUD_HOME) }) },
@@ -10638,6 +10666,16 @@ async function startTurn(
         drainTeamSetupResumes();
         drainDelegationWakes();
         return;
+      }
+      // A failed place never sticks. An Auto-recorded pin to it (a
+      // select_computer switch, or where an earlier Auto turn landed) is the
+      // machine's memory, not a choice: clear it so the next message runs on
+      // Auto. A person's pin stays, and the message names the composer.
+      if (e instanceof PlaceUnavailableError) {
+        const pinned = store.taskByThread(bot.id, threadId);
+        if (pinned?.surface === e.place && pinned.surfaceSource === "auto") {
+          store.patchTask(bot.id, threadId, { surface: undefined, surfaceSource: undefined });
+        }
       }
       let message = e instanceof Error ? e.message : String(e);
       const current = store.projectBotForTask(bot.id, threadId);
@@ -11016,15 +11054,15 @@ routines = new RoutineManager({
       goalRunId: runId,
     });
   },
-  interruptTurn: async (botId, threadId, runOn) => {
+  interruptTurn: async (botId, threadId) => {
     const bot = botForThread(botId, threadId);
     pendingDelegationWakes.delete(threadId);
     discardDelegations(commsBus, threadId);
     cancelDirectTurnDispatch(botId, threadId);
     revokeInternalCapabilitiesForThread(threadId);
     const instance = bot
-      ? runningTurnInstance(bot, threadId, runOn)
-      : runOn === "cloud" ? registry.instances().find((candidate) => candidate.driverKind === "boxAgent") ?? null : null;
+      ? runningTurnInstance(bot, threadId)
+      : runningTurnEngines.get(threadId) ?? null;
     try {
       await instance?.adapter.interruptTurn(threadId);
     } finally {
@@ -11186,8 +11224,11 @@ async function cloudRoutineReadiness(botId: string, threadId?: string): Promise<
       reason: 'The Boat cloud computer needs a working Boat API key. For the bot’s configured computer, including a self-hosted VPS, set run_on="maus" instead.',
     };
   }
-  const instance = turnInstance(bot, "cloud", threadId);
-  if (!instance) return { ready: false, reason: "The Cloud VM runner is unavailable. Restart OpenMausBot and try again." };
+  const instance = registry.get(bot.modelSelection.instanceId);
+  if (!instance) return { ready: false, reason: "The target bot's model is unavailable. Choose another model in the bot's settings." };
+  // The same rule a cloud turn applies, before anything is provisioned.
+  const unsupported = cloudPlaceDriverError(instance.adapter.capabilities, "box");
+  if (unsupported) return { ready: false, reason: "This model can't use a computer. Choose another model, or change where this routine runs." };
   try {
     if ((await instance.snapshot()).state !== "available") {
       return { ready: false, reason: "The target bot's model is not ready to use the Boat cloud computer." };
@@ -12199,7 +12240,7 @@ async function runGroupMemberTurn(
   const preparedApprovalMode = roomTurnApprovalMode(bot, threadId, orchestration);
   const preparedSelection = { ...bot.modelSelection };
   const preparedComposio = bot.composio;
-  const instance = turnInstance(bot);
+  const instance = registry.get(bot.modelSelection.instanceId);
   const userName = cfg.profile?.name?.trim() || "User";
   if (providerInstancesChanging.has(bot.modelSelection.instanceId)) {
     onDispatchError?.(`${bot.name}'s provider account is being updated — try again shortly`);
@@ -12385,7 +12426,7 @@ async function runGroupMemberTurn(
     : Boolean(readyGroup && store.groupTaskByThread(readyGroup.id, threadId));
   if (!readyGroup || !stillOwnsThread || !readyGroup.memberIds.includes(readyBot.id)) return false;
   const setupChanged =
-    turnInstance(readyBot) !== instance ||
+    registry.get(readyBot.modelSelection.instanceId) !== instance ||
     roomTurnApprovalMode(readyBot, threadId, orchestration) !== preparedApprovalMode ||
     readyBot.modelSelection.instanceId !== preparedSelection.instanceId ||
     readyBot.modelSelection.model !== preparedSelection.model ||
@@ -12526,6 +12567,12 @@ async function runGroupMemberTurn(
   if (roomPlan.computer === "local" && instance.adapter.capabilities.remoteAgent === true) {
     throw new Error("the Computer engine works on the cloud computer — set Works on to Cloud, or choose another engine");
   }
+  // The same one rule as a bot thread, before anything is provisioned: an
+  // engine that cannot use the cloud computer is refused, never swapped.
+  if (!roomTeamComputer && roomPlan.computer === "cloud") {
+    const unsupported = cloudPlaceDriverError(instance.adapter.capabilities, turnProvider(readyBot) === "vps" ? "vps" : "box");
+    if (unsupported) throw new PlaceUnavailableError("cloud", "works-on", unsupported);
+  }
   // One place per room turn as well: a team computer reached on Auto means
   // no separate built-in browser.
   if (roomPlan.browser && !(roomPlan.computer === undefined && roomTeamComputer)) {
@@ -12548,7 +12595,7 @@ async function runGroupMemberTurn(
       instance.adapter.capabilities.usesCloudComputer === true, instance.adapter.capabilities.remoteAgent === true);
     if (isCancelled?.() || groupSpeakers.get(threadId) !== roomSpeaker ||
         activeInternalGenerationByThread.get(threadId) !== internalGeneration) return false;
-    integrations.computer = attached.integration;
+    Object.assign(integrations, attached.mount);
     startScreenPoller(readyBot.id, threadId, { computer: attached.capture }, { screenIsTheWork: instance.adapter.capabilities.remoteAgent === true });
   }
 
@@ -12558,85 +12605,93 @@ async function runGroupMemberTurn(
   const roomSetupIsCurrent = () => !isCancelled?.() &&
     groupSpeakers.get(threadId) === roomSpeaker &&
     activeInternalGenerationByThread.get(threadId) === internalGeneration;
-  if (!roomTeamComputer && roomPlan.computer === "local") {
-    integrations.localComputer = await mountHostComputer(
-      resourceOwner, readyBot.id, instance.adapter.capabilities.localComputerMcp === true);
-    if (!roomSetupIsCurrent()) return false;
-    roomComputerKind = "local";
-  }
-  if (!roomTeamComputer && roomPlan.computer === "cloud") {
-    if (turnProvider(readyBot) === "vps") {
-      const unsupported = vps.vpsDriverError(instance.driverKind, instance.adapter.capabilities.computerMcp === true);
-      if (unsupported) throw new Error(unsupported);
-      vpsThreadStarted(readyBot.id, threadId);
-      roomVpsBotId = readyBot.id;
-      const mounted = await mountBotVps(readyBot, resourceOwner, {
-        start: true,
-        onClaimed: (capture) => {
-          if (roomSetupIsCurrent() && store.group(readyGroup.id)?.busyBotId === readyBot.id) {
-            roomScreenBotId = readyBot.id;
-            startScreenPoller(readyBot.id, threadId, { computer: capture });
-          }
-        },
-      });
+  // An explicit place that cannot be attached fails the member's turn with
+  // its cause and the one setting that changes it.
+  try {
+    if (!roomTeamComputer && roomPlan.computer === "local") {
+      integrations.localComputer = await mountHostComputer(
+        resourceOwner, readyBot.id, instance.adapter.capabilities.localComputerMcp === true);
       if (!roomSetupIsCurrent()) return false;
-      if (!("integration" in mounted)) throw new Error(mounted.problem ?? "the VPS computer could not be created or reached");
-      integrations.localComputer = mounted.integration;
-      roomComputerKind = "vps";
-    } else {
-      if (!boat.boatConfigured(cfg)) throw new Error(BOAT_NOT_CONFIGURED);
-      const remoteAgent = instance.adapter.capabilities.remoteAgent === true;
-      const attached = await attachBotBoat(readyBot, resourceOwner, { explicitCloud: true,
-        canMount: instance.adapter.capabilities.usesCloudComputer === true, remoteAgent });
-      if (!roomSetupIsCurrent()) return false;
-      if (!attached?.integration) throw new Error("the cloud computer could not be created or reached");
-      integrations.computer = attached.integration;
-      roomScreenBotId = readyBot.id;
-      startScreenPoller(readyBot.id, threadId, { computer: attached.capture }, { screenIsTheWork: remoteAgent });
-      roomComputerKind = "box";
+      roomComputerKind = "local";
     }
-  }
+    if (!roomTeamComputer && roomPlan.computer === "cloud") {
+      if (turnProvider(readyBot) === "vps") {
+        vpsThreadStarted(readyBot.id, threadId);
+        roomVpsBotId = readyBot.id;
+        const mounted = await mountBotVps(readyBot, resourceOwner, {
+          start: true,
+          onClaimed: (capture) => {
+            if (roomSetupIsCurrent() && store.group(readyGroup.id)?.busyBotId === readyBot.id) {
+              roomScreenBotId = readyBot.id;
+              startScreenPoller(readyBot.id, threadId, { computer: capture });
+            }
+          },
+        });
+        if (!roomSetupIsCurrent()) return false;
+        if (!("integration" in mounted)) throw new Error(mounted.problem ?? "the VPS computer could not be created or reached");
+        integrations.localComputer = mounted.integration;
+        roomComputerKind = "vps";
+      } else {
+        if (!boat.boatConfigured(cfg)) throw new Error(BOAT_NOT_CONFIGURED);
+        const remoteAgent = instance.adapter.capabilities.remoteAgent === true;
+        const attached = await attachBotBoat(readyBot, resourceOwner, { explicitCloud: true,
+          canMount: instance.adapter.capabilities.usesCloudComputer === true, remoteAgent });
+        if (!roomSetupIsCurrent()) return false;
+        if (!attached?.mount) throw new Error("the cloud computer could not be created or reached");
+        Object.assign(integrations, attached.mount);
+        roomScreenBotId = readyBot.id;
+        startScreenPoller(readyBot.id, threadId, { computer: attached.capture }, { screenIsTheWork: remoteAgent });
+        roomComputerKind = "box";
+      }
+    }
 
-  // Room and Goal turns use the speaker's desktop, never the coordinator's.
-  // Claim the same lease as direct turns before asynchronous VM setup.
-  if (readyBot.computer === "vm") {
-    if (instance.adapter.capabilities.computerMcp !== true || instance.adapter.capabilities.remoteAgent === true) {
-      throw new Error("this model cannot use the Local VM");
+    // Room and Goal turns use the speaker's desktop, never the coordinator's.
+    // Claim the same lease as direct turns before asynchronous VM setup.
+    if (readyBot.computer === "vm") {
+      if (instance.adapter.capabilities.computerMcp !== true || instance.adapter.capabilities.remoteAgent === true) {
+        throw new Error("this model cannot use the Local VM");
+      }
+      // A distinct identity fences cleanup even in shared mode on the same room thread.
+      const target = { ...localVmTargetForThread(readyBot.id, threadId) };
+      await bindTurnComputer(resourceOwner, `computer:vm:${target.key}`, true);
+      if (localVmImageBusy || localVmModeChangeBusy || localVmLifecycleBusy.has(target.key)) {
+        throw new Error("this Local VM is being started, stopped, or replaced");
+      }
+      if (!localVmLeaseFor(target).claim(threadId, readyBot.id, localVmOwnerBusy)) {
+        throw new Error("this Local VM is already being used by another turn");
+      }
+      if (localVmMode(cfg) === "pool") localVmSeatPool.touch(threadId);
+      roomVmTarget = target;
+      localVmThreadTargets.set(threadId, target);
+      localVmActiveThreads.set(target.key, threadId);
+      localVmIdleFor(target).touch();
+      const setupIsCurrent = () => !isCancelled?.() &&
+        groupSpeakers.get(threadId) === roomSpeaker &&
+        activeInternalGenerationByThread.get(threadId) === internalGeneration &&
+        store.group(readyGroup.id)?.memberIds.includes(readyBot.id) === true &&
+        store.bot(readyBot.id)?.busy === true &&
+        store.group(readyGroup.id)?.busyBotId === readyBot.id;
+      const vm = await readyLocalVmForTurn(readyBot.id, target, setupIsCurrent);
+      if (!setupIsCurrent()) {
+        return false;
+      }
+      if (!vm.ready || !vm.runtime) throw new Error(vm.problem ?? "the Local VM is not ready");
+      const owner = localVmLeaseFor(target).current(localVmOwnerBusy);
+      if (owner?.threadId !== threadId || owner.botId !== readyBot.id) {
+        throw new Error("the Local VM lease expired while preparing the turn");
+      }
+      integrations.localComputer = containerComputerMcp(
+        vm.runtime,
+        controlIntegration(readyBot.id, threadId, internalGeneration, target),
+        target,
+      );
     }
-    // A distinct identity fences cleanup even in shared mode on the same room thread.
-    const target = { ...localVmTargetForThread(readyBot.id, threadId) };
-    await bindTurnComputer(resourceOwner, `computer:vm:${target.key}`, true);
-    if (localVmImageBusy || localVmModeChangeBusy || localVmLifecycleBusy.has(target.key)) {
-      throw new Error("this Local VM is being started, stopped, or replaced");
-    }
-    if (!localVmLeaseFor(target).claim(threadId, readyBot.id, localVmOwnerBusy)) {
-      throw new Error("this Local VM is already being used by another turn");
-    }
-    if (localVmMode(cfg) === "pool") localVmSeatPool.touch(threadId);
-    roomVmTarget = target;
-    localVmThreadTargets.set(threadId, target);
-    localVmActiveThreads.set(target.key, threadId);
-    localVmIdleFor(target).touch();
-    const setupIsCurrent = () => !isCancelled?.() &&
-      groupSpeakers.get(threadId) === roomSpeaker &&
-      activeInternalGenerationByThread.get(threadId) === internalGeneration &&
-      store.group(readyGroup.id)?.memberIds.includes(readyBot.id) === true &&
-      store.bot(readyBot.id)?.busy === true &&
-      store.group(readyGroup.id)?.busyBotId === readyBot.id;
-    const vm = await readyLocalVmForTurn(readyBot.id, target, setupIsCurrent);
-    if (!setupIsCurrent()) {
-      return false;
-    }
-    if (!vm.ready || !vm.runtime) throw new Error(vm.problem ?? "the Local VM is not ready");
-    const owner = localVmLeaseFor(target).current(localVmOwnerBusy);
-    if (owner?.threadId !== threadId || owner.botId !== readyBot.id) {
-      throw new Error("the Local VM lease expired while preparing the turn");
-    }
-    integrations.localComputer = containerComputerMcp(
-      vm.runtime,
-      controlIntegration(readyBot.id, threadId, internalGeneration, target),
-      target,
-    );
+  } catch (error) {
+    const place = roomPlan.computer;
+    if (place !== "cloud" && place !== "vm" && place !== "local") throw error;
+    if (error instanceof DirectTurnSetupCancelled || error instanceof ComputerWaitParked || error instanceof PlaceUnavailableError) throw error;
+    // A room row is not cut, so the cause keeps all its words.
+    throw placeUnavailable(place, "works-on", error instanceof Error ? error.message : String(error), Infinity);
   }
 
   const roster = readyGroup.memberIds
@@ -12724,7 +12779,7 @@ async function runGroupMemberTurn(
   const recentLines = recentWork(recentWorkSources(bot), bot, { userName, currentThreadId: threadId, ...recentWorkFilter() });
   const roomComputerPromptKind = resolveComputerPromptKind({
     kind: roomTeamComputer || roomComputerKind === "box" ? "box" : roomVmTarget ? "vm" : roomComputerKind,
-    driverKind: instance.driverKind, cloudComputerMcp: instance.adapter.capabilities.cloudComputerMcp,
+    driverKind: instance.driverKind,
     vmPrivate: localVmMode(cfg) === "per-bot",
   });
   {
@@ -16139,7 +16194,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         ? "phone"
         : path.startsWith("/api/internal/connectors/")
         ? "connectors"
-        : path === "/api/internal/computer-control"
+        : path === "/api/internal/computer-control" || path === "/api/internal/computer/mcp"
           ? "computer"
           : "agents";
       if (internalCapability.kind !== requiredCapabilityKind) {
@@ -16320,6 +16375,20 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         });
         requireActiveInternalCapability();
         return json(res, 200, { result });
+      }
+      // The cloud computer's tools (harness-mcp-proxy computer): the turn's
+      // capability names its Boat, and the Boat credential stays here.
+      if (method === "POST" && path === "/api/internal/computer/mcp") {
+        const body = await readInternalBody();
+        const boxId = internalCapability.boxId;
+        if (!boxId) return json(res, 403, { error: "this turn has no cloud computer" });
+        const abort = new AbortController();
+        res.once("close", () => { if (!res.writableEnded) abort.abort(); });
+        return json(res, 200, { result: await cloudComputerRpc(body, {
+          cfg, boxId, signal: abort.signal,
+          gate: () => computerCallGate(internalCapability),
+          assertActive: requireActiveInternalCapability,
+        }) });
       }
       if (method === "POST" && path === "/api/internal/phone/claim") {
         // Lazy phone exclusivity (issue #1663): the turn holds computer:phone
@@ -17566,19 +17635,16 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           })).filter(g => g.members.length);
           return json(res, 200, { currentRoom: source ? { id: source.id, name: source.name, workingFolder: source.cwd || null } : null,
             bots: reachablePeers(store.bots, internalSender).map(bot => ({ id: bot.id, name: bot.name, title: bot.title, section: bot.section, busy: bot.busy })),
-            rooms, note: "Without group_id: use this room when in a room, otherwise each distinct assignment starts a fresh thread for that teammate. Give a self-contained brief. Each bot uses its own environment and permissions. Files are not transferred: pass absolute paths only when accessible to the recipient, otherwise pass the content." });
+            rooms, note: "Each bot uses its own environment and permissions. Files are not transferred: pass absolute paths only when accessible to the recipient, otherwise pass the content." });
         }
         if (method === "POST" && path === "/api/internal/coordinate-bots") {
           const parsed = z.object({
             groupId: z.string().min(1).max(128).optional(),
             botIds: z.array(z.string().min(1).max(128)).min(1).max(4).refine(ids => new Set(ids).size === ids.length),
-            message: z.string().trim().min(1).max(4000), requestKey: z.string().regex(/^[\w-]{1,100}$/),
+            message: z.string().trim().min(1).max(4000),
             rework: z.boolean().default(false),
-            // Only ever a name for a thread, so it travels under the same
-            // one-line rule as a peer thread title.
-            label: z.string().trim().min(1).max(60).refine(fitsOnOneLine).optional(),
           }).safeParse(await readInternalBody());
-          if (!parsed.success) return json(res, 400, { error: "Provide 1-4 distinct botIds, message (1-4000 characters), a short requestKey (letters, digits, underscores or hyphens) and an optional one-line label of at most 60 characters." });
+          if (!parsed.success) return json(res, 400, { error: "Provide 1-4 distinct botIds and a message of 1-4000 characters." });
           const groupId = parsed.data.groupId ?? source?.id;
           const destination = groupId ? store.group(groupId) : undefined;
           if (groupId && !destination) return json(res, 404, { error: "No such room; use list_room_targets." });
@@ -17627,60 +17693,61 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             });
             approvalGranted = true;
           }
-          const accepted: { requestId: string; botId: string; duplicate: boolean; status: string }[] = [];
-          const errors: { botId: string; error: string }[] = [];
+          // A room shows one brief per call, addressed to the call's recipients.
+          const requestBatchKey = destination ? randomUUID() : undefined;
           // One receipt per recipient, in the order the caller addressed
           // them. Dispatch is asynchronous (RoomHandoffs.tick), so a fresh
-          // enqueue is honestly "queued"; a duplicate inherits the state of
-          // the node that already carries this request_key.
+          // enqueue is honestly "queued"; a repeat reports the request it
+          // repeats.
           const receipts: PeerDeliveryReceipt[] = [];
+          // Why nothing was sent, in full: a receipt's detail is clipped.
+          const refused: string[] = [];
           for (const target of targets) {
             let createdThread: string | undefined;
             try {
               requireActiveInternalCapability();
+              // Outside a room this conversation has one thread with each
+              // teammate: the first request opens it, everything after
+              // continues it and runs once the work already there is done.
+              const continued = destination ? undefined : store.workThread(target.botId, internalSender.id, address.threadId);
               if (!destination) {
-                const task = store.createTask(target.botId,
-                  `@${internalSender.name}${parsed.data.label ? ` · ${parsed.data.label}` : " · work"}`,
-                  false, undefined, { botId: internalSender.id, name: internalSender.name, kind: "work", at: Date.now() });
+                const task = continued ?? store.createTask(target.botId, `@${internalSender.name} · work`, false, undefined,
+                  { botId: internalSender.id, name: internalSender.name, kind: "work", threadId: address.threadId, at: Date.now() });
                 if (!task) throw new Error("The recipient no longer exists");
-                target.threadId = createdThread = task.threadId;
+                target.threadId = task.threadId;
+                if (!continued) createdThread = task.threadId;
                 applyDelegatedLevel(internalSender, internalCapability.threadId, store.bot(target.botId)!, target.threadId);
               }
               const { node, duplicate } = roomHandoffs.enqueue(address, internalCapability.generation, internalCapability.roomHandoffId,
-                target, parsed.data.requestKey + ":" + target.botId, parsed.data.message, approvalGranted, parsed.data.rework, [...store.messagesFor(address.threadId)].reverse().find(m => m.role === "user" && m.kind === "text")?.text ?? "",
-                destination ? parsed.data.requestKey : undefined);
-              // A retry keeps its original task; discard the speculative row.
-              if (duplicate && createdThread && createdThread !== node.threadId) {
-                store.deleteTask(target.botId, createdThread);
-              }
-              if (!duplicate && createdThread) threadStarters.set(createdThread, openerFrom(address.threadId));
+                target, target.botId, parsed.data.message, approvalGranted, parsed.data.rework, [...store.messagesFor(address.threadId)].reverse().find(m => m.role === "user" && m.kind === "text")?.text ?? "",
+                requestBatchKey);
+              // A repeat lands on the request already made, possibly in a
+              // thread the person archived meanwhile; a thread opened for it
+              // is never used.
+              if (duplicate && createdThread) store.deleteTask(target.botId, createdThread);
+              else if (createdThread) threadStarters.set(createdThread, openerFrom(address.threadId));
               createdThread = undefined; // The durable coordinator now owns this task.
-              accepted.push({ requestId: node.id, botId: node.botId, duplicate, status: node.status });
-              // A duplicate request_key lands on the node enqueue already
-              // made. Only a live node can still report: a failed or
-              // cancelled one already fired its report and tick() skips it,
-              // so promising "its result will resume you" would be the one
-              // lie a receipt must never tell.
+              // Only a live request can still report: a finished one already
+              // fired its report and tick() skips it, so a repeat of it sends
+              // nothing and says how to run it again.
+              const title = destination ? undefined : store.taskByThread(node.botId, node.threadId)?.title;
+              const finished: Partial<Record<RoomHandoff["status"], string>> = {
+                completed: "it already finished and its result stands; send it with rework=true to run it again",
+                failed: "it failed; send it with rework=true to retry", cancelled: "it was cancelled; send it with rework=true to retry",
+              };
+              const notSent = duplicate && finished[node.status] ? `not sent again: ${finished[node.status]}` : undefined;
+              if (notSent) refused.push(notSent);
               receipts.push(peerDeliveryReceipt({
                 botId: node.botId,
                 botName: store.bot(node.botId)?.name,
-                outcome: duplicate
-                  ? node.status === "running" || node.status === "completed"
-                    ? "injected"
-                    : node.status === "failed" || node.status === "cancelled"
-                      ? "failed"
-                      : "queued"
-                  : "queued",
-                detail: duplicate
-                  ? node.status === "running"
-                    ? "duplicate request_key — this teammate is already running that exact assignment"
-                    : node.status === "completed"
-                      ? "duplicate request_key — this teammate already completed that assignment; the earlier result stands"
-                      : node.status === "failed" || node.status === "cancelled"
-                        ? `duplicate request_key — the earlier assignment ${node.status === "cancelled" ? "was cancelled" : "failed"} and will not rerun or resume you; resend with a new request_key to retry`
-                      : "duplicate request_key — already in flight; its result will resume you automatically"
-                  : "handed to the coordinator; the teammate's turn has not started yet",
+                outcome: notSent ? "failed" : !duplicate || node.status === "queued" ? "queued" : "injected",
+                detail: notSent ?? (duplicate
+                  ? `already sent: it is ${node.status === "queued" ? "queued" : "under way"} and its result will resume you`
+                  : title
+                    ? `sent to "${title}"; it runs after anything still running there`
+                    : "handed to the coordinator; the teammate's turn has not started yet"),
                 requestId: node.id,
+                ...(destination ? {} : { threadId: node.threadId }),
               }));
               if (!duplicate) {
                 const recipient = store.bot(target.botId)!;
@@ -17696,14 +17763,13 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
                 store.deleteTask(target.botId, createdThread);
               }
               const said = error instanceof Error ? error.message : String(error);
-              errors.push({ botId: target.botId, error: said });
-              receipts.push(peerDeliveryReceipt({
-                botId: target.botId, botName: store.bot(target.botId)?.name, outcome: "failed", detail: said,
-              }));
+              refused.push(said);
+              receipts.push(peerDeliveryReceipt({ botId: target.botId, botName: store.bot(target.botId)?.name, outcome: "failed", detail: said }));
             }
           }
-          return json(res, accepted.length ? 200 : 409, { accepted, errors, receipts,
-            ...(accepted.length ? { message: "End your turn after sending all work. These actual teammates will reply and resume you automatically. Do not poll or wait." } : { error: errors.map(e => e.error).join("; ") }),
+          const sent = refused.length < receipts.length;
+          return json(res, sent ? 200 : 409, { receipts,
+            ...(sent ? { message: "End your turn after sending all work. These actual teammates will reply and resume you automatically. Do not poll or wait." } : { error: refused.join("; ") }),
           });
         }
       }
