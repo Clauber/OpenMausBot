@@ -6,13 +6,15 @@
 // models. A long model list opens in place with "Show all" (and a search box
 // when it is very long), so no model needs the full picker; only setup goes
 // there.
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import { Check, ChevronDown, ChevronRight, KeyRound, Loader2 } from "lucide-react";
 import type { InstanceInfo } from "@/state/store";
 import type { EffortLevel } from "../../shared/wire";
 import { InstanceProviderMark } from "./ProviderIcons";
+import { EngineGroupLabel } from "./EngineGroupLabel";
 import type { RailProvider } from "./ModelPicker";
 import { friendlyEffort, modelBlurb } from "@/lib/model-friendly";
+import { groupModelsByProvider, hasMultipleProviders } from "@/lib/custom-models";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 
@@ -182,31 +184,45 @@ export function SimpleModelPane({
             ) : (
               <>
                 <div className="flex flex-col gap-0.5" role="group" aria-label={t("model.simple.model")}>
-                  {models.map((option) => {
-                    const current = option.id === currentModelId;
-                    // Names only; a blurb is a hover hint, never a second
-                    // line. A name the list repeats shows its route too, and
-                    // the hint and spoken name always carry it.
-                    const blurb = modelBlurb(option);
-                    const route = option.provider && repeatedLabels?.has(option.label) ? option.provider : undefined;
-                    return (
-                      <button
-                        key={option.id}
-                        type="button"
-                        aria-pressed={current}
-                        aria-label={option.provider ? `${option.label} · ${option.provider}` : undefined}
-                        title={[option.label, option.provider, blurb].filter(Boolean).join(" · ")}
-                        onClick={() => onPick(option.id)}
-                        className={cn(row, "font-medium text-ink", current ? "bg-raised-hover" : "hover:bg-control/60")}
-                      >
-                        <span className="min-w-0 flex-1 truncate">{option.label}</span>
-                        {route && (
-                          <span data-simple-route className="max-w-[45%] shrink-0 truncate text-[11.5px] font-normal text-ink-secondary">{route}</span>
+                  {/* A catalog spanning several providers reads as its
+                      harness's own picker: one muted header per provider,
+                      its models under it. Single-provider lists stay flat. */}
+                  {(() => {
+                    const grouped = hasMultipleProviders(models);
+                    const runs = groupModelsByProvider(models);
+                    return runs.map((run, index) => (
+                      <Fragment key={run.provider ?? `plain-${index}`}>
+                        {grouped && run.provider !== undefined && (
+                          <EngineGroupLabel className="px-2 pb-0.5 pt-2">{run.provider}</EngineGroupLabel>
                         )}
-                        {current && <Check size={14} className="shrink-0 text-accent-text" aria-hidden="true" />}
-                      </button>
-                    );
-                  })}
+                        {run.options.map((option) => {
+                          const current = option.id === currentModelId;
+                          // Names only; a blurb is a hover hint, never a second
+                          // line. A name the list repeats shows its route too, and
+                          // the hint and spoken name always carry it.
+                          const blurb = modelBlurb(option);
+                          const route = option.provider && repeatedLabels?.has(option.label) ? option.provider : undefined;
+                          return (
+                            <button
+                              key={option.id}
+                              type="button"
+                              aria-pressed={current}
+                              aria-label={option.provider ? `${option.label} · ${option.provider}` : undefined}
+                              title={[option.label, option.provider, blurb].filter(Boolean).join(" · ")}
+                              onClick={() => onPick(option.id)}
+                              className={cn(row, "font-medium text-ink", current ? "bg-raised-hover" : "hover:bg-control/60")}
+                            >
+                              <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                              {route && (
+                                <span data-simple-route className="max-w-[45%] shrink-0 truncate text-[11.5px] font-normal text-ink-secondary">{route}</span>
+                              )}
+                              {current && <Check size={14} className="shrink-0 text-accent-text" aria-hidden="true" />}
+                            </button>
+                          );
+                        })}
+                      </Fragment>
+                    ));
+                  })()}
                 </div>
                 {showAll && (
                   <button

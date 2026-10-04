@@ -48,3 +48,33 @@ export function suggestedModels<T extends { id: string }>(
   for (const option of options) add(option);
   return picked;
 }
+
+/** One group per provider facet, in first-seen order. An engine that lists
+ * several providers' models (zcode mirrors its harness's own picker) renders
+ * one section header per group, its rows under it; rows without a provider —
+ * a passthrough default — form a headerless group. Collecting by provider
+ * rather than by run also keeps the suggested list's hoisted current model
+ * from splitting its provider into two sections. */
+export function groupModelsByProvider<T extends { provider?: string }>(
+  options: readonly T[],
+): Array<{ provider?: string; options: T[] }> {
+  const groups = new Map<string | undefined, { provider?: string; options: T[] }>();
+  for (const option of options) {
+    let group = groups.get(option.provider);
+    if (!group) {
+      group = { provider: option.provider, options: [] };
+      groups.set(option.provider, group);
+    }
+    group.options.push(option);
+  }
+  return [...groups.values()];
+}
+
+/** Whether a rendered list spans more than one named provider: only then do
+ * the section headers pay for themselves. One provider's rows — plus any
+ * headerless default — keep the per-row badge instead. */
+export function hasMultipleProviders<T extends { provider?: string }>(options: readonly T[]): boolean {
+  const seen = new Set<string>();
+  for (const option of options) if (option.provider !== undefined) seen.add(option.provider);
+  return seen.size > 1;
+}

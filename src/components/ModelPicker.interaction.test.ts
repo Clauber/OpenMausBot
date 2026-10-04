@@ -285,3 +285,40 @@ describe("the way into local models", () => {
     await expect(probeLocalModels("claude", () => Promise.reject(new Error("offline")))).resolves.toBeUndefined();
   });
 });
+
+describe("ModelPicker with a multi-provider catalog", () => {
+  const zcode: InstanceInfo = {
+    instanceId: "zcode", driverKind: "zcodeAgent", displayName: "ZCode", access: "custom",
+    snapshot: { state: "available", version: "1.0.0", authenticated: true },
+    models: { default: "zcode-default", options: [
+      { id: "zcode-default", label: "ZCode default (provider config)", custom: true },
+      { id: "router::glm-5.3", label: "glm-5.3", provider: "9Router", custom: true },
+      { id: "router::opus-5", label: "opus-5", provider: "9Router", custom: true },
+      { id: "direct::deepseek-chat", label: "deepseek-chat", provider: "DeepSeek", custom: true },
+    ] },
+  };
+  const oneProvider: InstanceInfo = {
+    ...zcode, instanceId: "solo", displayName: "Solo",
+    models: { default: "zcode-default", options: [
+      { id: "zcode-default", label: "ZCode default (provider config)", custom: true },
+      { id: "direct::deepseek-chat", label: "deepseek-chat", provider: "DeepSeek", custom: true },
+    ] },
+  };
+
+  it("sections the rows by provider and drops the per-row badge the header replaces", () => {
+    fixture.instances = [zcode];
+    const html = menu(open(bot("zcode", "router::glm-5.3")).html);
+    expect(html.indexOf(">9Router</div>")).toBeGreaterThan(-1);
+    expect(html.indexOf(">9Router</div>")).toBeLessThan(html.indexOf(">DeepSeek</div>"));
+    // The header names the provider; a badge per row would say it twice.
+    expect(html).not.toContain(">9Router</span>");
+    expect(html).toContain(">glm-5.3</span>");
+  });
+
+  it("keeps the badge for a catalog that spans one provider, with no headers", () => {
+    fixture.instances = [oneProvider];
+    const html = menu(open(bot("solo", "direct::deepseek-chat")).html);
+    expect(html).not.toContain(">DeepSeek</div>");
+    expect(html).toContain(">DeepSeek</span>");
+  });
+});

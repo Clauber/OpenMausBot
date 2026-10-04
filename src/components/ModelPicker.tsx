@@ -6,12 +6,12 @@
 // Reasoning effort rides along (EffortRow): model and effort are one choice to
 // the person making it, so the chat header and the settings dialog render the
 // same row and write through the same action.
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, KeyRound, Loader2, Plus, RefreshCw, Search } from "lucide-react";
 import { useStore, currentTaskBot, type Bot, type InstanceInfo, type ModelSelection } from "@/state/store";
 import type { EffortLevel } from "../../shared/wire";
 import type { ModelVariantOption } from "../../shared/runtime-events";
-import { filterCustomModels, partitionCustomModels, suggestedModels } from "@/lib/custom-models";
+import { filterCustomModels, groupModelsByProvider, hasMultipleProviders, partitionCustomModels, suggestedModels } from "@/lib/custom-models";
 import { configuredModelInstances, isClaudeAccount, isCustomOnly, SIGN_IN_FAMILY_LABEL, signInFamily, splitEngineRail, type SignInFamily } from "@/lib/engine-rail";
 import { InstanceProviderMark } from "./ProviderIcons";
 import { EngineSetup, EngineUpdateNotice, needsCli, needsSignIn } from "./EngineSetup";
@@ -268,11 +268,15 @@ function ModelRow({
   current,
   defaultId,
   onPick,
+  hideProvider = false,
 }: {
   option: ModelOption;
   current: boolean;
   defaultId: string;
   onPick: () => void;
+  /** The list is sectioned by provider, so a header already names this
+   *  row's provider and the badge would say it twice. */
+  hideProvider?: boolean;
 }) {
   return (
     <button
@@ -285,7 +289,7 @@ function ModelRow({
     >
       <span className="flex min-w-0 items-center gap-2">
         <span className="truncate">{option.label}</span>
-        {option.provider && (
+        {!hideProvider && option.provider && (
           <span
             className="shrink-0 rounded bg-inset px-1.5 py-px text-[10px] text-ink-secondary"
             title={t("model.provider", { name: option.provider })}
@@ -763,15 +767,30 @@ export function ModelPicker({
       ...(threadId && simpleUpdatesBotDefault ? { updateBotDefault: true } : {}), selection: { ...selection, effort: level } }),
   } : null;
 
-  const renderRow = (option: ModelOption) => (
-    <ModelRow
-      key={option.id}
-      option={option}
-      current={selection.instanceId === railInstance?.instanceId && selection.model === option.id}
-      defaultId={railInstance?.models.default ?? ""}
-      onPick={() => railInstance && pick(railInstance, option.id)}
-    />
-  );
+  // One row per option — or provider sections when the list spans several
+  // providers, mirroring how a multi-provider harness presents its own
+  // picker: a muted header per provider, its rows under it, no per-row
+  // badge (the header already says it).
+  const renderRows = (options: ModelOption[]) => {
+    const grouped = hasMultipleProviders(options);
+    return groupModelsByProvider(options).map((run, index) => (
+      <Fragment key={run.provider ?? `plain-${index}`}>
+        {grouped && run.provider !== undefined && (
+          <EngineGroupLabel className="px-2.5 pb-0.5 pt-2.5">{run.provider}</EngineGroupLabel>
+        )}
+        {run.options.map((option) => (
+          <ModelRow
+            key={option.id}
+            option={option}
+            current={selection.instanceId === railInstance?.instanceId && selection.model === option.id}
+            defaultId={railInstance?.models.default ?? ""}
+            hideProvider={grouped && run.provider !== undefined}
+            onPick={() => railInstance && pick(railInstance, option.id)}
+          />
+        ))}
+      </Fragment>
+    ));
+  };
 
   const trigger = (
     <button data-tour="model"
@@ -1070,7 +1089,7 @@ export function ModelPicker({
                                 ? t("model.allModels", { count: official.length })
                                 : t("model.suggested")}
                           </EngineGroupLabel>
-                          {shownOfficial.map(renderRow)}
+                          {renderRows(shownOfficial)}
                           {shownOfficial.length === 0 && (
                             <div className="px-2 py-5 text-center text-[12.5px] text-ink-secondary">
                               {t("model.noMatch", { query: query.trim() })}
@@ -1103,11 +1122,11 @@ export function ModelPicker({
                           {pinned.length > 0 && (
                             <EngineGroupLabel className="px-2 pb-1 pt-0.5">{t("model.loadedNow")}</EngineGroupLabel>
                           )}
-                          {pinned.map(renderRow)}
+                          {renderRows(pinned)}
                           {pinned.length > 0 && rest.length > 0 && (
                             <div className="mx-2 my-2 border-t border-hairline/40" role="separator" />
                           )}
-                          {rest.map(renderRow)}
+                          {renderRows(rest)}
                           {custom.length === 0 && (
                             <div className="mx-1 rounded-xl border border-dashed border-hairline/50 px-3 py-5 text-center">
                               {lookingForLocal ? (

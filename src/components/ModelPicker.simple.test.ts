@@ -362,6 +362,33 @@ describe("the model picker in Simple mode", () => {
     expect(labels(render(forBot))).toEqual([...own.map((option) => option.label), "llama4 (Ollama)", "qwen3 (Ollama)"]);
   });
 
+  it("sections a multi-provider catalog by provider, the way its harness names them", () => {
+    const zcode = engine("zcode", "zcodeAgent", "ZCode", "custom", [
+      { id: "zcode-default", label: "ZCode default (provider config)", custom: true },
+      { id: "router::glm-5.3", label: "glm-5.3", provider: "9Router", custom: true },
+      { id: "router::opus-5", label: "opus-5", provider: "9Router", custom: true },
+      { id: "direct::deepseek-chat", label: "deepseek-chat", provider: "DeepSeek", custom: true },
+    ]);
+    fixture.instances = [zcode];
+    const opened = open(bot(undefined, "zcode", "router::glm-5.3"));
+    const list = region(menu(opened.html), "data-simple-models", "data-simple-effort-band");
+    // One header per provider, in catalog order; the passthrough default
+    // stays a headerless row above them, and the pick carries its check.
+    expect(list.indexOf(">ZCode default (provider config)<")).toBeGreaterThan(-1);
+    expect(list.indexOf(">9Router</div>")).toBeGreaterThan(-1);
+    expect(list.indexOf(">9Router</div>")).toBeLessThan(list.indexOf(">DeepSeek</div>"));
+    expect(list).toContain(">glm-5.3<");
+  });
+
+  it("keeps a single-provider catalog flat — no section headers to add noise", () => {
+    fixture.instances = [local];
+    const opened = open(bot(undefined, "pi", "llama"));
+    pane(opened)!.props.showAll!.onToggle();
+    const list = region(menu(render(bot(undefined, "pi", "llama")).html), "data-simple-models", "data-simple-effort-band");
+    expect(list).not.toContain("tracking-[0.08em]");
+    expect(list).toContain(">Llama 4<");
+  });
+
   it("lists only local models on a signed-out engine whose bot runs one", () => {
     fixture.instances = [claude(false, [...claudeModels, { id: "ollama::qwen3", label: "qwen3 (Ollama)", custom: true }])];
     const opened = open(bot(undefined, "claude", "ollama::qwen3"));

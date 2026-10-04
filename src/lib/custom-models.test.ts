@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { filterCustomModels, partitionCustomModels, suggestedModels } from "./custom-models";
+import { filterCustomModels, groupModelsByProvider, hasMultipleProviders, partitionCustomModels, suggestedModels } from "./custom-models";
 
 const rows = [
   { id: "omlx::gemma-4-31b-it-bf16", label: "gemma-4-31b-it-bf16 (oMLX)", loaded: true },
@@ -48,5 +48,72 @@ describe("suggestedModels", () => {
   it("does not duplicate a current default", () => {
     const options = ["a", "b", "c"].map((id) => ({ id }));
     expect(suggestedModels(options, "b", "b", 3).map((option) => option.id)).toEqual(["b", "a", "c"]);
+  });
+});
+
+describe("groupModelsByProvider", () => {
+  it("chunks consecutive rows of one provider, keeping catalog order", () => {
+    const rows = [
+      { id: "a1", provider: "AvelloCC" },
+      { id: "a2", provider: "AvelloCC" },
+      { id: "b1", provider: "9Router" },
+      { id: "b2", provider: "9Router" },
+      { id: "b3", provider: "9Router" },
+    ];
+    expect(groupModelsByProvider(rows)).toEqual([
+      { provider: "AvelloCC", options: [rows[0], rows[1]] },
+      { provider: "9Router", options: [rows[2], rows[3], rows[4]] },
+    ]);
+  });
+
+  it("reunites rows the suggested list scattered, so a provider gets one section", () => {
+    const rows = [
+      { id: "b1", provider: "9Router" },
+      { id: "default" },
+      { id: "b2", provider: "9Router" },
+      { id: "a1", provider: "AvelloCC" },
+    ];
+    expect(groupModelsByProvider(rows)).toEqual([
+      { provider: "9Router", options: [rows[0], rows[2]] },
+      { options: [rows[1]] },
+      { provider: "AvelloCC", options: [rows[3]] },
+    ]);
+  });
+
+  it("gives rows without a provider — a passthrough default — a headerless group", () => {
+    const rows = [
+      { id: "default" },
+      { id: "m1", provider: "DeepSeek" },
+    ];
+    expect(groupModelsByProvider(rows)).toEqual([
+      { options: [rows[0]] },
+      { provider: "DeepSeek", options: [rows[1]] },
+    ]);
+  });
+
+  it("returns nothing to chunk for an empty list", () => {
+    expect(groupModelsByProvider([])).toEqual([]);
+  });
+});
+
+describe("hasMultipleProviders", () => {
+  const row = (id: string, provider?: string): { id: string; provider?: string } => ({ id, provider });
+  it("is true only when the list spans more than one named provider", () => {
+    expect(hasMultipleProviders([
+      row("default"),
+      row("m1", "DeepSeek"),
+      row("m2", "9Router"),
+    ])).toBe(true);
+    // one provider plus the headerless default keeps the per-row badge
+    expect(hasMultipleProviders([
+      row("default"),
+      row("m1", "DeepSeek"),
+    ])).toBe(false);
+    expect(hasMultipleProviders([
+      row("m1", "DeepSeek"),
+      row("m2", "DeepSeek"),
+    ])).toBe(false);
+    expect(hasMultipleProviders([row("m1")])).toBe(false);
+    expect(hasMultipleProviders([])).toBe(false);
   });
 });
