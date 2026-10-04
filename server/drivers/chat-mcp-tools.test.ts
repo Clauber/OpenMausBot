@@ -203,9 +203,18 @@ describe("Chat MCP session", () => {
     expect(f.read().calls.filter((call) => call.method === "tools/list")).toHaveLength(2);
   });
 
+  it("mounts every advertised tool past the former 128-tool count cap", async () => {
+    const f = fixture(`if (message.method === "tools/list") { reply(message, {tools:Array.from({length:130},(_,i)=>({name:"tool"+i,inputSchema:schema}))}); continue; }`);
+    const session = await f.mount();
+    expect(session.definitions).toHaveLength(130);
+    expect(new Set(session.definitions.map((tool) => tool.function.name)).size).toBe(130);
+    await session.execute("audit_tool7", { value: "past the cap" }, f.controller.signal);
+    expect(f.read().calls.filter((call) => call.method === "tools/call").map((call) => call.params))
+      .toEqual([{ name: "tool7", arguments: { value: "past the cap" } }]);
+  });
+
   it.each([
     ["repeated cursor", `reply(message, {tools:[],nextCursor:"same"});`],
-    ["too many tools", `reply(message, {tools:Array.from({length:129},(_,i)=>({name:"tool"+i,inputSchema:schema}))});`],
     ["duplicate tool", `reply(message, {tools:[{name:"same",inputSchema:schema},{name:"same",inputSchema:schema}]});`],
     ["invalid RPC", `process.stdout.write('{"result":1}\\n');`],
     ["oversized incomplete frame", `process.stdout.write("x".repeat(2*1024*1024+1));`],

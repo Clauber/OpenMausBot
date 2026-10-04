@@ -31,7 +31,6 @@ const STARTUP_MS = 8_000;
 const CALL_MS = 10 * 60_000;
 const FRAME_BYTES = 2 * 1024 * 1024;
 const OUTPUT_BYTES = 50 * 1024;
-const TOOL_COUNT = 128;
 const MAX_PAGES = 100;
 const SCHEMA_BYTES = 64 * 1024;
 const CATALOG_BYTES = 1024 * 1024;
@@ -191,7 +190,6 @@ class ChatMcpClient {
       const result = await this.call("tools/list", cursor ? { cursor } : {}, signal, remaining());
       if (!object(result) || !Array.isArray(result.tools)) throw new Error("MCP tools/list returned an invalid result");
       tools.push(...result.tools.filter(include));
-      if (tools.length > TOOL_COUNT) throw new Error("MCP tool count exceeds the 128-tool limit");
       if (result.nextCursor === undefined) return tools;
       if (typeof result.nextCursor !== "string" || !result.nextCursor || cursors.has(result.nextCursor)) throw new Error("MCP tools/list returned an invalid pagination cursor");
       cursors.add(result.nextCursor);
@@ -308,7 +306,6 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
       for (const tool of tools) {
         if (!object(tool) || typeof tool.name !== "string" || !tool.name.trim() || originalNames.has(tool.name)) throw new Error("MCP server advertised an invalid or duplicate tool name");
         originalNames.add(tool.name);
-        if (definitions.length >= TOOL_COUNT) throw new Error("MCP tool count exceeds the 128-tool limit");
         if (!object(tool.inputSchema) || tool.inputSchema.type !== "object") throw new Error("MCP tools require an object input schema");
         if (Buffer.byteLength(JSON.stringify(tool.inputSchema)) > SCHEMA_BYTES) throw new Error("MCP tool schema exceeds the 64KB limit");
         const schema = compileToolSchema(tool.inputSchema);
