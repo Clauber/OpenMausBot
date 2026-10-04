@@ -18,13 +18,17 @@ export async function preparedBotTemplate(draft: BotCreationDraft) {
 }
 
 /** Create only after the user commits. File setup and native consent finish
- * before Chief handover or routine activation can affect other work. */
+ * before Chief handover or routine activation can affect other work.
+ * `operatorFullAccess` mirrors the server's env opt-in: a web-only server
+ * with it grants the requested Full access over HTTP instead of the desktop
+ * bridge. */
 export async function createConfiguredBot(
   draft: BotCreationDraft,
   request: typeof api = api,
   update: typeof persistBotUpdate = persistBotUpdate,
   approvals = typeof window === "undefined" ? undefined : window.ogb?.approvals,
   visibility?: BotVisibility,
+  operatorFullAccess = false,
 ): Promise<{ bot: Bot; warnings: string[] }> {
   const template = await preparedBotTemplate(draft);
   const { chiefOfStaff, managedSections, toolScope, ...profile } = template.profile;
@@ -47,19 +51,30 @@ export async function createConfiguredBot(
     // The create endpoint already validated the chosen model and completed
     // workspace effort defaults. Do not overwrite those with the raw draft.
     const patched = await update(bot.id, { ...profile, modelSelection: bot.modelSelection, ...draft.consent }, new AbortController().signal,
-      request, approvals, bot);
+      request, approvals, bot, operatorFullAccess);
     bot = { ...bot, ...patched };
     if (profile.approvalMode === "full" || profile.approvalMode === "custom") {
       // persistBotUpdate grants the bot default first. An initial thread is
-      // already present, so it also needs the native thread-scoped grant.
-      if (patched.approvalMode !== profile.approvalMode || !approvals) {
+      // already present, so it also needs the native thread-scoped grant —
+      // through the private bridge, or the operator's HTTP opt-in.
+      if (!approvals && !(operatorFullAccess && profile.approvalMode === "full") ||
+          patched.approvalMode !== profile.approvalMode) {
         throw new Error("The bot's requested approval level was not granted");
       }
-      const granted = await approvals.setMode(bot.id, profile.approvalMode, {
-        threadId: bot.threadId, threadOnly: true,
-        acknowledgeLocalAuto: draft.consent.acknowledgeLocalAuto === true,
-      });
-      if (granted.approvalMode !== profile.approvalMode) {
+      let granted: Bot | null = null;
+      if (approvals) {
+        granted = await approvals.setMode(bot.id, profile.approvalMode, {
+          threadId: bot.threadId, threadOnly: true,
+          acknowledgeLocalAuto: draft.consent.acknowledgeLocalAuto === true,
+        });
+      } else {
+        const result = await request<{ bot: Bot; task?: { approvalMode?: string } }>(
+          `/api/bots/${bot.id}/tasks/${bot.threadId}`,
+          { method: "PATCH", body: JSON.stringify({ approvalMode: "full", confirmFullAccess: true }) },
+        );
+        granted = result.task?.approvalMode === "full" ? result.bot : null;
+      }
+      if (granted?.approvalMode !== profile.approvalMode) {
         throw new Error("The initial thread's requested approval level was not granted");
       }
     }

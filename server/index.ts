@@ -758,6 +758,13 @@ let workspaceAccess: WorkspaceAccess | null = null;
 const DESKTOP_MANAGED = process.env.OMB_DESKTOP_PARENT === "1";
 const SHARED_WORKSPACE_FULL_ACCESS = sharedWorkspaceFullAccessConfigured();
 const sharedWorkspaceFullAccessEnabled = () => SHARED_WORKSPACE_FULL_ACCESS && Boolean(workspaceAccess) && entitled("admin");
+/** An operator's opt-in for a self-hosted server that has no packaged
+ * desktop app: the paired web UI may then grant Full access over the same
+ * HTTP surface that already moves Ask/Edits/Auto. The desktop-only rule
+ * exists because a bot holding shell access on this machine can curl this
+ * API; an operator who sets this accepts exactly that adversary. Custom
+ * (config.toml) keeps its desktop-only rule either way. */
+const OPERATOR_FULL_ACCESS = process.env.OMB_OPERATOR_FULL_ACCESS === "1";
 // Who a loopback request without a session is (server/request-auth.ts
 // LoopbackTrust): the owner on a desktop or a one-person server; a service on
 // a shared workspace, where every bot's shell is a loopback caller too.
@@ -14978,6 +14985,8 @@ function configStatus() {
       autoRecall: autoRecallEnabled(cfg),
       // hand-edited config.json only; the thread menu offers Regenerate title from it
       llmThreadTitles: llmThreadTitlesEnabled(cfg),
+      // the operator's env opt-in: the paired web UI may grant Full access
+      operatorFullAccess: OPERATOR_FULL_ACCESS,
     },
     // first-run progress — not a secret; the app decides whether to show
     // the welcome tour from this, never from browser storage
@@ -20444,7 +20453,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const preset = resolvedPreset && presetOffered(resolvedPreset.row, orgInstallStatuses()) ? resolvedPreset : null;
       if (body.preset !== undefined && !preset) return json(res, 404, { error: PRESET_UNAVAILABLE_MESSAGE });
       body = { ...body, ...settings, name: settings.name };
-      if (settings.approvalMode === "full" || settings.approvalMode === "custom") {
+      // Custom always needs the desktop flow. Full is granted at creation
+      // only under the operator's opt-in, with the warning acknowledged.
+      if (settings.approvalMode === "custom" ||
+          (settings.approvalMode === "full" && !(OPERATOR_FULL_ACCESS && body.confirmFullAccess === true))) {
         return json(res, 403, { error: "This approval level requires the desktop permission flow. Use the bot creation dialog or explicitly choose Ask/Auto for API creation." });
       }
       if (settings.computer === "local" && settings.approvalMode === "auto" && body.acknowledgeLocalAuto !== true) {
@@ -21076,10 +21088,22 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         ((requestedApprovalMode === "full" || requestedApprovalMode === "custom") &&
           currentApprovalMode !== requestedApprovalMode) ||
         (currentApprovalMode === "custom" && requestedApprovalMode !== "custom");
-      if (requiresPrivateApprovalTransition) {
+      // With the operator's opt-in the paired web UI may grant Full access
+      // over HTTP, the same durable write the desktop's private channel
+      // commits. Custom keeps its desktop-only rule, and the warning
+      // dialog's acknowledgement must travel with the request.
+      const operatorFullAccessGrant = OPERATOR_FULL_ACCESS &&
+        requestedApprovalMode === "full" && currentApprovalMode !== "custom";
+      if (requiresPrivateApprovalTransition && !operatorFullAccessGrant) {
         return json(res, 403, {
           error: "This approval-level change can only be made from the packaged desktop app",
         });
+      }
+      if (operatorFullAccessGrant && body.confirmFullAccess !== true) {
+        return json(res, 400, { error: "Confirm the Full access warning first (confirmFullAccess)" });
+      }
+      if (operatorFullAccessGrant && body.applyToAllThreads !== undefined && typeof body.applyToAllThreads !== "boolean") {
+        return json(res, 400, { error: "applyToAllThreads must be a boolean" });
       }
       // "Auto on this Mac" hands a bot the user's real session, so the grant
       // must prove a human saw the warning. The desktop dialog is the only
@@ -21317,6 +21341,13 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         bot = store.patchBot(m[1], patch);
       }
       if (!bot) return json(res, 404, { error: "no such bot" });
+      // The operator grant's all-threads scope, applied after the durable
+      // bot default lands — the same final state the desktop's committed
+      // grant reaches through setAllThreadApprovalMode.
+      if (operatorFullAccessGrant && body.applyToAllThreads === true) {
+        store.setAllThreadApprovalMode(bot.id, "full");
+        bot = store.bot(bot.id)!;
+      }
       if (body.memoryUpkeep === false || body.memoryEnabled === false) memoryUpkeep.dropBot(bot.id);
       // A defined Works on is the newest explicit choice: this bot's
       // auto-recorded pins that now point elsewhere give way immediately, so
@@ -22517,7 +22548,13 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         return json(res, 400, { error: "new task approvalMode must be ask or full" });
       }
       if (body.approvalMode === "full") {
-        if (auth.kind !== "loopback" || !sharedWorkspaceFullAccessEnabled()) {
+        // The portal-managed shared-workspace policy, or the operator's
+        // opt-in for a self-hosted server, with the warning acknowledged.
+        // A paired session still needs the admin scope, like every other
+        // approval-field change.
+        if ((auth.kind !== "loopback" || !sharedWorkspaceFullAccessEnabled()) &&
+          !(OPERATOR_FULL_ACCESS && body.confirmFullAccess === true &&
+            (auth.kind === "loopback" || auth.scopes.includes("admin")))) {
           return json(res, 403, { error: "New Full tasks require the operator's dedicated shared-workspace policy" });
         }
         if (bot.approvalGrant) return json(res, 409, { error: "the bot's approval mode is still being confirmed" });
@@ -22572,7 +22609,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (!body || typeof body !== "object" || Array.isArray(body)) return json(res, 400, { error: "body must be a JSON object" });
       const current = store.projectBotForTask(m[1], m[2]);
       if (!current) return json(res, 404, { error: "no such task" });
-      const allowed = new Set(["title", "projectId", "modelSelection", "updateBotDefault", "resetApprovalToAsk", "approvalMode", "autoApprove", "requireAvailableModel", "pinnedMessageId", "acknowledgeLocalAuto", "archivedAt", "pinned", "snoozedUntil", "surface", "refreshPermissions"]);
+      const allowed = new Set(["title", "projectId", "modelSelection", "updateBotDefault", "resetApprovalToAsk", "approvalMode", "autoApprove", "requireAvailableModel", "pinnedMessageId", "acknowledgeLocalAuto", "archivedAt", "pinned", "snoozedUntil", "surface", "refreshPermissions", "confirmFullAccess"]);
       if (Object.keys(body).some((key) => !allowed.has(key))) return json(res, 400, { error: "unsupported thread setting" });
       const notYours = cloudThreadRefusal(auth, m[2]);
       if (notYours) return json(res, 403, { error: notYours });
@@ -22596,17 +22633,24 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         return json(res, 400, { error: "refreshPermissions must be true" });
       }
       if (body.refreshPermissions === true) {
-        const extra = Object.keys(body).filter((key) => key !== "refreshPermissions" && key !== "acknowledgeLocalAuto");
+        // confirmFullAccess is inert without the operator's opt-in below,
+        // so it may ride a refresh the same way acknowledgeLocalAuto does.
+        const extra = Object.keys(body).filter((key) => key !== "refreshPermissions" && key !== "acknowledgeLocalAuto" && key !== "confirmFullAccess");
         if (extra.length) return json(res, 400, { error: "refreshPermissions cannot be combined with other thread settings" });
         const profile = store.bot(m[1]);
         if (!profile) return json(res, 404, { error: "no such bot" });
         if (profile.approvalGrant) return json(res, 409, { error: "the bot's approval mode is still being confirmed" });
         if (threadBusy(profile.id, m[2])) return json(res, 409, { error: "stop this thread before changing its approval mode" });
         const nextMode = approvalModeFor({ ...profile, approvalGrant: undefined });
-        // Full and Custom never travel over the bot-reachable HTTP surface.
-        // The desktop's private channel copies those levels, and it is also
-        // the only way to leave Custom.
-        if (nextMode === "full" || nextMode === "custom") {
+        // Full and Custom never travel over the bot-reachable HTTP surface,
+        // except under the operator's opt-in for Full: the paired web UI may
+        // then copy the bot default the same way the desktop's private
+        // channel does. The desktop is still the only way to leave Custom.
+        if (nextMode === "full" && OPERATOR_FULL_ACCESS) {
+          if (body.confirmFullAccess !== true) {
+            return json(res, 400, { error: "Confirm the Full access warning first (confirmFullAccess)" });
+          }
+        } else if (nextMode === "full" || nextMode === "custom") {
           return json(res, 403, { error: "Refresh Full or Custom access from the packaged desktop app" });
         }
         if (approvalModeFor(current) === "custom") {
@@ -22682,9 +22726,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (body.approvalMode !== undefined || body.autoApprove !== undefined) {
         if (body.autoApprove !== undefined && typeof body.autoApprove !== "boolean") return json(res, 400, { error: "autoApprove must be a boolean" });
         const mode = body.approvalMode ?? (body.autoApprove ? "auto" : "ask");
-        // Elevated modes still require the trusted desktop transition. A
-        // thread settings PATCH cannot manufacture that grant.
-        if (mode !== "ask" && mode !== "auto" && mode !== "edits") return json(res, 403, { error: "Full and Custom access require trusted desktop confirmation" });
+        // The operator's opt-in lets the paired web UI grant Full access over
+        // this route, mirroring the desktop's thread-scoped grant. Custom
+        // (config.toml) always needs the desktop's private channel.
+        const operatorFullGrant = OPERATOR_FULL_ACCESS && mode === "full" && approvalModeFor(current) !== "custom";
+        if (mode !== "ask" && mode !== "auto" && mode !== "edits" && !operatorFullGrant) return json(res, 403, { error: "Full and Custom access require trusted desktop confirmation" });
+        if (operatorFullGrant && body.confirmFullAccess !== true) return json(res, 400, { error: "Confirm the Full access warning first (confirmFullAccess)" });
         if (approvalModeFor(current) === "custom") return json(res, 403, { error: "Leaving Custom approval requires confirmation in the packaged desktop app" });
         if (!supportsApprovalMode(patch.modelSelection ?? current.modelSelection, mode)) {
           return json(res, 400, { error: "This provider does not support the selected approval level" });
@@ -22699,6 +22746,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }
         patch.approvalMode = mode;
         patch.autoApprove = mode === "auto";
+        // Elevation drops the remembered per-session approvals, the same
+        // reset the desktop's thread-scoped grant applies.
+        if (operatorFullGrant) patch.alwaysAllow = [];
       }
       if (patch.modelSelection) {
         const checked = checkedTaskModelSwitch({ ...current,

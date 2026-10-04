@@ -66,7 +66,7 @@ import {
   doubleEnterSteerWindowExpiresAt,
   doubleEnterSteersQueue,
 } from "./ComposerQueuedMessages";
-import { skillAuthoringEnabled } from "@/lib/feature-flags";
+import { operatorFullAccessEnabled, skillAuthoringEnabled } from "@/lib/feature-flags";
 import { mentionChoicesForQuery } from "@/lib/mentions";
 import { serializeThreadRefs, threadTokenFromPaste, threadTokenSpacing } from "@/lib/thread-refs";
 import {
@@ -512,7 +512,13 @@ export function Composer({
   const approvalEngine = modeBot
     ? state.instances.find((instance) => instance.instanceId === modeBot.modelSelection.instanceId)
     : undefined;
-  const trustedThreadAccess = Boolean(!remoteClient && window.ogb?.approvals && capabilities.host.packaged);
+  // The packaged desktop's private channel, or the operator's env opt-in on
+  // a self-hosted server, may grant Full access; the composer chip then
+  // offers the same levels bot settings does.
+  const trustedThreadAccess = Boolean(
+    (!remoteClient && window.ogb?.approvals && capabilities.host.packaged) ||
+    operatorFullAccessEnabled(state.config),
+  );
   const uploadImage = useCallback(async (file: File): Promise<Attachment | null> => {
     const optimistic = optimisticImageAttachment(file);
     if (!optimistic) return null;

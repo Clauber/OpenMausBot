@@ -3,6 +3,7 @@ import { Loader2, Plus, Trash2, X } from "lucide-react";
 import { api, BotEditorStore, useStore, type Bot, type ModelSelection } from "@/state/store";
 import { BotCreationDraft, EMPTY_BOT_DEFAULTS } from "@/lib/bot-creation-draft";
 import { createConfiguredBot, preparedBotTemplate } from "@/lib/create-configured-bot";
+import { operatorFullAccessEnabled } from "@/lib/feature-flags";
 import { BOT_ROLES, roleProfilePatch } from "@/lib/bot-roles";
 import { chosenPreset, presetDraftPatch, presetGroups, presetPictureFile, presetSummaryLines, type BotPreset } from "@/lib/bot-presets";
 import { cn } from "@/lib/cn";
@@ -141,7 +142,8 @@ export function LocalNewBotDialog({ defaultsMode = false, onClose, section, onCr
     try {
       if (defaultsMode) await api("/api/config", { method: "PATCH", body: JSON.stringify({ newBotDefaults: await preparedBotTemplate(draft) }) });
       else {
-        const { bot, warnings } = await createConfiguredBot(draft, undefined, undefined, undefined, visibility?.ok ? visibility.visibility : undefined);
+        const { bot, warnings } = await createConfiguredBot(draft, undefined, undefined, undefined,
+          visibility?.ok ? visibility.visibility : undefined, operatorFullAccessEnabled(parent.state.config));
         parent.dispatch({ type: "botAdded", bot, preserveSelection });
         if (warnings.length) parent.dispatch({ type: "error", message: warnings.join("\n") });
         try { await onCreated?.(bot); }

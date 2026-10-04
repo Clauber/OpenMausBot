@@ -24,6 +24,25 @@ or workspace/team ownership and computer-sharing grants. Full Access controls
 approval prompts; it does not sign in for you, enable a feature you disabled,
 or grant another bot access to a different workspace.
 
+### Self-hosted operator opt-in for Full access over HTTP
+
+A headless server (the npm package under systemd, a VPS, a container) never
+embeds the desktop app, so its paired web UI could not offer Full access at
+all. An operator who accepts the trade may set `OMB_OPERATOR_FULL_ACCESS=1`
+before starting the server: the selector then offers Full access on the paired
+web UI exactly as the desktop does, and the existing warning dialog's
+acknowledgement (`confirmFullAccess`) must travel with every grant — bot
+default (with the apply-to-all-threads checkbox), a thread's composer chip,
+Refresh permissions, and creation defaults.
+
+This deliberately weakens one boundary: the desktop-only rule exists because a
+bot holding shell access on the server's machine can call the HTTP API itself,
+and with the flag a loopback caller can elevate a bot's approval level the
+same way it can already loosen every other setting. Custom (`config.toml`)
+keeps its desktop-only rule either way, and questions, missing credentials,
+and outbound-send policy still require a person. Leave the flag unset unless
+the server is single-operator and its bots are trusted with that reach.
+
 The effective setting belongs to the source conversation. An existing Ask
 thread remains Ask even if the bot default is Full; a Full thread works without
 these extra prompts even if the bot default is Ask. Ask, Auto, and Custom retain

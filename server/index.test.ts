@@ -5487,6 +5487,117 @@ describe("harness HTTP API", () => {
     expectStoppedTestServerCleanly(isolatedChild, isolatedStderr);
   }, 30_000);
 
+  it("lets the operator's opt-in grant Full access over HTTP, but never Custom", async () => {
+    const isolatedHome = mkdtempSync(join(tmpdir(), "omb-operator-full-access-"));
+    const isolatedData = join(isolatedHome, ".openmausbot");
+    const isolatedStatic = join(isolatedHome, "static");
+    const isolatedPort = await freePortBlock([0, 1]);
+    mkdirSync(join(isolatedStatic, "assets"), { recursive: true });
+    mkdirSync(isolatedData, { recursive: true });
+    writeFileSync(join(isolatedStatic, "index.html"), "<!doctype html><title>Operator full access test</title>");
+    writeFileSync(join(isolatedStatic, "assets", "smoke.css"), "body{}");
+    writeFileSync(join(isolatedData, "config.json"), JSON.stringify({
+      instances: {
+        claude: { driver: "claudeAgent", displayName: "Fixture Claude", config: { cli: FAKE_CLAUDE_CLI } },
+      },
+    }));
+
+    let isolatedStderr = "";
+    const isolatedChild = spawn(process.execPath, [join(SERVER_DIR, "index.ts")], {
+      cwd: ROOT,
+      env: {
+        ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
+        ...(process.env.PATHEXT ? { PATHEXT: process.env.PATHEXT } : {}),
+        ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+        HOME: isolatedHome,
+        USERPROFILE: isolatedHome,
+        OMB_PORT: String(isolatedPort),
+        OMB_WEBHOOK_PORT: String(isolatedPort + 1),
+        OMB_STATIC_DIR: isolatedStatic,
+        OMB_OPERATOR_FULL_ACCESS: "1",
+        FAKE_CLAUDE_MODE: "hang",
+        FAKE_CLAUDE_DUMP: join(isolatedHome, "fake-claude-dump.json"),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    isolatedChild.stderr!.on("data", (chunk) => (isolatedStderr += chunk));
+    const isolatedApi = async (method: string, path: string, body?: unknown): Promise<{
+      status: number;
+      body: any;
+    }> => {
+      const response = await fetch(`http://127.0.0.1:${isolatedPort}${path}`, {
+        method,
+        headers: body ? { "content-type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      return { status: response.status, body: await response.json() };
+    };
+
+    try {
+      await waitForIsolatedServer(isolatedChild, isolatedPort, () => isolatedStderr);
+      expect((await isolatedApi("GET", "/api/config")).body.features.operatorFullAccess).toBe(true);
+      const instances = (await isolatedApi("GET", "/api/instances")).body.instances;
+      const claude = instances.find((instance: { instanceId: string }) => instance.instanceId === "claude");
+      const selection = { instanceId: claude.instanceId, model: claude.models.default };
+
+      // Creation defaults: Full applies only with the warning acknowledged.
+      const unconfirmed = await isolatedApi("POST", "/api/bots", {
+        name: "Unconfirmed", modelSelection: selection, requireAvailableModel: true,
+        settings: { approvalMode: "full" },
+      });
+      expect(unconfirmed.status).toBe(403);
+      expect(unconfirmed.body.error).toMatch(/desktop permission flow/i);
+      const created = await isolatedApi("POST", "/api/bots", {
+        name: "Operator full", modelSelection: selection, requireAvailableModel: true,
+        settings: { approvalMode: "full" }, confirmFullAccess: true,
+      });
+      expect(created.status).toBe(201);
+      expect(created.body.bot).toMatchObject({ approvalMode: "full", autoApprove: false });
+
+      // Bot default: refused without the acknowledgement, granted with it,
+      // and Custom stays desktop-only even under the flag.
+      const bot = (await isolatedApi("POST", "/api/bots", {
+        name: "Operator target", modelSelection: selection, requireAvailableModel: true,
+      })).body.bot;
+      expect((await isolatedApi("PATCH", `/api/bots/${bot.id}`, { approvalMode: "full" })).status).toBe(400);
+      const granted = await isolatedApi("PATCH", `/api/bots/${bot.id}`,
+        { approvalMode: "full", confirmFullAccess: true, applyToAllThreads: true });
+      expect(granted.status).toBe(200);
+      expect(granted.body.bot).toMatchObject({ approvalMode: "full", autoApprove: false });
+      const refusedCustom = await isolatedApi("PATCH", `/api/bots/${bot.id}`, { approvalMode: "custom", confirmFullAccess: true });
+      expect(refusedCustom.status).toBe(400);
+      expect(refusedCustom.body.error).toMatch(/does not support the selected approval level/i);
+      expect((await isolatedApi("PATCH", `/api/bots/${bot.id}`, { approvalMode: "ask" })).status).toBe(200);
+
+      // The composer's thread grant, Refresh permissions, and an explicit
+      // Full task all ride the same routes once the flag is set.
+      const threadGrant = await isolatedApi("PATCH", `/api/bots/${bot.id}/tasks/${bot.threadId}`,
+        { approvalMode: "full", confirmFullAccess: true });
+      expect(threadGrant.status).toBe(200);
+      expect(threadGrant.body.task).toMatchObject({ approvalMode: "full", alwaysAllow: [] });
+      expect((await isolatedApi("PATCH", `/api/bots/${bot.id}/tasks/${bot.threadId}`,
+        { approvalMode: "full" })).status).toBe(400);
+      const sibling = (await isolatedApi("POST", `/api/bots/${bot.id}/tasks`, { title: "Ask sibling" })).body.task;
+      expect(sibling.approvalMode).toBe("ask");
+      // Refresh copies the bot default, which the downgrade above returned
+      // to Ask; restore Full and refresh the sibling onto it.
+      expect((await isolatedApi("PATCH", `/api/bots/${bot.id}`,
+        { approvalMode: "full", confirmFullAccess: true })).status).toBe(200);
+      const refreshed = await isolatedApi("PATCH", `/api/bots/${bot.id}/tasks/${sibling.threadId}`,
+        { refreshPermissions: true, confirmFullAccess: true });
+      expect(refreshed.status).toBe(200);
+      expect(refreshed.body.task).toMatchObject({ approvalMode: "full" });
+      const task = await isolatedApi("POST", `/api/bots/${bot.id}/tasks`,
+        { title: "Full task", approvalMode: "full", confirmFullAccess: true });
+      expect(task.status).toBe(201);
+      expect(task.body.task).toMatchObject({ approvalMode: "full" });
+    } finally {
+      await waitForExit(isolatedChild, { signal: "SIGTERM" });
+      await removeTempDir(isolatedHome);
+    }
+    expectStoppedTestServerCleanly(isolatedChild, isolatedStderr);
+  }, 30_000);
+
   it("exports every visible bot and imports the team without creating a room", async () => {
     const first = (await api("POST", "/api/bots")).body.bot;
     const second = (await api("POST", "/api/bots")).body.bot;
@@ -8576,7 +8687,7 @@ describe("harness HTTP API", () => {
   it("keeps skill authoring on by default and persists an explicit opt-out", async () => {
     const before = await api("GET", "/api/config");
     expect(before.status).toBe(200);
-    expect(before.body.features).toEqual({ browser: false, skillAuthoring: true, skillsLibrary: false, showToolCalls: false, routinesInConversation: false, sharedComputers: false, claudeUserMcp: false, autoRecall: true, llmThreadTitles: true });
+    expect(before.body.features).toEqual({ browser: false, skillAuthoring: true, skillsLibrary: false, showToolCalls: false, routinesInConversation: false, sharedComputers: false, claudeUserMcp: false, autoRecall: true, llmThreadTitles: true, operatorFullAccess: false });
     // the default is the absence of the key: nothing is written until the toggle is used
     const untouched = JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8"));
     expect(untouched.features?.skillAuthoring).toBeUndefined();
@@ -8588,7 +8699,7 @@ describe("harness HTTP API", () => {
       features: { skillAuthoring: false },
     });
     expect(saved.status).toBe(200);
-    expect(saved.body.features).toEqual({ browser: false, skillAuthoring: false, skillsLibrary: false, showToolCalls: false, routinesInConversation: false, sharedComputers: false, claudeUserMcp: false, autoRecall: true, llmThreadTitles: true });
+    expect(saved.body.features).toEqual({ browser: false, skillAuthoring: false, skillsLibrary: false, showToolCalls: false, routinesInConversation: false, sharedComputers: false, claudeUserMcp: false, autoRecall: true, llmThreadTitles: true, operatorFullAccess: false });
 
     const disk = JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8"));
     // Earlier browser coverage may have persisted its own toggle. Opting out
@@ -8598,7 +8709,7 @@ describe("harness HTTP API", () => {
     // the opt-out survives patches to sibling flags
     const tools = await api("PATCH", "/api/config", { features: { showToolCalls: true } });
     expect(tools.status).toBe(200);
-    expect(tools.body.features).toEqual({ browser: false, skillAuthoring: false, skillsLibrary: false, showToolCalls: true, routinesInConversation: false, sharedComputers: false, claudeUserMcp: false, autoRecall: true, llmThreadTitles: true });
+    expect(tools.body.features).toEqual({ browser: false, skillAuthoring: false, skillsLibrary: false, showToolCalls: true, routinesInConversation: false, sharedComputers: false, claudeUserMcp: false, autoRecall: true, llmThreadTitles: true, operatorFullAccess: false });
 
     // an opted-out workspace refuses the skill routes a turn would otherwise reach
     const bot = (await api("POST", "/api/bots", {})).body.bot;
