@@ -41,6 +41,7 @@ import { showNotification, type NotificationTarget } from "@/lib/notify";
 import { speaker } from "@/lib/tts";
 import { roleProfilePatch, type BotRole } from "@/lib/bot-roles";
 import { t } from "@/lib/i18n";
+import { operatorFullAccessEnabled } from "@/lib/feature-flags";
 import { createBotPatchQueue, type BotUpdatePatch } from "./bot-patch-queue";
 import type { OnboardingStatus } from "@/lib/onboarding";
 import { openLiveEvents, publishLiveFrame, publishMissedFrames } from "@/lib/live-events";
@@ -684,7 +685,7 @@ export interface ConfigStatus {
   /** UI language override; "" (or absent) follows the system language. */
   language?: string;
   /** Opt-in flags. Absent means off. */
-  features?: { skillAuthoring: boolean; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; llmThreadTitles?: boolean; skillsLibrary?: boolean };
+  features?: { skillAuthoring: boolean; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; llmThreadTitles?: boolean; skillsLibrary?: boolean; operatorFullAccess?: boolean };
   /** First-run progress: whether the welcome tour was finished and which
    * one-time hints were dismissed. Server-owned so it follows the workspace. */
   onboarding?: OnboardingStatus;
@@ -2555,16 +2556,29 @@ type TrustedApprovalBridge = {
 };
 
 /** Composer changes use the same private bridge as bot settings, but never
- * change profile defaults. Confirmation is UI state, never an HTTP credential. */
+ * change profile defaults. Confirmation is UI state, never an HTTP credential.
+ * On a server with the operator's opt-in (OMB_OPERATOR_FULL_ACCESS=1) the
+ * paired web UI may grant Full access over HTTP instead: the server checks
+ * the same warning acknowledgement the desktop channel implies. */
 export async function persistTaskApproval(
   botId: string, threadId: string, patch: TaskUpdatePatch,
   bridge: TrustedApprovalBridge | undefined,
   request: (path: string, init?: RequestInit) => Promise<{ bot: BotAnnouncement }> = api,
+  operatorFullAccess = false,
 ): Promise<BotAnnouncement> {
   const { approvalMode, autoApprove, confirmFullAccess, acknowledgeLocalAuto, ...ordinary } = patch;
   const mode = approvalMode ?? (autoApprove === undefined ? undefined : autoApprove ? "auto" : "ask");
   if (mode === "full" && confirmFullAccess !== true) throw new Error("Confirm Full access for this thread first");
-  if ((mode === "full" || mode === "custom") && !bridge) throw new Error("This approval change requires the packaged desktop app");
+  if ((mode === "full" || mode === "custom") && !bridge) {
+    if (!(operatorFullAccess && mode === "full")) {
+      throw new Error("This approval change requires the packaged desktop app");
+    }
+    const result = await request(`/api/bots/${botId}/tasks/${threadId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ ...ordinary, approvalMode, autoApprove, acknowledgeLocalAuto, confirmFullAccess: true }),
+    });
+    return result.bot;
+  }
   if (mode && bridge) {
     if (Object.keys(ordinary).length) await request(`/api/bots/${botId}/tasks/${threadId}`, { method: "PATCH", body: JSON.stringify(ordinary) });
     return bridge.setMode(botId, mode, { threadId, threadOnly: true, acknowledgeLocalAuto: acknowledgeLocalAuto === true });
@@ -2573,11 +2587,14 @@ export async function persistTaskApproval(
   return result.bot;
 }
 
-/** Persist one coalesced bot edit without ever putting Full/Custom authority
- * on the bot-accessible HTTP surface. Entering a trusted mode writes ordinary
- * fields first, then grants authority. Leaving Custom reverses that order so a
- * coalesced provider switch is validated after the bot is back in Ask/Auto.
- * Exported for a small ordering/security contract test. */
+/** Persist one coalesced bot edit. Full/Custom authority normally rides only
+ * the private desktop channel; on a server with the operator's opt-in
+ * (`OMB_OPERATOR_FULL_ACCESS=1`) the paired web UI may grant Full access over
+ * HTTP with the warning acknowledgement, the way Ask/Edits/Auto already move.
+ * Entering a trusted mode writes ordinary fields first, then grants
+ * authority. Leaving Custom reverses that order so a coalesced provider
+ * switch is validated after the bot is back in Ask/Auto. Exported for a
+ * small ordering/security contract test. */
 export async function persistBotUpdate(
   botId: string,
   patch: BotUpdatePatch,
@@ -2586,6 +2603,7 @@ export async function persistBotUpdate(
   trustedApprovals: TrustedApprovalBridge | undefined =
     typeof window === "undefined" ? undefined : window.ogb?.approvals,
   currentBot?: BotAnnouncement,
+  operatorFullAccess = false,
 ): Promise<BotAnnouncement> {
   const {
     approvalMode,
@@ -2617,6 +2635,22 @@ export async function persistBotUpdate(
     throw new Error("Confirm the Full access warning before enabling it");
   }
   if (!trustedApprovals || approvalMode === undefined) {
+    // The operator's opt-in grants Full access over HTTP: one request
+    // carrying the ordinary fields, the mode, and the warning's
+    // acknowledgement. Custom never leaves the desktop channel.
+    if (operatorFullAccess && approvalMode === "full" && !leavesCustom) {
+      const result = await request(`/api/bots/${botId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          ...ordinaryPatch,
+          approvalMode,
+          confirmFullAccess: true,
+          ...(applyToAllThreads ? { applyToAllThreads: true } : {}),
+        }),
+        signal,
+      });
+      return result.bot;
+    }
     throw new Error("This approval-level change requires the packaged desktop app");
   }
 
@@ -2761,7 +2795,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     () =>
       createBotPatchQueue({
         send: (botId, patch, signal, currentBot) =>
-          persistBotUpdate(botId, patch, signal, api, window.ogb?.approvals, currentBot),
+          persistBotUpdate(botId, patch, signal, api, window.ogb?.approvals, currentBot,
+            operatorFullAccessEnabled(stateRef.current.config)),
         reconcile: async (botId, signal) => {
           const result: { bots: BotAnnouncement[] } = await api(`/api/bots?messages=${MESSAGE_PAGE_SIZE}`, { signal });
           return result.bots.find((candidate) => candidate.id === botId) ?? null;
@@ -2849,7 +2884,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               threadId, modelSelection: patch.modelSelection, updateBotDefault: Boolean(patch.updateBotDefault),
             });
           }
-          return persistTaskApproval(botId, threadId, patch, window.ogb?.approvals);
+          return persistTaskApproval(botId, threadId, patch, window.ogb?.approvals, api,
+            operatorFullAccessEnabled(stateRef.current.config));
         });
       // Later edits still get saved after an earlier failure, but a send
       // awaiting this batch must observe every rejected setting in it. A
@@ -3461,9 +3497,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           const mode = approvalModeFor(bot);
           const current = approvalModeFor(currentTaskBot(bot, action.threadId));
           const acknowledgeLocalAuto = action.acknowledgeLocalAuto === true;
+          // The operator's opt-in copies a Full bot default over HTTP, with
+          // the warning acknowledgement; Custom still needs the desktop.
+          const operatorFull = operatorFullAccessEnabled(stateRef.current.config) &&
+            mode === "full" && current !== "custom";
           // Full, Custom, and leaving Custom stay on the private desktop
           // channel. Ask, Edits, and Auto can use the thread settings route.
-          const needsDesktop = mode === "full" || mode === "custom" || current === "custom";
+          const needsDesktop = (mode === "full" || mode === "custom" || current === "custom") && !operatorFull;
           const refreshed = needsDesktop
             ? window.ogb?.approvals
               ? window.ogb.approvals.setMode(action.botId, mode, {
@@ -3472,7 +3512,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               : Promise.reject(new Error("This approval change requires the packaged desktop app"))
             : api<{ bot: BotAnnouncement }>(`/api/bots/${action.botId}/tasks/${action.threadId}`, {
               method: "PATCH",
-              body: JSON.stringify({ refreshPermissions: true, ...(acknowledgeLocalAuto ? { acknowledgeLocalAuto: true } : {}) }),
+              body: JSON.stringify({ refreshPermissions: true,
+                ...(operatorFull ? { confirmFullAccess: true } : {}),
+                ...(acknowledgeLocalAuto ? { acknowledgeLocalAuto: true } : {}) }),
             }).then((result) => result.bot);
           void refreshed.then((updated) => {
             if (updated) rawDispatch({ type: "botPatched", bot: withTaskWrites(updated) });

@@ -418,6 +418,20 @@ describe("trusted approval-mode persistence", () => {
     expect(setMode).toHaveBeenCalledWith("bot-1", "full", { acknowledgeLocalAuto: false, allThreads: true });
   });
 
+  it("grants Full over HTTP under the operator's opt-in, never Custom", async () => {
+    const request = vi.fn(async (_path: string, _init?: RequestInit) => ({ bot: announcement("ask"), task: { approvalMode: "full" } }));
+    await persistTaskApproval("bot", "thread", { approvalMode: "full", confirmFullAccess: true }, undefined, request, true);
+    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toEqual({ approvalMode: "full", confirmFullAccess: true });
+    await persistTaskApproval("bot", "thread", { approvalMode: "ask", confirmFullAccess: true }, undefined, request);
+    expect(JSON.parse(String(request.mock.calls[1]?.[1]?.body))).toEqual({ approvalMode: "ask" });
+    const bot = { id: "bot", approvalMode: "ask", tasks: [{ threadId: "thread", approvalMode: "custom" }] } as BotAnnouncement;
+    const bridge = { setMode: vi.fn().mockResolvedValue(bot) };
+    await expect(persistTaskApproval("bot", "thread", { approvalMode: "custom", confirmFullAccess: true }, bridge, request)).resolves.toBe(bot);
+    expect(bridge.setMode).toHaveBeenCalledExactlyOnceWith("bot", "custom", { threadId: "thread", threadOnly: true, acknowledgeLocalAuto: false });
+    await expect(persistTaskApproval("bot", "thread", { approvalMode: "custom", confirmFullAccess: true }, undefined, request, true))
+      .rejects.toThrow("packaged desktop");
+  });
+
   it("never sends a Full confirmation over HTTP after a rapid switch back to Ask", async () => {
     const request = vi.fn(async (_path: string, _init?: RequestInit) => ({ bot: announcement("ask") }));
     await persistBotUpdate(
@@ -439,6 +453,38 @@ describe("trusted approval-mode persistence", () => {
       undefined,
     )).rejects.toThrow("packaged desktop app");
     expect(request).not.toHaveBeenCalled();
+  });
+
+  it("grants Full over HTTP only under the operator's opt-in, never Custom", async () => {
+    const request = vi.fn(async (_path: string, _init?: RequestInit) => ({ bot: announcement("full") }));
+    await persistBotUpdate(
+      "bot-1",
+      { approvalMode: "full", confirmFullAccess: true, applyToAllThreads: true, title: "Chief" },
+      new AbortController().signal,
+      request,
+      undefined,
+      undefined,
+      true,
+    );
+    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toEqual({
+      title: "Chief", approvalMode: "full", confirmFullAccess: true, applyToAllThreads: true,
+    });
+    await expect(persistBotUpdate(
+      "bot-1",
+      { approvalMode: "full", confirmFullAccess: true },
+      new AbortController().signal,
+      request,
+      undefined,
+    )).rejects.toThrow("packaged desktop app");
+    await expect(persistBotUpdate(
+      "bot-1",
+      { approvalMode: "custom", confirmFullAccess: true },
+      new AbortController().signal,
+      request,
+      undefined,
+      undefined,
+      true,
+    )).rejects.toThrow("packaged desktop app");
   });
 
   it("uses the private bridge to leave Custom instead of the bot-callable HTTP API", async () => {

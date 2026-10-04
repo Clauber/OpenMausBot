@@ -1,7 +1,7 @@
 import { t } from "./i18n";
 
 export interface FeatureFlagConfig {
-  features?: { skillAuthoring?: boolean; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; routinesInConversation?: boolean; llmThreadTitles?: boolean; skillsLibrary?: boolean };
+  features?: { skillAuthoring?: boolean; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; routinesInConversation?: boolean; llmThreadTitles?: boolean; skillsLibrary?: boolean; operatorFullAccess?: boolean };
   browserEngine?: { kind: "engine" | "unavailable"; reason?: string; installable?: boolean; installing?: boolean; installError?: string };
 }
 
@@ -71,4 +71,12 @@ export function llmThreadTitlesEnabled(config: FeatureFlagConfig | null | undefi
  * mirroring the server's skillsLibraryEnabled. */
 export function skillsLibraryEnabled(config: FeatureFlagConfig | null | undefined): boolean {
   return config?.features?.skillsLibrary === true;
+}
+
+/** The operator's env opt-in (OMB_OPERATOR_FULL_ACCESS=1): this server lets
+ * the paired web UI grant Full access over HTTP, so the selector offers it
+ * without the packaged desktop's private channel. Mirrors the server's
+ * OPERATOR_FULL_ACCESS read. */
+export function operatorFullAccessEnabled(config: FeatureFlagConfig | null | undefined): boolean {
+  return config?.features?.operatorFullAccess === true;
 }
