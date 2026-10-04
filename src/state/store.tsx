@@ -961,6 +961,8 @@ export interface AppState {
   activityOpen: boolean;
   /** A file a message links or attaches, previewed in the side panel. */
   filePreview: FilePreview | null;
+  /** the bottom-docked owner terminal (Ctrl+`); closed again on reload */
+  terminalOpen: boolean;
   appSettingsOpen: boolean;
   appSettingsSection: AppSettingsSection;
   /** Non-zero while Settings → OMB Cloud is open because of the Cloud page's
@@ -1255,6 +1257,7 @@ export type Action =
   | { type: "toggleActivity"; open?: boolean }
   | { type: "openFilePreview"; file: FilePreview }
   | { type: "closeFilePreview" }
+  | { type: "toggleTerminal"; open?: boolean }
   | { type: "focusMessage"; threadId: string; messageId: string; matchText?: string }
   | { type: "focusMessageConsumed"; nonce: number }
   | { type: "toggleAppSettings"; open?: boolean; section?: AppSettingsSection; cloudLink?: boolean; phonePairing?: boolean }
@@ -2125,6 +2128,12 @@ export function reducer(state: AppState, action: Action): AppState {
         filePreview: open ? null : state.filePreview,
       };
     }
+    // The terminal docks below the whole app, so it never displaces the
+    // side panels; nothing needs closing when it opens.
+    case "toggleTerminal": {
+      const open = action.open ?? !state.terminalOpen;
+      return { ...state, terminalOpen: open };
+    }
     case "toggleAppSettings": {
       const open = action.open ?? !state.appSettingsOpen;
       return {
@@ -2474,6 +2483,7 @@ export const initialState: AppState = {
   inspectorOpen: false,
   activityOpen: false,
   filePreview: null,
+  terminalOpen: false,
   appSettingsOpen: false,
   appSettingsSection: "general",
   appSettingsCloudLink: 0,

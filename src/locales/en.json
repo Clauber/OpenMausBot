@@ -3501,5 +3501,13 @@
   "botAccess.tools.busy": "Wait until this bot finishes all active tasks before changing its tool selection.",
   "botAccess.tools.saving": "Saving tool selection…",
   "botAccess.tools.save": "Save tool selection",
-  "botAccess.tools.examples": "Examples and engine support"
+  "botAccess.tools.examples": "Examples and engine support",
+  "terminal.title": "Terminal",
+  "terminal.close": "Close terminal",
+  "terminal.reconnect": "Reconnect",
+  "terminal.connecting": "Connecting to the server…",
+  "terminal.unavailable": "This server has no terminal backend (node-pty is not installed).",
+  "terminal.denied": "Terminal access needs an owner session on this server.",
+  "terminal.disconnected": "The shell has exited.",
+  "terminal.refused": "The server refused the terminal: {reason}"
 }

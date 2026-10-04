@@ -56,6 +56,12 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
         winKeys: ["Ctrl", "Shift", "[ / ]"],
       },
       {
+        id: "terminal-panel",
+        description: "Toggle the terminal panel",
+        macKeys: ["⌃", "`"],
+        winKeys: ["Ctrl", "`"],
+      },
+      {
         id: "find-conversation",
         description: "Find in conversation",
         macKeys: ["⌘", "F"],

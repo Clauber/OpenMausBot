@@ -8,6 +8,13 @@ import type { RequestAuth } from "../request-auth.ts";
 /** "Not my route": the next handler, then index.ts's inline routes, get a turn. */
 export const PASS: unique symbol = Symbol("route.pass");
 
+/** Set on a request whose WebSocket upgrade a route has claimed. The server's
+ * `upgrade` event reaches every registered interceptor; a route that claimed
+ * the socket sets this so later listeners leave it alone. Registration order
+ * still decides who sees the claim first, so attach claiming routes before
+ * any listener that rejects foreign paths. */
+export const UPGRADE_CLAIMED: unique symbol = Symbol("route.upgradeClaimed");
+
 /** What a route module starts with. Anything else it needs (store, config,
  * managers) is passed explicitly to its factory, never reached for here. */
 export interface RouteContext {

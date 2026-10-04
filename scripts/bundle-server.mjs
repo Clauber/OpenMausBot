@@ -87,6 +87,20 @@ await build({
   allowOverwrite: true,
   logLevel: "info",
   plugins: [yamlEsmPlugin],
+  // esbuild's ESM output replaces a CJS dependency's `require("events")` with
+  // a shim that throws "Dynamic require of" — unless a real `require` exists
+  // in module scope, which the shim prefers. The terminal's ws dependency is
+  // the first CJS dep here with lazy builtin requires, so hand every entry
+  // the createRequire binding. (node:module is a builtin, safe to import.)
+  banner: {
+    js: 'import { createRequire as __ombCreateRequire } from "node:module";\nconst require = __ombCreateRequire(import.meta.url);',
+  },
+  // node-pty is a native addon: it cannot be inlined into the bundled server,
+  // so the terminal route's dynamic import must survive verbatim and resolve
+  // from node_modules beside the bundle (optional dependency — absent means
+  // the terminal reports itself unavailable). bufferutil and utf-8-validate
+  // are ws's optional native accelerators, required in a try/catch at runtime.
+  external: ["node-pty", "bufferutil", "utf-8-validate"],
 });
 
 // External MCP clients launch this as an independent stdio process. Keep its

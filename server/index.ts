@@ -614,6 +614,7 @@ import { createBotPresetRoutes } from "./routes/bot-presets.ts";
 import { createBotMemoryRoutes } from "./routes/bot-memory.ts";
 import { createDeciderRoutes } from "./routes/decider.ts";
 import { createDesktopViewer, desktopViewerUrl } from "./routes/desktop-viewer.ts";
+import { createTerminalRoutes } from "./routes/terminal.ts";
 import { localDesktopTarget, localVmViewerStatus, viewerTargetId } from "./desktop-viewer-targets.ts";
 import { createAntigravityLeftoverRoutes } from "./routes/antigravity-leftovers.ts";
 import { findAntigravityLeftovers, removeAntigravityLeftovers } from "./drivers/antigravity-temp.ts";
@@ -5440,6 +5441,8 @@ const desktopViewer = createDesktopViewer({
     return holds() ? holds : undefined;
   },
 });
+// The owner terminal (Ctrl+` in the web app): a shell on this server.
+const terminal = createTerminalRoutes();
 function closeSessionStreams(sessionId: string): void {
   browserLive.closeForOwner(sessionId);
   desktopViewer.closeForOwner(sessionId);
@@ -15509,6 +15512,7 @@ ROUTES.push(createAntigravityLeftoverRoutes({
 }));
 
 ROUTES.push(desktopViewer.route);
+ROUTES.push(terminal.route);
 
 // Live calls (GPT-Live as the voice, the bot as the brain). A client holds
 // the WebRTC audio; the harness creates the session with the key (which
@@ -25182,6 +25186,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
 };
 
 const server = createServer(handleRequest);
+// Terminal first: an upgrade is offered to every interceptor, and the
+// desktop viewer answers 404 for paths it does not own (UPGRADE_CLAIMED is
+// how it defers to an earlier claim).
+terminal.attach(server, handleRequest);
 desktopViewer.attach(server, handleRequest);
 
 calendarCalls.start();
@@ -25384,6 +25392,7 @@ const gracefulShutdown = createGracefulShutdown({
       memoryUpkeep.stop();
       webhookIngress?.server.close();
       tunnelListener?.close();
+      terminal.closeAll();
     },
     async () => { await managedDesktop.close(); await registry.disposeAll(); },
     async () => {
