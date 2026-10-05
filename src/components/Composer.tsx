@@ -76,6 +76,7 @@ import {
   replaceComposerSlashTrigger,
   type ComposerSlashCommand,
 } from "@/lib/composer-commands";
+import { continueNumberedList } from "@/lib/composer-lists";
 
 /** The active @mention query at the caret: the text between an `@` that
  * starts a word and the caret. null = no mention being typed. */
@@ -1127,7 +1128,18 @@ export function Composer({
               onEditLast();
               return;
             }
-            // Shift+Enter inserts a newline; plain Enter sends
+            // Shift+Enter inserts a newline (continuing a numbered list); plain Enter sends
+            if (e.key === "Enter" && e.shiftKey && !e.nativeEvent.isComposing) {
+              const input = e.currentTarget;
+              const next = continueNumberedList(input.value, input.selectionStart, input.selectionEnd);
+              if (next) {
+                e.preventDefault();
+                editText(next.text);
+                setCaret(next.caret);
+                requestAnimationFrame(() => inputRef.current?.setSelectionRange(next.caret, next.caret));
+                return;
+              }
+            }
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
               // The second Enter of the gesture: the chip above is waiting,
