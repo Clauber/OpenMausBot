@@ -3,6 +3,7 @@
 // text never gets to turn an arbitrary local path into a browser request.
 import {
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -32,6 +33,7 @@ import {
 } from "@/lib/composer-attachments";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
+import { OpenFilePreviewContext } from "@/lib/file-preview";
 
 export interface PreviewImage {
   src: string;
@@ -766,6 +768,7 @@ export function AttachedFileChip({ file, message, linked = false, className }: {
   className?: string;
 }) {
   const save = useLocalFileSave(file.path, file.name, message);
+  const openPreview = useContext(OpenFilePreviewContext);
   const failed = save.state === "failed";
   if (!message || (!file.private && !linked)) {
     return (
@@ -781,7 +784,40 @@ export function AttachedFileChip({ file, message, linked = false, className }: {
       title={save.state === "saved" && save.savedTo ? t("attach.savedTo", { path: save.savedTo }) : file.name}
       className={cn("max-w-[280px] overflow-hidden rounded-lg border border-hairline/40 bg-inset/70 text-[12px] text-ink-secondary", className)}
     >
-      <button
+      {openPreview ? (
+        <div className="flex min-h-10 w-full items-center">
+          <button
+            type="button"
+            onClick={() => openPreview({ path: file.path, name: file.name, message })}
+            title="Open preview"
+            className="flex min-h-10 min-w-0 flex-1 items-center gap-2 py-2 ps-2.5 text-left transition-colors hover:bg-raised/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60"
+          >
+            <FileText size={14} className="shrink-0" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate text-ink">{file.name}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => void save.save()}
+            disabled={save.state === "saving"}
+            aria-label={
+              failed
+                ? t("attach.retrySaveAria", { name: file.name })
+                : t("attach.saveAria", { name: file.name })
+            }
+            className="flex min-h-10 shrink-0 items-center px-2.5 transition-colors hover:bg-raised/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60 disabled:cursor-wait"
+          >
+            {save.state === "saving" ? (
+              <LoaderCircle size={13} className="shrink-0 animate-spin" />
+            ) : save.state === "saved" ? (
+              <Check size={13} className="shrink-0 text-success" />
+            ) : save.state === "failed" ? (
+              <RotateCcw size={13} className="shrink-0 text-danger" />
+            ) : (
+              <Download size={13} className="shrink-0" />
+            )}
+          </button>
+        </div>
+      ) : <button
         type="button"
         onClick={() => void save.save()}
         disabled={save.state === "saving"}
@@ -803,7 +839,7 @@ export function AttachedFileChip({ file, message, linked = false, className }: {
         ) : (
           <Download size={13} className="shrink-0" />
         )}
-      </button>
+      </button>}
       {save.state !== "idle" && (
         <div
           role={failed ? "alert" : "status"}

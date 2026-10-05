@@ -13915,6 +13915,26 @@ function messageFileRootsForThread(senderId: string, threadId: string): string[]
   });
 }
 
+/** The working folders of the teammate conversations this one handed work
+ * to or heard from. A bot relaying a teammate's result links the teammate's
+ * file, which lives in that teammate's folder rather than its own. Only the
+ * harness writes `threadRef` onto activity rows, so a bot cannot widen this
+ * by writing one; and each referenced thread is one the person can open. */
+function linkedThreadFileRoots(threadId: string): string[] {
+  const roots = new Set<string>();
+  const seen = new Set<string>();
+  for (const message of store.messagesFor(threadId)) {
+    const ref = message.role === "bot" && message.kind === "activity" ? message.threadRef : undefined;
+    if (!ref || ref.threadId === threadId || seen.has(ref.threadId)) continue;
+    seen.add(ref.threadId);
+    if (store.botByThread(ref.threadId)?.id !== ref.botId) continue;
+    for (const root of messageFileRootsForThread(ref.botId, ref.threadId)) {
+      if (root !== ATTACHMENTS_DIR) roots.add(root);
+    }
+  }
+  return [...roots];
+}
+
 async function attachmentVmForTurn(capability: InternalCapability): Promise<LocalVmTarget | undefined> {
   const slot = autoVmClaims.get(capability.threadId);
   if (!localVmThreadTargets.has(capability.threadId) &&
@@ -19173,7 +19193,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (!senderId) {
           return json(res, 403, { error: "the file's bot author could not be verified" });
         }
-        roots = messageFileRootsForThread(senderId, threadId);
+        roots = [...new Set([
+          ...messageFileRootsForThread(senderId, threadId),
+          ...linkedThreadFileRoots(threadId),
+        ])];
       }
 
       const file = await openMessageFile(href, roots);

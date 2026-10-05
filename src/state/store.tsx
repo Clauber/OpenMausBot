@@ -906,6 +906,14 @@ export interface ModelVariantSession {
   variants?: { options: ModelVariantOption[]; currentValue?: string };
 }
 
+/** A file shown in the preview panel, fetched through the message that
+ * shares it (the server re-checks that grant on every read). */
+export interface FilePreview {
+  path: string;
+  name: string;
+  message: { threadId: string; messageId: string };
+}
+
 export interface AppState {
   bots: Bot[];
   groups: Group[];
@@ -951,6 +959,8 @@ export interface AppState {
   /** the per-thread event inspector (runtime stream + native protocol tee) */
   inspectorOpen: boolean;
   activityOpen: boolean;
+  /** A file a message links or attaches, previewed in the side panel. */
+  filePreview: FilePreview | null;
   appSettingsOpen: boolean;
   appSettingsSection: AppSettingsSection;
   /** Non-zero while Settings → OMB Cloud is open because of the Cloud page's
@@ -1243,6 +1253,8 @@ export type Action =
   | { type: "toggleComputer"; open?: boolean }
   | { type: "toggleInspector"; open?: boolean }
   | { type: "toggleActivity"; open?: boolean }
+  | { type: "openFilePreview"; file: FilePreview }
+  | { type: "closeFilePreview" }
   | { type: "focusMessage"; threadId: string; messageId: string; matchText?: string }
   | { type: "focusMessageConsumed"; nonce: number }
   | { type: "toggleAppSettings"; open?: boolean; section?: AppSettingsSection; cloudLink?: boolean; phonePairing?: boolean }
@@ -1544,6 +1556,7 @@ export function reducer(state: AppState, action: Action): AppState {
         computerOpen: false,
         inspectorOpen: false,
         activityOpen: false,
+        filePreview: null,
         appSettingsOpen: false,
         pluginsOpen: false,
         triggersOpen: false,
@@ -1558,6 +1571,7 @@ export function reducer(state: AppState, action: Action): AppState {
         computerOpen: false,
         inspectorOpen: false,
         activityOpen: false,
+        filePreview: null,
         appSettingsOpen: false,
         pluginsOpen: false,
         triggersOpen: false,
@@ -1655,6 +1669,7 @@ export function reducer(state: AppState, action: Action): AppState {
           ...state,
           activeView: "chat",
           selectedId: action.id,
+          filePreview: null,
           botSettingsSection: action.id !== state.selectedId ? "overview" : state.botSettingsSection,
           groups: state.groups.map((g) => (g.id === action.id ? { ...g, unread: false } : g)),
         };
@@ -1665,6 +1680,7 @@ export function reducer(state: AppState, action: Action): AppState {
             ...state,
             activeView: "chat",
             selectedId: action.id,
+            filePreview: null,
             botSettingsSection: action.id !== state.selectedId ? "overview" : state.botSettingsSection,
           },
           action.id,
@@ -2007,6 +2023,7 @@ export function reducer(state: AppState, action: Action): AppState {
         selectedId,
         settingsOpen: open,
         activityOpen: open ? false : state.activityOpen,
+        filePreview: open ? null : state.filePreview,
         botSettingsSection: action.section ?? (selectedId !== state.selectedId ? "overview" : state.botSettingsSection),
         // Mascot / bare open omits `section` → accordion stays fully collapsed.
         // Deep links expand that row even when the panel is already open.
@@ -2069,6 +2086,7 @@ export function reducer(state: AppState, action: Action): AppState {
         inspectorOpen: open ? false : state.inspectorOpen,
         activityOpen: open ? false : state.activityOpen,
         appSettingsOpen: open ? false : state.appSettingsOpen,
+        filePreview: open ? null : state.filePreview,
       };
     }
     case "toggleInspector": {
@@ -2080,8 +2098,21 @@ export function reducer(state: AppState, action: Action): AppState {
         computerOpen: open ? false : state.computerOpen,
         activityOpen: open ? false : state.activityOpen,
         appSettingsOpen: open ? false : state.appSettingsOpen,
+        filePreview: open ? null : state.filePreview,
       };
     }
+    case "openFilePreview":
+      return {
+        ...state,
+        filePreview: action.file,
+        settingsOpen: false,
+        computerOpen: false,
+        inspectorOpen: false,
+        activityOpen: false,
+        appSettingsOpen: false,
+      };
+    case "closeFilePreview":
+      return state.filePreview ? { ...state, filePreview: null } : state;
     case "toggleActivity": {
       const open = action.open ?? !state.activityOpen;
       return {
@@ -2091,6 +2122,7 @@ export function reducer(state: AppState, action: Action): AppState {
         computerOpen: open ? false : state.computerOpen,
         inspectorOpen: open ? false : state.inspectorOpen,
         appSettingsOpen: open ? false : state.appSettingsOpen,
+        filePreview: open ? null : state.filePreview,
       };
     }
     case "toggleAppSettings": {
@@ -2313,7 +2345,7 @@ export function reducer(state: AppState, action: Action): AppState {
       // Older background frames are already represented by the next server
       // snapshot. Only frames racing that request need replaying over it.
       const { [action.threadId]: _old, ...backgroundThreadEvents } = state.backgroundThreadEvents;
-      return { ...state, backgroundThreadEvents, selectedId: action.botId, activeView: "chat" };
+      return { ...state, backgroundThreadEvents, selectedId: action.botId, activeView: "chat", filePreview: null };
     }
     case "renameTask":
       return updateBot(state, action.botId, (bot) => ({
@@ -2441,6 +2473,7 @@ export const initialState: AppState = {
   computerOpen: false,
   inspectorOpen: false,
   activityOpen: false,
+  filePreview: null,
   appSettingsOpen: false,
   appSettingsSection: "general",
   appSettingsCloudLink: 0,

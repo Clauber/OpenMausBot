@@ -611,10 +611,20 @@ beforeAll(async () => {
   writeFileSync(linkedImage, "png preview bytes");
   writeFileSync(generatedImage, "generated image bytes");
   writeFileSync(userAttachment, "%PDF shared from the phone\n", { mode: 0o600 });
+  // A teammate's file, relayed: it lives in the seeded bot's folder, not in
+  // the folder of test-bot-a, which links it after the harness recorded the
+  // hand-off to that teammate's conversation.
+  const teammateWorkspace = join(home, ".openmausbot", "workspaces", "test-bot-seed");
+  const relayedFile = join(teammateWorkspace, "teammate plan.md");
+  const strangerFile = join(home, ".openmausbot", "workspaces", "test-bot-stranger", "notes.md");
+  mkdirSync(teammateWorkspace, { recursive: true });
+  mkdirSync(dirname(strangerFile), { recursive: true });
+  writeFileSync(relayedFile, "# Teammate plan\n");
+  writeFileSync(strangerFile, "# Not shared\n");
   writeFileSync(
     join(home, ".openmausbot", "messages-test-linked-file-room-thread.json"),
     JSON.stringify({
-      activeLeafId: "user-outside-file-message",
+      activeLeafId: "relayed-stranger-file-message",
       messages: [
         {
           id: "linked-file-message",
@@ -673,6 +683,23 @@ beforeAll(async () => {
           role: "user",
           kind: "text",
           text: `<attached-file path="${linkedFile}" />`,
+        },
+        {
+          id: "hand-off-activity", at: 10, parentId: "user-outside-file-message",
+          role: "bot", kind: "activity", tool: { name: "Seeded fixture bot replied", ok: true },
+          threadRef: { botId: "test-bot-seed", threadId: "test-bot-seed-thread", title: "Seeded fixture bot" },
+        },
+        {
+          id: "relayed-file-message", at: 11, parentId: "hand-off-activity",
+          role: "bot", kind: "text",
+          text: `Plan: [teammate plan.md](<${pathToFileURL(relayedFile).href}>)`,
+          from: { botId: "test-bot-a", name: "Test bot A", color: "purple" },
+        },
+        {
+          id: "relayed-stranger-file-message", at: 12, parentId: "relayed-file-message",
+          role: "bot", kind: "text",
+          text: `Notes: [notes.md](<${pathToFileURL(strangerFile).href}>)`,
+          from: { botId: "test-bot-a", name: "Test bot A", color: "purple" },
         },
       ],
     }),
@@ -12895,6 +12922,20 @@ describe("message pages", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ path: linkedFile }),
     })).status).toBe(404);
+  });
+
+  it("serves a teammate's file relayed after a recorded hand-off, and nothing wider", async () => {
+    const route = (id: string) => `/api/threads/test-linked-file-room-thread/messages/${id}/file`;
+    const relayed = await fetch(`${BASE}${route("relayed-file-message")}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: join(home, ".openmausbot", "workspaces", "test-bot-seed", "teammate plan.md") }),
+    });
+    expect(relayed.status).toBe(200);
+    expect(await relayed.text()).toBe("# Teammate plan\n");
+    expect((await api("POST", route("relayed-stranger-file-message"), {
+      path: join(home, ".openmausbot", "workspaces", "test-bot-stranger", "notes.md"),
+    })).status).toBe(403);
   });
 
   it("downloads a structured generated image from an image-only reply", async () => {

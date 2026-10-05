@@ -34,6 +34,8 @@ import { windowsPathDestinations } from "../../shared/markdown-windows-paths";
 import { looksLikeThreadRefUrl, parseThreadRefUrl, resolveThreadRefAddress, remarkThreadRefs } from "../lib/thread-refs";
 import { MarkdownImagePreview, useLocalFileSave, type MessageAttachmentContext } from "./AttachmentPreview";
 import { ThreadLink, ThreadRefsContext, threadLinkFromProps, type ThreadRefsValue } from "./ThreadRefs";
+import { OpenFilePreviewContext } from "../lib/file-preview";
+import { attachmentBasename } from "../lib/composer-attachments";
 
 // highlighted code, so revisiting a thread doesn't re-tokenize settled
 // blocks; keys are content hashes. The two-theme HTML is about 20 to 28 times
@@ -582,8 +584,41 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
 // process' containment check.
 function LocalFileLink({ filePath, children, message }: { filePath: string; children?: ReactNode; message?: MessageAttachmentContext }) {
   const save = useLocalFileSave(filePath, undefined, message);
+  const openPreview = useContext(OpenFilePreviewContext);
   if (!message) {
     return <span title="Unavailable legacy file reference" className="break-words text-ink-secondary">{children}</span>;
+  }
+  if (openPreview) {
+    return (
+      <span dir="ltr" className="[unicode-bidi:isolate]">
+        <button
+          type="button"
+          onClick={() => openPreview({ path: filePath, name: attachmentBasename(filePath), message })}
+          title="Open preview"
+          className="inline break-words text-start text-accent underline decoration-accent/40 hover:decoration-accent"
+        >
+          {children}
+        </button>
+        <button
+          type="button"
+          onClick={() => void save.save()}
+          disabled={save.state === "saving"}
+          title={save.state === "failed" ? save.reason : save.state === "saved" ? `Saved to ${save.savedTo}` : "Save a copy"}
+          aria-label="Save a copy"
+          className="ms-1 inline-flex align-middle text-accent/80 hover:text-accent disabled:cursor-wait"
+        >
+          {save.state === "saving" ? (
+            <LoaderCircle size={12} className="shrink-0 animate-spin" aria-hidden="true" />
+          ) : save.state === "saved" ? (
+            <Check size={12} className="shrink-0 text-success" aria-hidden="true" />
+          ) : save.state === "failed" ? (
+            <RotateCcw size={12} className="shrink-0 text-danger" aria-hidden="true" />
+          ) : (
+            <Download size={12} className="shrink-0" aria-hidden="true" />
+          )}
+        </button>
+      </span>
+    );
   }
   const label = save.state === "saving"
     ? "Saving…"

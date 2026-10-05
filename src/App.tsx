@@ -22,6 +22,9 @@ import { ComputerPanel } from "@/components/ComputerPanel";
 import { RemoteDesktopPanel } from "@/components/remote-desktop-panel";
 import { InspectorPanel } from "@/components/InspectorPanel";
 import { ActivityPanel } from "@/components/ActivityPanel";
+import { FilePreviewPanel } from "@/components/FilePreviewPanel";
+import { OpenFilePreviewContext } from "@/lib/file-preview";
+import type { FilePreview } from "@/state/store";
 import { SettingsModal } from "@/components/SettingsModal";
 import { WorkspaceBackupRecovery } from "@/components/WorkspaceBackupSettings";
 import { UpdateBanner } from "@/components/UpdateBanner";
@@ -113,7 +116,8 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   // A side panel beside the full sidebar leaves the default 1100px window a
   // ~330px chat. Fold the sidebar to its avatar rail for as long as a panel
   // is open and the window is not wide enough for all three.
-  const sidePanelOpen = Boolean(bot) && (state.settingsOpen || state.computerOpen || state.inspectorOpen || state.activityOpen);
+  const sidePanelOpen = (Boolean(bot) && (state.settingsOpen || state.computerOpen || state.inspectorOpen || state.activityOpen)) ||
+    Boolean(state.filePreview);
   const collapseSidebar = sidePanelOpen && !sidebarAndPanelFit;
   const calendarFocus = state.activeView === "routines";
   // Turning Advanced mode off closes the inspector it no longer offers.
@@ -278,8 +282,10 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
       }).catch(() => {});
     });
   }, [dispatch]);
+  const openFilePreview = useCallback((file: FilePreview) => dispatch({ type: "openFilePreview", file }), [dispatch]);
 
   return (
+    <OpenFilePreviewContext.Provider value={openFilePreview}>
     <div className="flex h-full flex-col">
       {/* fixed-position popup, bottom-left — outside the layout flow */}
       <UpdateBanner />
@@ -371,6 +377,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
       )}
       {!remoteClient && state.inspectorOpen && bot && <InspectorPanel key={bot.threadId} bot={bot} />}
       {!remoteClient && state.activityOpen && bot && <ActivityPanel key={`activity:${bot.id}`} bot={bot} />}
+      {state.filePreview && <FilePreviewPanel key={`${state.filePreview.message.messageId}:${state.filePreview.path}`} file={state.filePreview} />}
       {state.appSettingsOpen && <SettingsModal />}
       {/* On the person's Cloud: its setup checklist, and after it Move to
           Cloud's one-time card on an empty Cloud (desktop app only). */}
@@ -399,6 +406,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
         visible={capabilities.windowChrome === "win-caption" && Boolean(window.ogb?.windowControls)}
       />
     </div>
+    </OpenFilePreviewContext.Provider>
   );
 }
 
