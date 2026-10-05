@@ -22291,7 +22291,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           if (card.requestType === "question" || card.questionRequest) continue;
           // Harness-owned proposals and peer grants keep their own answers.
           if (card.allowKey || card.routineRequest || card.skillRequest || card.profileRequest || card.modelRequest ||
-            card.tighteningRequest || card.teamSetupRequest || card.teamMemoryRequest) continue;
+            card.teamSetupRequest || card.teamMemoryRequest) continue;
           if (roomThread && message.from?.botId !== target.id) continue;
           const outcome = await answerRequest(threadId, target.modelSelection.instanceId, card.requestId, "allow", undefined, { id: target.id, name: target.name });
           if (outcome !== "unavailable") answered += 1;
