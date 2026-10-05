@@ -30,12 +30,14 @@ import {
   Monitor,
   Moon,
   Power,
+  ScrollText,
   Settings,
   Smartphone,
   X,
 } from "lucide-react";
 import { api, ApiError, currentTaskBot, useStore, type Bot, type ConfigStatus } from "@/state/store";
 import { setAdvancedMode, useAdvancedMode } from "@/lib/interface-mode";
+import { ComputerAuditPane } from "./ComputerAuditPane";
 import { ComputerFilesPane } from "./ComputerFilesPane";
 import { effectivePlace, isComputerPlace, placeLabelKey, placeOffered } from "@/lib/place";
 import type { CloudBackend } from "../../shared/wire";
@@ -1439,6 +1441,13 @@ export function ComputerPanel({
               {placeLive && livePlace === "browser" && <span className="size-1.5 animate-pulse rounded-full bg-success" role="img" aria-label={t("place.live")} data-testid="browser-tab-live" />}
             </button>
             )}
+            <button
+              type="button"
+              onClick={() => selectPanelView("audit")}
+              aria-pressed={panelView === "audit"}
+              className={tabClass(panelView === "audit")}
+              data-testid="computer-tab-audit"
+            ><ScrollText size={13} /> {t("computer.tab.audit")}</button>
             {!advanced && (
             <button
               type="button"
@@ -1491,6 +1500,8 @@ export function ComputerPanel({
             )}
           </div>
         </div>
+      ) : panelView === "audit" ? (
+        <ComputerAuditPane bot={bot} />
       ) : panelView === "files" ? (
         <ComputerFilesPane bot={bot} />
       ) : panelView === "android" && androidConnected ? (
