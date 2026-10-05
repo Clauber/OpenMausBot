@@ -86,6 +86,9 @@ export type DecisionActor =
 export interface DecisionRow {
   at: string;
   threadId: string;
+  effectKey?: string;
+  confidence?: number;
+  reasoning?: string;
   requestId?: string;
   botId?: string;
   botName?: string;

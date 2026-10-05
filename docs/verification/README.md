@@ -57,6 +57,7 @@ Use only mapped, tested commands:
 - [Profile proposal and credential-card lifecycle](proposal-cards.md)
 - [Full Access without duplicate approvals](full-access.md)
 - [Exact command allowlist UI and saved rules](command-allowlist.md)
+- [Approval rules, automatic review and effect replay protection](approval-rules.md)
 - [Peer approval denial, expiry, and cancellation](peer-approvals.md)
 - [Waiting for an occupied desktop](computer-wait.md)
 - [Chat UI, driven headlessly](chat-ui.md)

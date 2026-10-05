@@ -3,7 +3,7 @@
 import { newId, type RequestOutcome } from "../contracts.ts";
 import type { AskQuestion } from "../../shared/ask-question.ts";
 
-interface Ask { id: string; tool: string; summary: string }
+interface Ask { id: string; tool: string; summary: string; input?: unknown }
 type Source = "user" | "timeout" | "system";
 
 interface Card {
@@ -24,9 +24,9 @@ export function createChatToolApproval(options: {
   const pending = new Map<string, Card>();
   let closed = false;
   return {
-    ask(tool: string, summary: string): Promise<boolean> {
+    ask(tool: string, summary: string, input?: unknown): Promise<boolean> {
       if (closed || options.signal.aborted) return Promise.resolve(false);
-      const ask = { id: newId(), tool, summary };
+      const ask = { id: newId(), tool, summary, input };
       return new Promise((resolve) => {
         let timer: ReturnType<typeof setTimeout>;
         const card: Card = {

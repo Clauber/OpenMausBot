@@ -1157,6 +1157,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           requestType: isQuestion ? "question" : "permission",
           tool,
           summary,
+          input: isQuestion ? undefined : params.command !== undefined ? { command: params.command, cwd: params.cwd ?? commandCwd } : params.changes ?? params,
           command: method === "execCommandApproval" || method === "item/commandExecution/requestApproval"
             ? permissionCommand(params.command, params.cwd ?? (
               // Helpers may have a different workspace from their parent.

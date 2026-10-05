@@ -448,7 +448,7 @@ import { LocalVmIdleTimer } from "./local-vm-idle.ts";
 import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { LocalVmSeatPool, type LocalVmSeatHolder } from "./local-vm-seat-pool.ts";
 import { RepeatDetector, callKey } from "./repeat-detector.ts";
-import { redactSecretsInText } from "./redact.ts";
+import { redactSecrets, redactSecretsInText } from "./redact.ts";
 import * as vps from "./vps-computer.ts";
 import { RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
 import { CalendarCallManager, type CalendarCall } from "./calendar-calls.ts";
@@ -494,6 +494,9 @@ import { createTeamManifest, parseTeamManifest } from "./team-manifest.ts";
 import { readThreadEvents } from "./thread-events.ts";
 import { TeamMemory, TEAM_MEMORY_KINDS, type TeamMemoryKind } from "./team-memory.ts";
 import { describeTool, readBotActivity } from "./activity.ts";
+import { approvalRule, consequentialTool, internalActionTool, normalizeApprovalRules, toolIdentity } from "./approval-rules.ts";
+import { autoReview } from "./auto-review.ts";
+import { EffectLedger, effectKey } from "./effect-ledger.ts";
 import { OutboundCounts } from "./outbound-counts.ts";
 import { OutboundRequestService } from "./outbound-requests.ts";
 import { DEFAULT_OUTBOUND_POLICY, connectorCallsIn, normalizeOutboundPolicy, outboundCallsIn } from "../shared/outbound.ts";
@@ -829,6 +832,29 @@ bindDecisionRetention(() => decisionRetentionDays(cfg.decisions?.retentionDays))
 // The decision model (server/decider): reads cfg per call, so a Settings
 // save applies to the next decision. It never throws into a turn.
 const decider = createDecider({ config: () => cfg, dataDir: DATA_DIR });
+const effectLedger = new EffectLedger(join(DATA_DIR, "approval-effects.sqlite"));
+const actionPolicyScope = new AsyncLocalStorage<{ botId?: string; threadId?: string; approved?: boolean; effectKey?: string }>();
+const pendingNativeEffects = new Map<string, { effectKey?: string; botId: string; outboundCount: number }>();
+const effectRefusal = (code = "effect_replayed", message = "This consequential action was already authorized in this turn.") =>
+  Object.assign(new Error(message), { status: 409, code });
+function checkEffectReplay(threadId: string, requestId: string, behavior: string): void {
+  if (behavior !== "allow") return;
+  const key = store.messagesFor(threadId).find(message => message.card?.requestId === requestId)?.card?.effectKey;
+  if (key && effectLedger.has(key)) throw effectRefusal();
+}
+function claimNativeEffect(threadId: string, requestId: string): void {
+  const pending = pendingNativeEffects.get(`${threadId}:${requestId}`);
+  if (!pending) return;
+  if (pending.effectKey && effectLedger.has(pending.effectKey)) throw effectRefusal();
+  if (pending.outboundCount) {
+    const bot = store.bot(pending.botId);
+    const policy = bot?.outbound ?? DEFAULT_OUTBOUND_POLICY;
+    const count = outboundCounts.reserve(pending.botId, pending.outboundCount, policy.policy === "allow" ? policy.dailyCap : Number.MAX_SAFE_INTEGER);
+    if (count === null) throw effectRefusal("outbound_limit", "This bot has reached its daily outbound limit.");
+  }
+  if (pending.effectKey && !effectLedger.claim(pending.effectKey)) throw effectRefusal();
+}
+
 const customDomainVerifier = createCustomDomainVerifier({ environmentId: ENVIRONMENT_ID });
 // "Sign in with your email" on /pair: the allow-list is read per call so a
 // Settings change or an env bootstrap applies without a restart.
@@ -3820,6 +3846,8 @@ function sourceApprovalMode(botId: string, threadId: string): ApprovalMode {
 }
 
 function fullAccessForSource(botId: string, threadId: string): boolean {
+  const action = actionPolicyScope.getStore();
+  if (action?.botId === botId && action.threadId === threadId && action.approved !== undefined) return action.approved;
   return sourceApprovalMode(botId, threadId) === "full";
 }
 
@@ -5617,6 +5645,7 @@ async function answerRequest(
   // settings. The live turn owns this question, just as it owns Stop/steer.
   const instance = runningTurnEngines.get(threadId) ?? registry.get(instanceId);
   let outcome: RequestOutcome = "unavailable";
+  if (instance && behavior === "allow" && card && !card.answered && askMessageByRequest.has(`${threadId}:${requestId}`)) claimNativeEffect(threadId, requestId);
   if (instance) {
     try {
       outcome = await instance.adapter.respondToRequest(threadId, requestId, { behavior, message, always: always && behavior === "allow" });
@@ -7430,6 +7459,7 @@ bus.subscribe((event: RuntimeEvent) => {
       }
       break;
     case "request.opened": {
+      void (async () => {
       // A structured ask carries the model's own options and has no
       // allow/deny answer, so it is a question no matter which channel the
       // provider routed it through — and, like every question, no approval
@@ -7451,12 +7481,48 @@ bus.subscribe((event: RuntimeEvent) => {
       const command = permission && asker && event.requestId && !event.requiresExplicitApproval && event.command && !guestDriven
         ? commandAllowlistCandidate({ ...event.command, providerInstanceId: event.providerInstanceId ?? asker.modelSelection.instanceId })
         : null;
-      const verdict = permission && asker && event.requestId
+      let verdict = permission && asker && event.requestId
         ? autoVerdict(effectiveApprovalMode, event.tool, {
           requiresExplicitApproval: event.requiresExplicitApproval,
           commandAllowed: Boolean(command && commandAllowlist.matches(asker.id, command)),
         })
         : null;
+      const actionArgs = event.input ?? event.command;
+      const sourceGeneration = directTurnGenerationByThread.get(event.threadId);
+      const sourceSpeaker = groupSpeakers.get(event.threadId);
+      const isCurrentRequest = () => !shouldIgnoreProviderEvent(event) && (
+        (sourceGeneration !== undefined && directTurnGenerationByThread.get(event.threadId) === sourceGeneration) ||
+        (sourceSpeaker !== undefined && groupSpeakers.get(event.threadId) === sourceSpeaker)
+      );
+      let rule = permission && !guestDriven ? approvalRule(event.tool, actionArgs, asker?.approvalRules, cfg.approvalRules) : { decision: null };
+      const consequential = permission && consequentialTool(event.tool, actionArgs);
+      const key = consequential && asker && liveTurnId && actionArgs !== undefined
+        ? effectKey({ botId: asker.id, tool: event.tool, args: actionArgs, threadId: event.threadId, turnId: liveTurnId }) : undefined;
+      const review = consequential && !guestDriven && deciderReady(cfg, "autoReview")
+        ? await autoReview(decider, { tool: event.tool, args: actionArgs, topic: store.taskByThread(asker?.id ?? "", event.threadId)?.title ?? "" }) : null;
+      if (permission && !isCurrentRequest()) return;
+      if (permission && !guestDriven) rule = approvalRule(event.tool, actionArgs, store.bot(asker?.id ?? "")?.approvalRules, cfg.approvalRules);
+      if (review && asker) appendDecision(DATA_DIR, { threadId: event.threadId, requestId: event.requestId,
+        botId: asker.id, botName: asker.name, tool: event.tool, effectKey: key,
+        decision: review.decision === "deny" ? "auto-denied" : review.decision === "ask" ? "card-shown" : "review-would-approve",
+        source: "auto-review", confidence: review.confidence, reasoning: review.reasoning, rule: `judge:${review.decision}` });
+      if ((key && effectLedger.has(key)) || review?.decision === "deny" || (consequential && !key)) {
+        const reason = key && effectLedger.has(key) ? "effect_replayed" : review?.decision === "deny" ? review.reasoning : "Complete action arguments are required for consequential approval.";
+        const instance = runningTurnEngines.get(event.threadId) ?? registry.get(event.providerInstanceId ?? asker?.modelSelection.instanceId ?? "");
+        await instance?.adapter.respondToRequest(event.threadId, event.requestId!, { behavior: "deny", message: reason });
+        appendDecision(DATA_DIR, { threadId: event.threadId, requestId: event.requestId, botId: asker?.id, tool: event.tool,
+          effectKey: key, decision: "auto-denied", source: review?.decision === "deny" ? "auto-review" : "effect-ledger", reasoning: reason });
+        pushMessage({ role: "bot", kind: "activity", tool: { name: `Declined ${event.tool}: ${reason}`, ok: false } });
+        return;
+      }
+      if (verdict) verdict = autoVerdict(effectiveApprovalMode, event.tool, { ruleDecision: rule.decision, requiresExplicitApproval: event.requiresExplicitApproval,
+        commandAllowed: Boolean(command && asker && commandAllowlist.matches(asker.id, command)) });
+      if (!rule.decision && review?.decision === "allow" && effectiveApprovalMode === "auto" && !event.requiresExplicitApproval) verdict = { approve: `approved ${event.tool} (auto review)`, source: "auto-review" };
+      if (review?.decision === "ask") verdict = { approve: null, source: "auto-review" };
+      const nativeOutboundCount = permission && !(toolIdentity(event.tool).kind === "mcp" && event.tool.startsWith("mcp__composio__")) ? outboundCallsIn(event.tool, actionArgs).length : 0;
+      const nativeOutboundPolicy = asker?.outbound ?? DEFAULT_OUTBOUND_POLICY;
+      if (nativeOutboundCount && nativeOutboundPolicy.policy === "ask" && rule.decision !== "always_allow") verdict = { approve: null, source: "outbound-guard" };
+      if (permission && asker && event.requestId) pendingNativeEffects.set(`${event.threadId}:${event.requestId}`, { effectKey: key, botId: asker.id, outboundCount: nativeOutboundCount });
       // Auto's reviewer is the engine's own. Claude accepts `--permission-mode
       // auto` for any model and starts in Manual without a word when auto is
       // unavailable (Haiku 4.5, Sonnet 4.5, an org that disabled it), so the
@@ -7497,6 +7563,7 @@ bus.subscribe((event: RuntimeEvent) => {
         // where the transcript says "approved" over a request nothing
         // answered — and if the provider is gone entirely, forever.
         void (async () => {
+          claimNativeEffect(event.threadId, requestId);
           const outcome = await deliverFullAccessApproval(instance?.adapter, event.threadId, requestId, event.turnId, isCurrent);
           if (!isCurrent()) return;
           if (outcome !== "allowed-once") {
@@ -7524,13 +7591,14 @@ bus.subscribe((event: RuntimeEvent) => {
             summary,
             decision: "auto-approved",
             source: verdict.source,
+            effectKey: key, rule: rule.rule,
           });
-        })().catch(() => {
-          // A receipt failure must neither crash the server nor manufacture
-          // a new permission request after the provider took our answer.
-          console.error("[approval] Could not record the provider approval result.");
+        })().catch(error => {
+          appendDecision(DATA_DIR, { threadId: event.threadId, requestId, botId: asker.id, tool,
+            effectKey: key, decision: "auto-denied", source: "effect-ledger", reasoning: error instanceof Error ? error.message : "Authorization failed." });
+          if (isCurrent()) void instance?.adapter.respondToRequest(event.threadId, requestId, { behavior: "deny", message: "Durable authorization failed; no action was authorized." }).catch(() => {});
         });
-        break;
+        return;
       }
       const heldContext = { source: verdict?.source, permission };
       // A structured ask (Claude's AskUserQuestion) is a question whatever
@@ -7556,12 +7624,13 @@ bus.subscribe((event: RuntimeEvent) => {
             ? { version: 1, questions, ...(event.origin === "output" ? { origin: "output" as const } : {}) }
             : undefined,
           commandAllowlist: command ?? undefined,
+          effectKey: key, autoReview: review ?? undefined,
           // Provider-owned session grants remain separate from exact commands.
           // Never on a guest's turn: an "always" for it would outlive it.
-          allowSession: permission && event.allowSession && !event.requiresExplicitApproval && !guestDriven ? true : undefined,
+          allowSession: !key && !rule.decision && permission && event.allowSession && !event.requiresExplicitApproval && !guestDriven ? true : undefined,
           // The text stays for cards saved before heldCode existed, and for
           // clients that do not know the key yet.
-          held: approvalHeldReason(heldContext),
+          held: rule.decision === "require_approval" ? "An approval rule requires your confirmation." : review?.decision === "ask" ? review.reasoning : approvalHeldReason(heldContext),
           heldCode: approvalHeldNote(heldContext),
           approvalScope: event.approvalScope,
         },
@@ -7584,6 +7653,7 @@ bus.subscribe((event: RuntimeEvent) => {
         source: !permission ? "question" : verdict ? verdict.source : "no-grant",
         origin: !permission && event.origin === "output" ? "output" : undefined,
         unattended: unattended || undefined,
+        effectKey: key, rule: rule.rule,
       });
       // Notify from HERE, not from a separate subscriber on request.opened:
       // this is the branch where a card actually reached a human. Anything
@@ -7604,9 +7674,15 @@ bus.subscribe((event: RuntimeEvent) => {
           ));
         }
       }
+      })().catch(() => {
+        console.error("[approval] Permission evaluation or durable authorization failed.");
+        const instance = runningTurnEngines.get(event.threadId) ?? registry.get(event.providerInstanceId ?? "");
+        void instance?.adapter.respondToRequest(event.threadId, event.requestId!, { behavior: "deny", message: "Approval evaluation failed; no action was authorized." }).catch(() => {});
+      });
       break;
     }
     case "request.resolved": {
+      if (event.requestId) pendingNativeEffects.delete(`${event.threadId}:${event.requestId}`);
       if (event.requestId) pendingCommandRules.delete(`${event.threadId}:${event.requestId}`);
       if (event.requestId) settleWaitingOnPersonChips(event.threadId, event.requestId);
       // answered (by whoever): the turn is working again, unless it settled
@@ -11521,6 +11597,70 @@ const outboundRequests = new OutboundRequestService();
 const outboundCounts = new OutboundCounts(join(DATA_DIR, "outbound-counts.json"));
 const OUTBOUND_HOLD_MS = 9 * 60_000;
 
+async function authorizeInternalAction(capability: InternalCapability, tool: string, args: unknown, proposal = false): Promise<void> {
+  const bot = store.bot(capability.botId);
+  if (!bot || !internalCapabilityIsActive(capability)) throw effectRefusal("effect_unavailable", "This action's turn has ended.");
+  const rule = approvalRule(tool, args, bot.approvalRules, cfg.approvalRules);
+  const consequential = consequentialTool(tool, args);
+  const turnId = liveTurnByThread.get(capability.threadId) ?? (capability.externalRuntime ? capability.generation : undefined);
+  if (consequential && !turnId) throw effectRefusal("effect_unavailable", "This action has no active turn.");
+  const key = consequential ? effectKey({ botId: bot.id, tool, args, threadId: capability.threadId, turnId: turnId! }) : undefined;
+  if (key && effectLedger.has(key)) throw effectRefusal();
+  const review = await autoReview(decider, { tool, args, topic: store.taskByThread(bot.id, capability.threadId)?.title ?? "" });
+  if (!internalCapabilityIsActive(capability)) throw effectRefusal("effect_unavailable", "This action's turn has ended.");
+  if (review) appendDecision(DATA_DIR, { threadId: capability.threadId, botId: bot.id, tool, effectKey: key,
+    source: "auto-review", decision: review.decision === "deny" ? "auto-denied" : "review-would-approve",
+    confidence: review.confidence, reasoning: review.reasoning, rule: `judge:${review.decision}` });
+  if (review?.decision === "deny") throw Object.assign(new Error(review.reasoning), { status: 403 });
+  let approved: boolean | undefined = rule.decision === "always_allow" ? true : undefined;
+  if (rule.decision === "require_approval" || review?.decision === "ask") {
+    const held = outboundRequests.open({ botId: bot.id, threadId: capability.threadId, tool, timeoutMs: OUTBOUND_HOLD_MS });
+    const summary = (JSON.stringify(redactSecrets(args)) ?? "{}").slice(0, 2000);
+    const card = store.appendMessage(capability.threadId, { role: "bot", kind: "options",
+      from: { botId: bot.id, name: bot.name, color: bot.color }, card: { title: "Approval needed", subtitle: summary,
+        options: ["Allow", "Deny"], requestId: held.requestId, tool, effectKey: key, autoReview: review ?? undefined,
+        held: rule.decision === "require_approval" ? "An approval rule requires your confirmation." : review?.reasoning,
+        outboundRequest: { tool, app: null } } });
+    appendDecision(DATA_DIR, { threadId: capability.threadId, requestId: held.requestId, botId: bot.id, tool,
+      effectKey: key, decision: "card-shown", source: rule.decision ? "approval-rules" : "auto-review", rule: rule.rule });
+    notify(buildNotification("approval", bot, capability.threadId, tool));
+    const answer = await held.answer;
+    outboundRequests.forget(held.requestId);
+    if (answer !== "allow") {
+      if (answer === "timeout") store.patchMessage(capability.threadId, card.id, { card: { ...card.card!, answered: "unavailable", dismissed: true } });
+      throw Object.assign(new Error("The action was declined or its approval expired."), { status: 403 });
+    }
+    approved = true;
+  }
+  if (!internalCapabilityIsActive(capability)) throw effectRefusal("effect_unavailable", "This action's turn has ended.");
+  const freshRule = approvalRule(tool, args, store.bot(bot.id)?.approvalRules, cfg.approvalRules);
+  if (JSON.stringify(freshRule) !== JSON.stringify(rule)) throw effectRefusal("effect_unavailable", "Approval rules changed; propose this action again.");
+  // Existing proposal services retain their own detailed card and validators
+  // when no action rule/judge answered. Their confirmer claims the bound key.
+  const deferred = proposal && approved === undefined && !fullAccessForSource(bot.id, capability.threadId);
+  if (!deferred && key && !effectLedger.claim(key)) throw effectRefusal();
+  const sendCount = outboundCallsIn(tool, args).length;
+  if (sendCount) {
+    const policy = bot.outbound ?? DEFAULT_OUTBOUND_POLICY;
+    if (outboundCounts.reserve(bot.id, sendCount, policy.policy === "allow" ? policy.dailyCap : Number.MAX_SAFE_INTEGER) === null) throw effectRefusal("outbound_limit", "Daily outbound limit reached.");
+  }
+  Object.assign(actionPolicyScope.getStore() ?? {}, { botId: bot.id, threadId: capability.threadId, approved, effectKey: key });
+  if (rule.decision || key) appendDecision(DATA_DIR, { threadId: capability.threadId, botId: bot.id, tool, effectKey: key,
+    decision: deferred ? "card-shown" : "auto-approved", source: rule.decision ? "approval-rules" : "native-approval", rule: rule.rule });
+}
+function bindHarnessProposalEffect(proposed: { requestId?: string; state?: string }, threadId: string): void {
+  const key = actionPolicyScope.getStore()?.effectKey;
+  if (!key || !proposed.requestId) return;
+  const message = store.messagesFor(threadId).find(message => message.card?.requestId === proposed.requestId);
+  if (message?.card) store.patchMessage(threadId, message.id, { card: { ...message.card, effectKey: key } });
+}
+function claimHarnessProposalEffect(threadId: string, requestId: string, behavior: string): void {
+  if (behavior !== "allow") return;
+  const card = store.messagesFor(threadId).find(message => message.card?.requestId === requestId)?.card;
+  if (card?.effectKey && !card.answered && !effectLedger.claim(card.effectKey)) throw effectRefusal();
+}
+
+
 function resolveAndSendTrust(res: ServerResponse, threadId: string, requestId: string, behavior: "allow" | "deny" | "answer"): boolean {
   const teamMemoryCard = store.messagesFor(threadId).find(
     (message) => message.card?.requestId === requestId && message.card.teamMemoryRequest,
@@ -11738,6 +11878,7 @@ async function resolveAndSendTeamSetup(res: ServerResponse, args: { botId: strin
     }
   }
   const resumeGeneration = teamSetupResumeGenerations.get(args.threadId) ?? 0;
+  claimHarnessProposalEffect(args.threadId, args.requestId, args.behavior);
   const resolved = await teamSetupRequests.resolve(args);
   if (!resolved) return false;
   if (!resolved.duplicate) {
@@ -11857,8 +11998,10 @@ function resolveAndSendRoutine(
   )?.card;
   // On a Cloud home a routine the owner approved on its card is theirs; one
   // it only changed stays whosever it was (cloudOwnerApplied).
-  const operation = card?.routineRequest?.operation;
+  if (!card) return false;
+  const operation = card.routineRequest?.operation;
   const wasOwners = operation && operation.action !== "create" ? cloudRoutineIsOwners(operation.routineId) : false;
+  claimHarnessProposalEffect(args.threadId, args.requestId, args.behavior);
   const result = routineRequests.resolve(args);
   if (ownersAnswer && result.claimed && result.state === "applied") cloudOwnerApplied(result.action, result.resultId, wasOwners);
   if (
@@ -15797,7 +15940,7 @@ ROUTES.push(createLiveRoutes({
 }));
 
 const toolResults = new ToolResults();
-const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
+const handleRequestInScope = async (req: IncomingMessage, res: ServerResponse) => {
   let url: URL;
   try {
     url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
@@ -16387,6 +16530,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             }
           }
         }
+        const tool = internalActionTool(path, body);
+        if (tool) await authorizeInternalAction(internalCapability, `mcp__agents__${tool}`, body, path.endsWith("-requests"));
         return body;
       };
       const requireActiveInternalCapability = () => {
@@ -16513,6 +16658,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (body?.method !== "tools/list" && body?.method !== "tools/call") {
           return json(res, 400, { error: "unsupported browser method" });
         }
+        if (body.method === "tools/call" && typeof body.params?.name === "string") await authorizeInternalAction(internalCapability, `mcp__browser__${body.params.name}`, body.params.arguments);
         const result = await browserRuntime.agentRpc(browser.session, browser.spec, body.method, body.params, () => {
           requireActiveInternalCapability();
           const current = store.bot(bot.id);
@@ -16550,6 +16696,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const body = await readInternalBody();
         const boxId = internalCapability.boxId;
         if (!boxId) return json(res, 403, { error: "this turn has no cloud computer" });
+        if (body?.method === "tools/call" && typeof body.params?.name === "string") await authorizeInternalAction(internalCapability, `mcp__computer__${body.params.name}`, body.params.arguments);
         const abort = new AbortController();
         res.once("close", () => { if (!res.writableEnded) abort.abort(); });
         const isCall = (body as { method?: unknown } | null)?.method === "tools/call";
@@ -16932,6 +17079,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           from: owner.group ? { botId: from.id, name: from.name, color: from.color } : undefined,
           canCommit: () => internalCapabilityIsActive(internalCapability),
         });
+        bindHarnessProposalEffect(proposed, fromThreadId);
         const proposedCard = store.messagesFor(fromThreadId).find((message) => message.id === proposed.messageId)?.card;
         // Applied at once in a Full-access conversation. In the owner's own (one
         // only they provably wrote in) it is theirs, as if they had approved
@@ -17140,6 +17288,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (proposed.state === "applied" || proposed.state === "pending") appendDecision(DATA_DIR, { threadId: internalCapability.threadId, requestId: proposed.requestId, botId: chief.id,
           tool: "delete_bot", summary: proposed.detail, decision: proposed.state === "applied" ? "auto-approved" : "card-shown",
           source: proposed.state === "pending" ? "profile" : "full-access" });
+        bindHarnessProposalEffect(proposed, internalCapability.threadId);
         return json(res, 201, proposed);
       }
       // session_search: ranked recall over the calling bot's OWN threads,
@@ -18720,12 +18869,36 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }
         const opaque = connectorCalls.some(call => call.slug === "COMPOSIO_PROXY_EXECUTE");
         if (opaque && currentSender.connectorTools !== undefined) return refuseOutbound("OpenMausBot cannot verify this code against this bot's tool grants. Use a direct app tool.");
+        const invokedTool = typeof rpcParams?.name === "string" ? rpcParams.name : "";
+        const rule = approvalRule(invokedTool, rpcParams?.arguments, currentSender.approvalRules, cfg.approvalRules);
+        const consequential = consequentialTool(invokedTool, rpcParams?.arguments);
+        const turnId = liveTurnByThread.get(internalCapability.threadId);
+        if (consequential && !turnId) return json(res, 409, { code: "effect_unavailable", error: "No active turn for this action." });
+        const key = consequential ? effectKey({ botId: currentSender.id, tool: invokedTool, args: rpcParams?.arguments,
+          threadId: internalCapability.threadId, turnId: turnId! }) : undefined;
+        const childKeys = key ? connectorCalls.filter(call => consequentialTool(call.slug, call.arguments)).map(call => effectKey({
+          botId: currentSender.id, tool: call.slug, args: call.arguments, threadId: internalCapability.threadId, turnId: turnId!,
+        })) : [];
+        if (new Set(childKeys).size !== childKeys.length) return json(res, 409, { code: "effect_replayed", error: "This batch repeats a consequential action." });
+        const keys = key ? [...new Set([key, ...childKeys])] : [];
+        if (keys.some(key => effectLedger.has(key))) return json(res, 409, { code: "effect_replayed" });
+        const review = await autoReview(decider, { tool: invokedTool, args: rpcParams?.arguments,
+          topic: store.taskByThread(currentSender.id, internalCapability.threadId)?.title ?? "" });
+        requireActiveInternalCapability();
+        if (review) appendDecision(DATA_DIR, { threadId: internalCapability.threadId, botId: currentSender.id,
+          botName: currentSender.name, tool: invokedTool, effectKey: key,
+          decision: review.decision === "deny" ? "auto-denied" : review.decision === "ask" ? "card-shown" : "review-would-approve",
+          source: "auto-review", confidence: review.confidence, reasoning: review.reasoning, rule: `judge:${review.decision}` });
+        if (review?.decision === "deny") return refuseOutbound(`Legion did not run this: ${review.reasoning}`);
         let outboundApproved = false;
-        if (outboundTool) {
+        const actionTool = outboundTool ?? invokedTool;
+        const requiresCard = rule.decision === "require_approval" || review?.decision === "ask" ||
+          (Boolean(outboundTool) && (opaque || (currentSender.outbound ?? DEFAULT_OUTBOUND_POLICY).policy === "ask") && rule.decision !== "always_allow");
+        if (outboundTool || requiresCard) {
           const policy = currentSender.outbound ?? DEFAULT_OUTBOUND_POLICY;
           const threadId = internalCapability.threadId;
-          const { app } = describeTool(outboundTool);
-          const summary = outboundCalls.map((call) => {
+          const { app } = describeTool(actionTool);
+          const summary = connectorCalls.map((call) => {
             const described = describeTool(call.slug);
             const argsText = call.arguments === undefined ? "" : JSON.stringify(call.arguments);
             return `${described.app ? `${described.app} · ` : ""}${described.label}${argsText ? `\n${argsText.slice(0, 400)}${argsText.length > 400 ? "… [arguments truncated]" : ""}` : ""}`;
@@ -18737,31 +18910,33 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             if (today + outboundCalls.length > policy.dailyCap) {
               appendDecision(DATA_DIR, {
                 threadId, botId: currentSender.id, botName: currentSender.name,
-                tool: outboundTool, summary, decision: "auto-denied", source: "outbound", rule: `daily-cap:${policy.dailyCap}`,
+                tool: actionTool, summary, decision: "auto-denied", source: "outbound", rule: `daily-cap:${policy.dailyCap}`,
               });
               return refuseOutbound(capNote(policy.dailyCap));
             }
-          } else {
+          }
+          if (requiresCard) {
             const owner = connectorThread(currentSender.id, threadId);
-            const held = outboundRequests.open({ botId: currentSender.id, threadId, tool: outboundTool, timeoutMs: OUTBOUND_HOLD_MS });
+            const held = outboundRequests.open({ botId: currentSender.id, threadId, tool: actionTool, timeoutMs: OUTBOUND_HOLD_MS });
             const card = store.appendMessage(threadId, {
               role: "bot",
               kind: "options",
               ...(owner?.group ? { from: { botId: currentSender.id, name: currentSender.name, color: currentSender.color } } : {}),
               card: {
-                title: "Send on your behalf?",
+                title: outboundTool ? "Send on your behalf?" : "Approval needed",
+                effectKey: key, autoReview: review ?? undefined,
                 subtitle: summary,
                 options: ["Allow", "Deny"],
                 requestId: held.requestId,
-                tool: outboundTool,
-                held: HELD_NOTE["approval.held.outbound"],
+                tool: actionTool,
+                held: rule.decision === "require_approval" ? "An approval rule requires your confirmation." : review?.decision === "ask" ? review.reasoning : HELD_NOTE["approval.held.outbound"],
                 heldCode: "approval.held.outbound",
-                outboundRequest: { tool: outboundTool, app },
+                outboundRequest: { tool: actionTool, app },
               },
             });
             appendDecision(DATA_DIR, {
               threadId, requestId: held.requestId, botId: currentSender.id, botName: currentSender.name,
-              tool: outboundTool, summary, decision: "card-shown", source: "outbound",
+              tool: actionTool, summary, effectKey: key, decision: "card-shown", source: rule.decision ? "approval-rules" : review?.decision === "ask" ? "auto-review" : "outbound", rule: rule.rule,
             });
             if (owner?.group) {
               if (activeGroupTurnForBot(currentSender.id)?.threadId === threadId) store.setActivity(currentSender.id, "waiting-on-you");
@@ -18818,19 +18993,25 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
                 (call.kind === "unrecognized" && fresh.connectorTools !== undefined)) {
               refuseDispatch("This bot's connected-app permissions changed. The call was not run.");
             }
+            const freshRule = approvalRule(invokedTool, rpcParams?.arguments, fresh.approvalRules, cfg.approvalRules);
+            if (JSON.stringify(freshRule) !== JSON.stringify(rule)) refuseDispatch("Approval rules changed while this call waited. Propose it again.");
+            if (keys.some(key => effectLedger.has(key))) throw effectRefusal();
+            if (requiresCard && !outboundApproved) refuseDispatch("Human approval is required.");
             if (outboundTool) {
               const policy = fresh.outbound ?? DEFAULT_OUTBOUND_POLICY;
-              if (policy.policy === "allow" && !opaque) {
-                let reserved: number | null;
-                try { reserved = outboundCounts.reserve(fresh.id, outboundCalls.length, policy.dailyCap); }
-                catch { refuseDispatch("The daily allowance could not be saved. Nothing was sent."); }
-                if (reserved === null) refuseDispatch("This bot has reached its daily outbound limit. Nothing was sent.");
-                appendDecision(DATA_DIR, { threadId: internalCapability.threadId, botId: fresh.id, botName: fresh.name,
-                  tool: outboundTool, decision: "auto-approved", source: "outbound", rule: `daily-allowance:${reserved}/${policy.dailyCap}` });
-              } else if (!outboundApproved) {
-                refuseDispatch("The outbound policy changed. Ask for approval again before sending.");
-              }
+              if (policy.policy === "ask" && !outboundApproved && freshRule.decision !== "always_allow") refuseDispatch("The outbound policy changed. Ask for approval again before sending.");
+              let reserved: number | null;
+              try { reserved = outboundCounts.reserve(fresh.id, outboundCalls.length, policy.policy === "allow" && !opaque ? policy.dailyCap : Number.MAX_SAFE_INTEGER); }
+              catch { refuseDispatch("The daily allowance could not be saved. Nothing was sent."); }
+              if (reserved === null) refuseDispatch("This bot has reached its daily outbound limit. Nothing was sent.");
+              appendDecision(DATA_DIR, { threadId: internalCapability.threadId, botId: fresh.id, botName: fresh.name,
+                tool: actionTool, effectKey: key, decision: outboundApproved ? "user-approved" : "auto-approved", source: freshRule.decision ? "approval-rules" : "outbound",
+                rule: `${freshRule.rule ?? "outbound"};daily-allowance:${reserved}/${policy.dailyCap}` });
+            } else if (rpc?.method === "tools/call") {
+              appendDecision(DATA_DIR, { threadId: internalCapability.threadId, botId: fresh.id, botName: fresh.name,
+                tool: invokedTool, effectKey: key, decision: outboundApproved ? "user-approved" : "auto-approved", source: rule.decision ? "approval-rules" : "native-approval", rule: rule.rule });
             }
+            if (keys.length && !effectLedger.claimAll(keys)) throw effectRefusal();
           },
         ); } catch (error) {
           if (dispatchRefusal) return refuseOutbound(dispatchRefusal);
@@ -21269,6 +21450,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }
       }
       // sending on the person's behalf: ask every time, or a daily allowance
+      if (Object.hasOwn(body, "approvalRules")) {
+        if (!canManageCommandAllowlist(auth)) return json(res, 403, { error: "Only owners/admins may edit approval rules." });
+        const rules = body.approvalRules === null ? undefined : normalizeApprovalRules(body.approvalRules);
+        if (rules === null) return json(res, 400, { error: "Invalid approval rules." });
+        patch.approvalRules = rules;
+      }
       if (body.outbound !== undefined) {
         const policy = normalizeOutboundPolicy(body.outbound);
         if (!policy) return json(res, 400, { error: "outbound must be { policy: ask | allow, dailyCap: 1..1000 }" });
@@ -21586,6 +21773,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // desktop capability or a paired session, which is what the refusal
       // points at.
       const loosened: string[] = [];
+      if (Object.hasOwn(body, "approvalRules")) loosened.push("approvalRules");
       // These three fields were validated above before joining the broad patch.
       const trustPatch = patch as Pick<Partial<BotRecord>, "outbound" | "connectorScopes" | "fallback">;
       if (body.outbound !== undefined && trustPatch.outbound?.policy === "allow" &&
@@ -22561,6 +22749,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (refusal) return json(res, 403, { error: refusal });
       }
       return await answeringCardAs(auth, bot.threadId, String(body.requestId), async () => {
+        checkEffectReplay(bot.threadId, String(body.requestId), behavior);
         if (resolveAndSendTrust(res, bot.threadId, String(body.requestId), behavior)) return;
         if (resolvePageResponse(pageProposals, res, bot.threadId, String(body.requestId), behavior)) return;
         if (await resolveAndSendTeamSetup(res, {
@@ -22652,6 +22841,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (refusal) return json(res, 403, { error: refusal });
       }
       return await answeringCardAs(auth, threadId, requestId, async () => {
+        checkEffectReplay(threadId, requestId, behavior);
         if (resolveAndSendTrust(res, threadId, requestId, behavior)) return;
         if (resolvePageResponse(pageProposals, res, threadId, requestId, behavior)) return;
         const skillCard = store.messagesFor(threadId).find(
@@ -23855,6 +24045,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       });
     }
 
+    m = path.match(/^\/api\/bots\/([\w-]+)\/approval-rules$/);
+    if (m && method === "GET") {
+      const bot = store.bot(m[1]);
+      if (!bot) return json(res, 404, { error: "no such bot" });
+      return json(res, 200, { rules: bot.approvalRules ?? {}, workspace: cfg.approvalRules ?? {} });
+    }
     // ── a bot's outbound allowance: the policy, and how much of it is spent ──
     m = path.match(/^\/api\/bots\/([\w-]+)\/outbound$/);
     if (m && method === "GET") {
@@ -25364,7 +25560,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
   } catch (e) {
     const status = (e as any)?.status ?? 500;
     const candidateCode = (e as { code?: unknown })?.code;
-    const code = typeof candidateCode === "string" && ["guarded_busy", "guarded_branch", "guarded_permissions", "guarded_request_changed", "guarded_request_untracked"].includes(candidateCode)
+    const code = typeof candidateCode === "string" && ["guarded_busy", "guarded_branch", "guarded_permissions", "guarded_request_changed", "guarded_request_untracked", "effect_replayed", "effect_unavailable", "outbound_limit"].includes(candidateCode)
       ? candidateCode : undefined;
     return json(res, status, { error: e instanceof Error ? e.message : String(e), ...(code ? { code } : {}) });
   } finally {
@@ -25372,6 +25568,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
   }
 };
 
+const handleRequest = (req: IncomingMessage, res: ServerResponse) => actionPolicyScope.run({}, () => handleRequestInScope(req, res));
 const server = createServer(handleRequest);
 desktopViewer.attach(server, handleRequest);
 

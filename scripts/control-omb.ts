@@ -419,9 +419,14 @@ export async function launchVerificationServer(
   boatFixtureApi?: string,
   /** Repository fake MCP computer; isolated fixture launch only. */
   taughtFixtureMcp?: string,
+  /** Programmatic action-policy checks: only owned loopback fake services. */
+  approvalFixture?: { judgeUrl: string; connectorUrl: string },
 ): Promise<VerificationServer> {
   if (taughtFixtureMcp && !/^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}\/mcp$/.test(taughtFixtureMcp)) {
     throw new ControlOmbError("Taught fixture requires an explicit loopback MCP server");
+  }
+  if (approvalFixture && Object.values(approvalFixture).some(url => !/^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}$/.test(url))) {
+    throw new ControlOmbError("Approval verification requires owned loopback HTTP providers");
   }
   if (boatFixtureApi) {
     if (!/^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}$/.test(boatFixtureApi)) {
@@ -449,6 +454,10 @@ export async function launchVerificationServer(
   mkdirSync(evidenceDir, { recursive: true });
   const logPath = join(evidenceDir, `server-${Date.now()}-${process.pid}.log`);
   writeFileSync(join(dataDir, "config.json"), JSON.stringify({
+    ...(approvalFixture ? {
+      decider: { enabled: true, key: "legion-judge-fixture", baseUrl: approvalFixture.judgeUrl },
+      composio: { apiKey: "legion-connectors-fixture", sessionId: "legion-fixture", userId: "legion-fixture" },
+    } : {}),
     ...(boatFixtureApi ? { box: { token: "box_verification_fixture" } } : {}),
     instances: {
       // The synthetic map omits the default computer engine. Register it
@@ -468,6 +477,10 @@ export async function launchVerificationServer(
 
   const log = openSync(logPath, "a", 0o600);
   const childEnv = verificationServerEnvironment(parentEnv, dataDir, port);
+  if (approvalFixture) {
+    childEnv.OMB_COMPOSIO_API = approvalFixture.connectorUrl + "/api";
+    childEnv.OMB_COMPOSIO_TOOLKITS_API = approvalFixture.connectorUrl + "/api";
+  }
   // Opt-in live Local VM fixture: keep the temporary home and fake engine,
   // granting only the explicitly selected machine connection and static UI.
   if (localVm) Object.assign(childEnv, {
