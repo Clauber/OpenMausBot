@@ -6588,6 +6588,8 @@ function settleTaughtSkillStage(stagedId: string, allowed: boolean) {
     const approved = teaching.approve(run.id, stagedId);
     if (approved) startTaughtReplay(approved.id);
   } else teaching.reject(run.id);
+}
+
 /** Re-derives whether a bot may still drive its computer; a reason when not.
  * Used as the lease check, so the same rules gate dispatch and in-flight work. */
 function computerAccessCheck(botId: string, teamComputerId?: string): () => string | null {
