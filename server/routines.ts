@@ -10,7 +10,8 @@ import { redactSecretsInText } from "./redact.ts";
 import type { GroupGoalRunStatus } from "../shared/group-goal-run.ts";
 import type { RoutineRequestOperation } from "../shared/routine-request.ts";
 import { normalizeCronSchedule, nextCronRuns, type RoutineCronSchedule } from "../shared/routine-schedule.ts";
-import { isRoutineProblemRun } from "../shared/routines.ts";
+import { isRoutineProblemRun, type GithubRoutineTrigger, type GithubRoutineTriggerInput } from "../shared/routines.ts";
+import { cleanGithubTrigger, type StoredGithubTrigger } from "./github-webhook.ts";
 import { ROUTINE_PARTS, type PartPair, type RoutinePart } from "./package-parts.ts";
 
 export interface RoutineIntervalWindow {
@@ -88,6 +89,7 @@ export interface Routine {
   runOn: RoutineRunOn;
   enabled: boolean;
   schedule: RoutineSchedule;
+  github?: GithubRoutineTrigger & { secret?: string };
   /** Legacy calendar/display length. Kept for persisted-data compatibility. */
   durationMinutes: number;
   /** Optional safety cap for active work. Missing means no timeout. */
@@ -235,6 +237,7 @@ export interface RoutineInput {
   runOn?: RoutineRunOn;
   enabled?: boolean;
   schedule: RoutineScheduleInput;
+  github?: GithubRoutineTriggerInput | null;
   durationMinutes?: number;
   /** `null` deliberately removes an existing safety cap. */
   timeoutMinutes?: number | null;
@@ -456,6 +459,7 @@ function cloneRoutine(routine: Routine): Routine {
   return {
     ...routine,
     schedule: cloneSchedule(routine.schedule),
+    github: routine.github ? { ...routine.github, events: [...routine.github.events], actions: routine.github.actions ? [...routine.github.actions] : undefined } : undefined,
     attachments: cloneAttachments(routine.attachments),
   };
 }
@@ -767,6 +771,7 @@ function sanitizeInput(input: RoutineInput, after: number): Omit<Routine, "id" |
     runOn,
     enabled: input.enabled !== false,
     schedule: cleanSchedule(input.schedule, after),
+    github: cleanGithubTrigger(input.github),
     durationMinutes: Math.min(240, Math.max(5, Math.round(Number(input.durationMinutes) || 30))),
     ...(timeoutMinutes === undefined ? {} : { timeoutMinutes }),
     attachments,
@@ -797,9 +802,14 @@ export class RoutineManager {
             const schedule = loadSchedule(routine.schedule, this.now());
             if (!schedule) return [];
             const target = loadTarget(routine.target);
+            let github: StoredGithubTrigger | undefined;
+            try { github = cleanGithubTrigger(routine.github); }
+            catch { return []; }
             const loaded: Routine = {
               ...routine,
               schedule,
+              github,
+              nextRunAt: github ? null : routine.nextRunAt,
               target,
               groupId: loadGroupId(routine.groupId, target),
               runOn: routine.runOn ?? "maus",
@@ -903,6 +913,7 @@ export class RoutineManager {
     const success = outcomes.findIndex(run => run.status === "completed");
     const failures = success < 0 ? outcomes.length : success;
     const { installedPackage: _installedPackage, ...visible } = cloneRoutine(routine);
+    if (visible.github) delete visible.github.secret;
     return { ...visible, ...(failures ? { failureStreak: failures } : {}) };
   }
 
@@ -934,7 +945,7 @@ export class RoutineManager {
     const now = this.now();
     if (this.runs.some((run) => ["queued", "running", "waiting"].includes(run.status))) return { hold: true, reason: "running" };
     const due = this.routines
-      .filter((routine) => routine.enabled && routine.nextRunAt != null && routine.nextRunAt <= now + horizonMs)
+      .filter((routine) => routine.enabled && !routine.github && routine.nextRunAt != null && routine.nextRunAt <= now + horizonMs)
       .map((routine) => routine.nextRunAt!)
       .sort((a, b) => a - b)[0];
     return due === undefined ? { hold: false } : { hold: true, reason: "due", at: due };
@@ -1042,8 +1053,8 @@ export class RoutineManager {
     const at = this.now();
     const clean = sanitizeInput(input, at);
     if (this.targetState(clean) === "missing") throw new Error(this.missingTargetMessage(clean.target));
-    const nextRunAt = clean.enabled ? this.initialOccurrence(clean.schedule, at) : null;
-    if (clean.schedule.type === "interval" && clean.enabled && nextRunAt === null) {
+    const nextRunAt = clean.enabled && !clean.github ? this.initialOccurrence(clean.schedule, at) : null;
+    if (clean.schedule.type === "interval" && clean.enabled && !clean.github && nextRunAt === null) {
       throw new Error("This interval has no future runs. Choose a later end date or turn it off.");
     }
     const routine: Routine = {
@@ -1089,6 +1100,7 @@ export class RoutineManager {
       runOn: patch.runOn ?? routine.runOn,
       enabled: patch.enabled ?? routine.enabled,
       schedule: patch.schedule ? mergeScheduleUpdate(routine.schedule, patch.schedule) : routine.schedule,
+      github: patch.github === undefined ? routine.github : patch.github === null ? null : { ...patch.github, secret: patch.github.secret ?? routine.github?.secret },
       durationMinutes: patch.durationMinutes ?? routine.durationMinutes,
       timeoutMinutes: Object.hasOwn(patch, "timeoutMinutes") ? patch.timeoutMinutes : routine.timeoutMinutes,
       attachments: patch.attachments ?? routine.attachments,
@@ -1099,10 +1111,10 @@ export class RoutineManager {
     const scheduleChanged = JSON.stringify(clean.schedule) !== JSON.stringify(routine.schedule);
     const enabledChanged = clean.enabled !== routine.enabled;
     // Definition-only edits retain due work and offline catch-up.
-    const nextRunAt = !clean.enabled ? null : scheduleChanged || enabledChanged
+    const nextRunAt = !clean.enabled || clean.github ? null : scheduleChanged || enabledChanged || Boolean(routine.github)
       ? this.initialOccurrence(clean.schedule, now)
       : routine.nextRunAt;
-    if (clean.schedule.type === "interval" && clean.enabled && nextRunAt === null) {
+    if (clean.schedule.type === "interval" && clean.enabled && !clean.github && nextRunAt === null) {
       throw new Error("This interval has no future runs. Choose a later end date or turn it off.");
     }
     const destination = { ...routine, ...clean };
@@ -1263,6 +1275,38 @@ export class RoutineManager {
     const active = this.runs.find((run) => run.webhookId === webhookId && run.deliveryId === deliveryId &&
       ["queued", "running", "waiting"].includes(run.status));
     return active ? { id: active.id } : null;
+  }
+
+  /** Receiver-only lookup; never include this result in API responses or frames. */
+  githubTrigger(id: string): StoredGithubTrigger | undefined {
+    const github = this.routines.find(r => r.id === id)?.github;
+    return github?.secret ? { ...github, secret: github.secret, events: [...github.events], actions: github.actions ? [...github.actions] : undefined } : undefined;
+  }
+
+  runGithub(id: string, summary: string, deliveryId: string): { id: string; duplicate: boolean } {
+    const existing = this.webhookRunReceipt(id, deliveryId);
+    if (existing) return { ...existing, duplicate: true };
+    const routine = this.routines.find(r => r.id === id);
+    if (!routine?.github || !routine.enabled) throw Object.assign(new Error("GitHub routine is unavailable"), { status: 409 });
+    if (this.targetState(routine) === "missing") throw Object.assign(new Error(this.missingTargetMessage(routine.target)), { status: 410 });
+    if (this.activeWebhookRunCount(id) >= 3) throw Object.assign(new Error("This GitHub routine already has 3 unfinished runs"), { status: 429 });
+    const receipts = this.webhookRunReceipts.filter(receipt => receipt.acceptedAt >= this.now() - WEBHOOK_RETRY_WINDOW_MS);
+    if (receipts.length >= MAX_WEBHOOK_RECEIPTS) throw Object.assign(new Error("Webhook retry history is full; try again later"), { status: 429 });
+    const allocations: ResultsThreadAllocation[] = [];
+    let run!: RoutineRun;
+    this.commitMutation(() => {
+      run = this.newRun(routine, this.now(), false, allocations);
+      run.prompt = [routine.prompt, summary].join("\n\n");
+      run.triggerSource = "webhook";
+      run.webhookId = id;
+      run.deliveryId = deliveryId;
+      receipts.push({ webhookId: id, deliveryId, runId: run.id, acceptedAt: this.now() });
+      this.webhookRunReceipts = receipts;
+    }, () => this.discardResultsThreads(allocations));
+    this.emitRoutine(routine);
+    this.emitRun(run);
+    queueMicrotask(() => void this.tick());
+    return { id: run.id, duplicate: false };
   }
 
   /** Queue webhook work through the same dispatcher as scheduled routines. */
@@ -1462,7 +1506,7 @@ export class RoutineManager {
         }
       }
       const dueRoutines = this.routines.filter(
-        (routine) => routine.enabled && routine.nextRunAt != null && routine.nextRunAt <= now,
+        (routine) => routine.enabled && !routine.github && routine.nextRunAt != null && routine.nextRunAt <= now,
       );
       const scheduledRuns: RoutineRun[] = [];
       const allocations: ResultsThreadAllocation[] = [];
@@ -1927,6 +1971,7 @@ export class RoutineManager {
       routines: this.routines.map(cloneRoutine),
       runs: this.runs.map(cloneRun),
       receipts: this.routineRequestReceipts.map((receipt) => ({ ...receipt })),
+      webhookReceipts: this.webhookRunReceipts.map(receipt => ({ ...receipt })),
     };
     try {
       mutate();
@@ -1935,6 +1980,7 @@ export class RoutineManager {
       this.routines = before.routines;
       this.runs = before.runs;
       this.routineRequestReceipts = before.receipts;
+      this.webhookRunReceipts = before.webhookReceipts;
       try {
         rollback?.();
       } catch (cleanupError) {

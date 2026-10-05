@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { parseJson, type JsonValue } from "./schema.ts";
 import type { WebhookManager } from "./webhooks.ts";
+import type { GithubIngress } from "./github-webhook.ts";
 
 export const MAX_WEBHOOK_BODY_BYTES = 256 * 1024;
 const statusErrorSchema = z.object({ status: z.number().int().optional() });
@@ -29,7 +30,7 @@ function json(res: ServerResponse, status: number, body: JsonValue): void {
   res.end(JSON.stringify(body));
 }
 
-async function readRawBody(req: IncomingMessage): Promise<string> {
+async function readRawBody(req: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let bytes = 0;
   try {
@@ -46,7 +47,7 @@ async function readRawBody(req: IncomingMessage): Promise<string> {
     if (parsed.success && parsed.data.status === 413) throw error;
     throw Object.assign(new Error("Could not read webhook body"), { status: 400 });
   }
-  return Buffer.concat(chunks, bytes).toString("utf8");
+  return Buffer.concat(chunks, bytes);
 }
 
 function parsePayload(raw: string, contentType: string): JsonValue {
@@ -93,11 +94,28 @@ function eventName(req: IncomingMessage): string | undefined {
   )?.trim() || undefined;
 }
 
-export function createWebhookIngressHandler(manager: WebhookManager, claimRequest?: () => () => void, telegram?: TelegramIngress) {
+export function createWebhookIngressHandler(manager: WebhookManager, claimRequest?: () => () => void, telegram?: TelegramIngress, github?: GithubIngress) {
   return async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (req.method === "GET" && url.pathname === "/health") {
       return json(res, 200, { app: "openmausbot-webhooks", ready: true });
+    }
+    const githubMatch = github ? url.pathname.match(/^\/hooks\/github\/([A-Za-z0-9_-]+)$/) : null;
+    if (github && githubMatch) {
+      if (req.method !== "POST") return json(res, 405, { error: "GitHub webhooks accept POST requests" });
+      const headers = { signature: header(req, "x-hub-signature-256"), event: header(req, "x-github-event"), deliveryId: header(req, "x-github-delivery") };
+      let release: (() => void) | undefined;
+      try {
+        release = claimRequest?.();
+        const result = github.receive(githubMatch[1]!, await readRawBody(req), headers);
+        return json(res, result.status, result.body);
+      } catch (error) {
+        const parsed = statusErrorSchema.safeParse(error);
+        const status = parsed.success ? parsed.data.status ?? 500 : 500;
+        const reason = error instanceof Error ? error.message : "GitHub delivery failed";
+        github.reject(githubMatch[1]!, status, reason, headers);
+        return json(res, status, { error: reason });
+      } finally { release?.(); }
     }
     const telegramMatch = telegram ? url.pathname.match(/^\/hooks\/telegram\/(tg_[A-Za-z0-9_-]+)$/) : null;
     if (telegram && telegramMatch) {
@@ -105,7 +123,7 @@ export function createWebhookIngressHandler(manager: WebhookManager, claimReques
       let release: (() => void) | undefined;
       try {
         release = claimRequest?.();
-        const payload = parsePayload(await readRawBody(req), "application/json");
+        const payload = parsePayload((await readRawBody(req)).toString("utf8"), "application/json");
         const result = telegram.receive(telegramMatch[1]!, header(req, "x-telegram-bot-api-secret-token"), payload);
         return json(res, result.status, result.body);
       } catch (error) {
@@ -135,7 +153,7 @@ export function createWebhookIngressHandler(manager: WebhookManager, claimReques
       }
       const raw = await readRawBody(req);
       const contentType = header(req, "content-type")?.split(";")[0]?.trim().toLowerCase() ?? "text/plain";
-      const payload = parsePayload(raw, contentType);
+      const payload = parsePayload(raw.toString("utf8"), contentType);
       const result = manager.receive(match[1], secret, {
         payload,
         contentType,
@@ -185,11 +203,11 @@ export function advertisedWebhookBase(raw: string): string {
 
 export async function listenWebhookIngress(
   manager: WebhookManager,
-  options: { host?: string; port: number; publicBaseUrl?: string; claimRequest?: () => () => void; telegram?: TelegramIngress },
+  options: { host?: string; port: number; publicBaseUrl?: string; claimRequest?: () => () => void; telegram?: TelegramIngress; github?: GithubIngress },
 ): Promise<WebhookIngress> {
   const host = options.host ?? "127.0.0.1";
   const advertised = options.publicBaseUrl === undefined ? undefined : advertisedWebhookBase(options.publicBaseUrl);
-  const server = createServer(createWebhookIngressHandler(manager, options.claimRequest, options.telegram));
+  const server = createServer(createWebhookIngressHandler(manager, options.claimRequest, options.telegram, options.github));
   await new Promise<void>((resolve, reject) => {
     const onError = (error: Error) => reject(error);
     server.once("error", onError);

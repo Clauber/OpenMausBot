@@ -217,6 +217,7 @@ export function projectedRoutineItems(
     runs.some((run) => run.routineId === routineId && Math.abs(run.scheduledFor - at) < 60_000);
 
   for (const routine of routines) {
+    if (routine.github) continue;
     if (!routine.enabled) continue;
     if (routine.schedule.type === "cron") {
       // Never reconstruct skipped work before the scheduler's next occurrence.

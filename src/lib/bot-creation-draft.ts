@@ -102,6 +102,7 @@ export class BotCreationDraft {
       timeoutMinutes: input.timeoutMinutes ?? undefined,
       durationMinutes: input.durationMinutes ?? previous?.durationMinutes ?? 30,
       schedule: normalizedSchedule,
+      github: input.github === undefined ? previous?.github : input.github ?? undefined,
     };
   }
 
