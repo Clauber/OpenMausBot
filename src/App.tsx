@@ -9,6 +9,7 @@ import { GuidedTour } from "@/components/onboarding/GuidedTour";
 import { LiveCallHost } from "@/components/LiveCallHost";
 import { ThreadRefsProvider } from "@/components/ThreadRefs";
 import { initAnalytics } from "@/lib/analytics";
+import { PagesWorkspace } from "@/components/PagesWorkspace";
 import { Sidebar } from "@/components/Sidebar";
 import { ChatView } from "@/components/ChatView";
 import { GroupView } from "@/components/GroupView";
@@ -45,6 +46,15 @@ import { phonePairingSettingsAction, takePhonePairingRequest } from "@/lib/phone
 
 function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   const { state, dispatch } = useStore();
+  useEffect(() => {
+    const onHash = () => { if (/^#\/pages(?:\/|$)/.test(window.location.hash)) dispatch({ type: "showPages" }); };
+    onHash();
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, [dispatch]);
+  useEffect(() => {
+    if (state.activeView !== "pages" && /^#\/pages(?:\/|$)/.test(window.location.hash)) window.location.hash = "";
+  }, [state.activeView]);
   const { capabilities } = useDesktopCapabilities();
   const unreadCount =
     state.bots.filter((bot) => !bot.hidden && botShowsUnread(bot)).length +
@@ -194,7 +204,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
 
   useEffect(() => {
     if (state.activeView === "routines" && previousViewRef.current !== "routines") {
-      calendarOriginRef.current = previousViewRef.current;
+      calendarOriginRef.current = previousViewRef.current === "team-map" ? "team-map" : "chat";
     }
     previousViewRef.current = state.activeView;
   }, [state.activeView]);
@@ -310,7 +320,9 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
           menuButtonRef.current?.focus();
         }}
       />}
-      {state.activeView === "team-map" ? (
+      {state.activeView === "pages" ? (
+        <PagesWorkspace />
+      ) : state.activeView === "team-map" ? (
         <TeamMapPage />
       ) : state.activeView === "routines" ? (
         <RoutinesPage onBack={closeCalendar} onOpenRoom={openCalendarRoom} />

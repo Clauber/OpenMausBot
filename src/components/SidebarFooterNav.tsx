@@ -3,7 +3,7 @@
 // hide behind a hover "Tools" menu; three rows cost little and each is one
 // click instead of a hover and a click. Team map is an Advanced-mode place:
 // a fourth row there, no menu.
-import { CalendarDays, Network, Puzzle, Zap } from "lucide-react";
+import { FileText, CalendarDays, Network, Puzzle, Zap } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { cn } from "@/lib/cn";
@@ -71,6 +71,9 @@ export function SidebarFooterNav({ density }: { density: SidebarDensity }) {
   return (
     // `tools` is the guided tour's anchor for "the places down here".
     <nav data-tour="tools" aria-label={t("sidebar.tools")} className="flex flex-col gap-0.5">
+      <NavRow id="pages" label="Pages" iconsOnly={iconsOnly} active={state.activeView === "pages"}
+        icon={(active) => <FileText size={iconSize} className={tone(active)} />}
+        onClick={() => { window.location.hash = "/pages"; dispatch({ type: "showPages" }); }} />
       <NavRow
         id="routines"
         label={t("sidebar.nav.routines")}

@@ -117,6 +117,7 @@ export interface OptionCardData {
   teamMemoryRequest?: { section: string; entryId: string; kind: string };
   /** Persisted profile proposal used by the server when the user confirms it. */
   profileRequest?: ProfileRequestCardData;
+  pageRequest?: import("../../shared/pages").PageRequestCardData;
   /** Persisted default-model proposal used by the server when the user confirms it. */
   modelRequest?: ModelRequestCardData;
   teamSetupRequest?: import("../../shared/team-setup").TeamSetupRequest;
@@ -925,7 +926,7 @@ export interface AppState {
   liveCallLookupSeq: number;
   /** selected chat — a bot id OR a group id */
   selectedId: string;
-  activeView: "chat" | "team-map" | "routines";
+  activeView: "chat" | "team-map" | "routines" | "pages";
   routines: Routine[];
   routineRuns: RoutineRun[];
   routinesLoadState: "loading" | "ready" | "error";
@@ -1103,6 +1104,7 @@ export type Action =
   | { type: "showRoutines"; section?: "schedule" | "logs"; view?: "calendar" | "list"; botId?: string; routineId?: string; runStatus?: RoutineRunStatusFilter }
   | { type: "showTeamMap" }
   | { type: "showChat" }
+  | { type: "showPages" }
   | { type: "routinesHydrated"; routines: Routine[]; runs: RoutineRun[] }
   | { type: "routinesLoadFailed" }
   | { type: "routinePatched"; routine: Routine }
@@ -1546,6 +1548,8 @@ export function reducer(state: AppState, action: Action): AppState {
         pluginsOpen: false,
         triggersOpen: false,
       };
+    case "showPages":
+      return { ...state, activeView: "pages", settingsOpen: false, computerOpen: false, inspectorOpen: false, activityOpen: false };
     case "showChat":
       return state.activeView === "chat" ? state : { ...state, activeView: "chat" };
     case "showTeamMap":
@@ -2422,7 +2426,7 @@ export const initialState: AppState = {
   liveCallVersion: 0,
   liveCallLookupSeq: 0,
   selectedId: "",
-  activeView: "chat",
+  activeView: typeof window !== "undefined" && /^#\/pages(?:\/|$)/.test(window.location.hash) ? "pages" : "chat",
   routines: [],
   routineRuns: [],
   routinesLoadState: "loading",

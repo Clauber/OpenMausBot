@@ -464,6 +464,9 @@ import { screenFrameHash, screenSurfaceForTool, screenTouchingTool, settledFrame
 import { asSchedule, RoutineRequestService } from "./routine-requests.ts";
 import { createOptionsCard } from "./options-card.ts";
 import { buildBotOverview, type BotOverview, connectedAppsFacts } from "./bot-overview.ts";
+import { pagesDb, PageError } from "./pages-db.ts";
+import { PageProposalService, pageContext, resolvePageResponse } from "./pages.ts";
+import { createPagesRoutes } from "./routes/pages.ts";
 import { ProfileRequestService } from "./profile-requests.ts";
 import { ModelRequestService } from "./model-requests.ts";
 import { TighteningRequestService } from "./tightening-requests.ts";
@@ -1319,6 +1322,8 @@ function cardAnswerRefusal(auth: RequestAuth, threadId: string, requestId: strin
     message.card?.requestId === requestId && message.card.teamMemoryRequest)) {
     return "Only a workspace admin can review shared team memory.";
   }
+  if (!auth.scopes.includes("admin") && store.messagesFor(threadId).some(message =>
+    message.card?.requestId === requestId && message.card.pageRequest)) return "Only a workspace admin can review Pages.";
   // A Cloud home is one person's: a device paired with chat-only access (a
   // guest) may read along but never answer, or its words would reach the
   // owner's turn, and through it a lent Mac (docs/cloud-pro.md).
@@ -3623,6 +3628,7 @@ function previewSystemPrompt(bot: BotRecord) {
   });
   const privateWorkspace = instance && supportsWorkspaceFiles(instance.driverKind);
   const built = buildSystemPrompt(persona, bot.soul ?? "", [
+    { id: "page", label: "Page document", text: pageContext(pagesDb, bot.threadId) },
     { id: "user-profile", label: "About the user", text: userProfileSystemPrompt(cfg.profile) },
     {
       id: "setup",
@@ -5705,7 +5711,7 @@ function closeOpenApprovals(threadId: string): void {
   for (const message of store.messagesFor(threadId)) {
     const card = message.card;
     if (!card?.requestId || card.answered || card.dismissed) continue;
-    if (card.routineRequest || card.skillRequest) continue;
+    if (card.pageRequest || card.routineRequest || card.skillRequest) continue;
     if (isPersistentQuestionCard(card)) {
       // Keep the durable card; its in-flight adapter mapping cannot survive
       // turn cleanup, and the response route can resume it from the transcript.
@@ -10258,6 +10264,7 @@ async function startTurn(
         throw new DirectTurnSetupCancelled("Coordination access changed before dispatch");
       }
       const prompt = buildSystemPrompt(persona, liveBot?.soul ?? bot.soul ?? "", [
+        { id: "page", label: "Page document", text: pageContext(pagesDb, threadId) },
         { id: "user-profile", label: "About the user", text: userProfileSystemPrompt(cfg.profile) },
         // first after the soul: the block names agent tools, so it only goes
         // to a turn whose engine actually mounted them (setupMode is already
@@ -13951,7 +13958,7 @@ function proposalPersistence(botId: string, threadId: string) {
   // share one budget per bot per thread, so one thread cannot pile up 8 of each.
   const openRequests = store.activePath(threadId).filter(
     (message) =>
-      (message.card?.routineRequest?.botId === botId || message.card?.profileRequest?.botId === botId || message.card?.modelRequest?.botId === botId || message.card?.tighteningRequest?.botId === botId || message.card?.teamSetupRequest?.botId === botId) &&
+      (message.card?.pageRequest?.botId === botId || message.card?.routineRequest?.botId === botId || message.card?.profileRequest?.botId === botId || message.card?.modelRequest?.botId === botId || message.card?.tighteningRequest?.botId === botId || message.card?.teamSetupRequest?.botId === botId) &&
       !message.card.answered &&
       !message.card.dismissed && !message.card.expired,
   ).length;
@@ -15374,6 +15381,21 @@ const cloudMoveRoutes = createCloudMoveRoutes({
 
 // Route modules (server/routes/README.md). `workspaceAccess` is assigned at
 // boot, after this line, so the dependency reads it per request.
+const pageProposals = new PageProposalService(pagesDb, store);
+ROUTES.push(createPagesRoutes({
+  db: pagesDb, store, proposals: pageProposals,
+  authorizeProposal(req, body) {
+    const capability = authorizedInternalCapability(req.headers.authorization);
+    if (!capability || !internalCapabilityIsActive(capability)) throw new PageError("unauthorized", 401);
+    if (capability.kind !== "agents" || capability.generation === EXTERNAL_RUNTIME_GENERATION ||
+      capability.botId !== body.fromBotId || capability.threadId !== body.fromThreadId ||
+      !connectorThread(body.fromBotId, body.fromThreadId)) throw new PageError("proposal_capability_mismatch", 403);
+    const permission = pagesDb.proposal(body.fromThreadId, body.proposalId) ? { ok: true as const } : proposalPersistence(body.fromBotId, body.fromThreadId);
+    if (!permission.ok) throw new PageError(permission.error, permission.status);
+  },
+}));
+
+
 ROUTES.push(createHostedSlackRoutes({ bot: (id) => store.bot(id), hostedReady: () => Boolean(workspaceAccess) && entitled("admin") }));
 // Install statuses come from the organization library's own state, never
 // its file, so New bot cannot disagree with it. No organization: none.
@@ -22189,6 +22211,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
       return await answeringCardAs(auth, bot.threadId, String(body.requestId), async () => {
         if (resolveAndSendTrust(res, bot.threadId, String(body.requestId), behavior)) return;
+        if (resolvePageResponse(pageProposals, res, bot.threadId, String(body.requestId), behavior)) return;
         if (await resolveAndSendTeamSetup(res, {
           botId: bot.id, threadId: bot.threadId, requestId: String(body.requestId), behavior,
         }, auth.kind === "loopback" ? DESKTOP_MANAGED || Boolean(req.headers.origin) && !store.bots.some((bot) => bot.busy || activeGroupTurnForBot(bot.id)) : auth.scopes.includes("admin"))) return;
@@ -22279,6 +22302,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
       return await answeringCardAs(auth, threadId, requestId, async () => {
         if (resolveAndSendTrust(res, threadId, requestId, behavior)) return;
+        if (resolvePageResponse(pageProposals, res, threadId, requestId, behavior)) return;
         const skillCard = store.messagesFor(threadId).find(
           (message) => message.card?.requestId === requestId && message.card.skillRequest,
         );

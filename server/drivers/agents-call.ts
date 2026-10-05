@@ -1040,6 +1040,14 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     });
     return confirmationResult(r, `${action.replace("_", " ")} on routine ${routineId}`);
   }
+  if (name === "propose_page") {
+    const result = await api("/api/internal/page-proposals", {
+      method: "POST", body: JSON.stringify({ fromBotId: BOT_ID, fromThreadId: THREAD_ID,
+        proposalId: args.proposal_id, draft: { revision: args.revision, title: args.title, content: args.content,
+          parentId: args.parent_id, spaceId: args.space_id } }),
+    });
+    return { text: JSON.stringify(result), isError: Boolean(result.error) };
+  }
   if (name === "propose_profile") {
     // A non-boolean toggle would be dropped silently while any valid half of
     // the request went through, applying a partial proposal the model never
