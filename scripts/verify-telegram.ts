@@ -66,7 +66,7 @@ try {
   const { body: pairing } = await api("POST", `/api/messaging/telegram/${binding.id}/pairing`, {});
   await hook(binding.id, secret, 555, pairing.code);
   const paired = await waitOutbox("555", 1);
-  assert(/^Paired with /.test(paired[0]!.text), "unknown chat sending the code is paired");
+  assert(paired[0]!.text.startsWith("Paired with "), "unknown chat sending the code is paired");
   evidence.push({ pairing: { chat: "555", sent: "(six-digit code)", reply: paired[0]!.text } });
   await hook(binding.id, secret, 888, pairing.code);
   assert(/didn't match/.test((await waitOutbox("888", 1))[0]!.text), "the code is single use");

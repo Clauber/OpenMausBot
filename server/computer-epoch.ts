@@ -81,7 +81,7 @@ export class ComputerEpochs {
   revoke(botId: string, reason: string, computerId?: string): number {
     const touched = new Set<string>();
     let cancelled = 0;
-    for (const lease of [...this.leases]) {
+    for (const lease of this.leases) {
       if (lease.botId !== botId || (computerId && lease.computerId !== computerId)) continue;
       touched.add(lease.computerId);
       cancelled += this.cancel(lease, reason);
@@ -95,7 +95,7 @@ export class ComputerEpochs {
    * now refuses. Cheap: runs on every bot or space change. */
   revalidate(botId?: string): number {
     let cancelled = 0;
-    for (const lease of [...this.leases]) {
+    for (const lease of this.leases) {
       if (botId && lease.botId !== botId) continue;
       const reason = lease.check?.() ?? null;
       if (!reason) continue;

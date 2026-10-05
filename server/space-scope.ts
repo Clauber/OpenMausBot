@@ -153,7 +153,7 @@ export class SpaceRegistry {
     delete this.state.assignments[kind]![id]; this.save();
   }
   assignments(): Record<string, Record<string, string>> {
-    return Object.fromEntries(SPACE_KINDS.map((kind) => [kind, { ...(this.state.assignments[kind] ?? {}) }]));
+    return Object.fromEntries(SPACE_KINDS.map((kind) => [kind, { ...this.state.assignments[kind] }]));
   }
 
   /** The space an entity lives in. Unknown or unassigned entities are in the default space. */

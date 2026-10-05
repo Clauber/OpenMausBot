@@ -78,7 +78,7 @@ export class TelegramService {
 
   /** Resolves when every accepted message has been answered (tests, shutdown). */
   async idle(): Promise<void> {
-    while (this.pending.size) await Promise.allSettled([...this.pending]);
+    while (this.pending.size) await Promise.allSettled(this.pending);
   }
 
   stop(): void { this.stopped = true; }

@@ -693,7 +693,7 @@ export class LiveCallController {
     // A turn settled. If it carried a call request and said nothing, say so.
     this.forgetUnqueued(call);
     if (!call.approval && !call.question) {
-      for (const compute of [...call.compute.values()]) {
+      for (const compute of call.compute.values()) {
         if (compute.messageId) this.resolveCompute(call, compute, { ok: false, error: "The turn ended without an answer." });
       }
     }
