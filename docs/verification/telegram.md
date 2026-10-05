@@ -10,9 +10,9 @@ data is involved. See [docs/telegram.md](../telegram.md) for the feature.
 pnpm exec vitest run server/messaging/telegram.test.ts server/messaging/telegram.e2e.test.ts
 ```
 
-`telegram.test.ts` covers the client (all six Bot API calls, the 4096 split,
+`server/messaging/telegram.test.ts` covers the client (all six Bot API calls, the 4096 split,
 MarkdownV2 fallback, no token in errors), the binding store (0600, single-use
-and expiring codes) and the service against a fake host. `telegram.e2e.test.ts`
+and expiring codes) and the service against a fake host. `server/messaging/telegram.e2e.test.ts`
 launches the real harness through `launchVerificationServer`, creates a
 binding, and posts Telegram-shaped webhook calls to the real receiver: wrong
 secret gives 401, an unknown chat plus a pairing code creates the binding, the

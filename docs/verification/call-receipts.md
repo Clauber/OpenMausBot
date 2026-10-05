@@ -55,7 +55,7 @@ the child), runs the flows below over the real HTTP routes and sideband, prints
 
 | Check | Where |
 | --- | --- |
-| (a) one receipt with lines and duration | `call-receipts.e2e.test.ts` (a) |
+| (a) one receipt with lines and duration | `server/call-receipts.e2e.test.ts` (a) |
 | (b) late transcript updates, not duplicates | (b), and the controller unit test |
 | (c) compute turn visible, summary returned | (c) |
 | (d) 7th refused; timeout path | (d); 90 s and paused clock in the controller tests |
