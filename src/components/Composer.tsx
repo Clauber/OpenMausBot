@@ -63,6 +63,7 @@ import { useThreadRefs } from "./ThreadRefs";
 import {
   QueuedComposerMessages,
   composerCanSteerQueuedMessages,
+  composerCanSendQueuedNow,
   doubleEnterSteerWindowExpiresAt,
   doubleEnterSteersQueue,
 } from "./ComposerQueuedMessages";
@@ -418,6 +419,9 @@ export function Composer({
     pendingCount,
     Boolean(approval),
   );
+  // A settled 1:1 thread whose words wait only on the bot's room turn has
+  // nothing to steer into; its head control sends them now, beside the room.
+  const sendNowQueued = composerCanSendQueuedNow(Boolean(bot) && !group, busy, locked, Boolean(approval), queuedMessages);
   const [steering, setSteering] = useState(false);
   const interruptTurn = () => {
     if (group) dispatch({ type: "interruptGroup", groupId: group.id, threadId });
@@ -436,7 +440,7 @@ export function Composer({
       // A room whose running engine cannot steer keeps the old behavior:
       // Steer ends the running turn so the next queued message starts.
       dispatch({ type: "interruptGroup", groupId: group.id, threadId, onError: settle });
-    } else if (bot && canSteer) {
+    } else if (bot && (canSteer || sendNowQueued)) {
       // A steer-capable engine folds the queued words into the running turn
       // through the server; it never interrupts the turn to do it.
       dispatch({ type: "steerQueued", botId: bot.id, threadId, queueId: queueHeadId, onError: settle, onSettled: settle });
@@ -945,8 +949,9 @@ export function Composer({
         />
         <QueuedComposerMessages
           items={queuedMessages}
-          onSteer={canSteerQueued ? steerQueued : undefined}
+          onSteer={canSteerQueued || sendNowQueued ? steerQueued : undefined}
           steerInterrupts={!canSteer}
+          sendsNow={sendNowQueued}
           steerMode={group ? "next" : "all"}
           steering={steering}
           onCancel={(queueId) => {
