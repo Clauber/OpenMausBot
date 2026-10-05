@@ -13,7 +13,7 @@ export type ApprovalMode = (typeof APPROVAL_MODES)[number];
  * level would change nothing there. */
 export function supportsApprovalMode(driverKind: string | undefined, mode: ApprovalMode): boolean {
   if (mode === "custom") return driverKind === "codex";
-  if (mode === "edits") return ["claudeAgent", "grokAgent", "antigravityAgent", "qwenAgent", "geminiAgent"].includes(driverKind ?? "");
+  if (mode === "edits") return ["claudeAgent", "grokAgent", "antigravityAgent", "qwenAgent", "geminiAgent", "zcodeAgent"].includes(driverKind ?? "");
   if (mode !== "full") return true;
   // The chat-completions family has no provider-side reviewer, so Full is
   // implemented in the harness: createOpenAIChatRuntime answers its own tool
@@ -21,7 +21,7 @@ export function supportsApprovalMode(driverKind: string | undefined, mode: Appro
   // engines could never stop asking — not by its own level, and not through
   // a Chief's delegated Full access either.
   return ["codex", "claudeAgent", "antigravityAgent", "cursorAgent", "grokAgent", "opencodeGo", "qwenAgent", "geminiAgent",
-    "openai-compat", "grok", "minimax", "mistral", "cerebras"].includes(driverKind ?? "");
+    "openai-compat", "grok", "minimax", "mistral", "cerebras", "zcodeAgent"].includes(driverKind ?? "");
 }
 
 /** A Full/Custom grant belongs to one provider's tool semantics. Other

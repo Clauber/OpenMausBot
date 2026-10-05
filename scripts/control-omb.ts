@@ -413,7 +413,7 @@ export async function launchVerificationServer(
   enterprise?: { dir: string; licenseKey: string },
   room?: { scripted: boolean },
   /** Optional repository-owned fake providers for multi-engine setup checks. */
-  extraProviders: Array<"codex"> = [],
+  extraProviders: Array<"codex" | "zcode"> = [],
   /** Programmatic tests only: an owned loopback Boat provider, never a live account. */
   boatFixtureApi?: string,
 ): Promise<VerificationServer> {
@@ -450,6 +450,9 @@ export async function launchVerificationServer(
       ...(boatFixtureApi ? { computer: { driver: "boxAgent" } } : {}),
       ...(extraProviders.includes("codex") ? { codex: {
         driver: "codex", displayName: "Verification Codex", config: { cli: fileURLToPath(new URL("../server/testing/fake-codex-app-server.ts", import.meta.url)) },
+      } } : {}),
+      ...(extraProviders.includes("zcode") ? { zcode: {
+        driver: "zcodeAgent", displayName: "Verification ZCode", config: { cli: fileURLToPath(new URL("../server/testing/fake-zcode-app-server.ts", import.meta.url)) },
       } } : {}),
       claude: {
         driver: "claudeAgent",
@@ -590,13 +593,30 @@ async function main() {
   }
   if (command === "launch") {
     requireForegroundTerminal("launch");
+    const extras: string[] = [];
+    const rest = process.argv.slice(3);
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "--extra") extras.push(rest[++i] ?? "");
+      else if (rest[i]?.startsWith("--")) {
+        process.stderr.write(`${JSON.stringify({ ok: false, error: `unknown launch option: ${rest[i]}` }, null, 2)}\n`);
+        process.exitCode = 1;
+        return;
+      }
+    }
+    const knownExtras = new Set(["codex", "zcode"]);
+    const unknown = extras.filter((name) => !knownExtras.has(name));
+    if (unknown.length) {
+      process.stderr.write(`${JSON.stringify({ ok: false, error: `unknown --extra provider(s): ${unknown.join(", ")}; known: ${[...knownExtras].join(", ")}` }, null, 2)}\n`);
+      process.exitCode = 1;
+      return;
+    }
     const startup = new AbortController();
     const cancelStartup = () => startup.abort();
     process.once("SIGINT", cancelStartup);
     process.once("SIGTERM", cancelStartup);
     let session: VerificationServer;
     try {
-      session = await launchVerificationServer(process.env, startup.signal);
+      session = await launchVerificationServer(process.env, startup.signal, undefined, undefined, undefined, undefined, extras as Array<"codex" | "zcode">);
     } finally {
       process.removeListener("SIGINT", cancelStartup);
       process.removeListener("SIGTERM", cancelStartup);

@@ -127,6 +127,18 @@ export function PiMark({ size = 16, className }: IconProps) {
   );
 }
 
+/** ZCode mark — a geometric "Z" wordmark. */
+export function ZcodeMark({ size = 16, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 800 800" className={cn("fill-[var(--color-ink)]", className)} aria-hidden>
+      <path
+        fillRule="evenodd"
+        d="M165.29 165.29 H634.72 V282.65 L316.55 517.36 H634.72 V634.72 H165.29 V517.36 L483.45 282.65 H165.29 Z"
+      />
+    </svg>
+  );
+}
+
 export function ProviderMark({ driverKind, size, className }: IconProps & { driverKind: string }) {
   switch (driverKind) {
     case "grok":
@@ -156,6 +168,8 @@ export function ProviderMark({ driverKind, size, className }: IconProps & { driv
       return <ComputerMark size={size} className={className} />;
     case "piAgent":
       return <PiMark size={size} className={className} />;
+    case "zcodeAgent":
+      return <ZcodeMark size={size} className={className} />;
     default:
       return (
         <span className="flex size-full items-center justify-center text-[10px] font-semibold tracking-tight text-ink-secondary">

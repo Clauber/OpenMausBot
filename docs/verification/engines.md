@@ -21,6 +21,12 @@ pnpm control:omb models --url http://127.0.0.1:PORT
 `doctor.ok` is true only when the endpoint is OpenMausBot and at least one
 engine is available. The isolated fixture should expose `claude`.
 
+Repository-owned fake engines beyond Claude ride `launch --extra <name>`
+(currently `codex` and `zcode`); each mounts the matching
+`server/testing/fake-*.ts` CLI under a `Verification <Name>` instance, so a
+bot can be pointed at that engine with `set-model` and driven end-to-end
+against the fake.
+
 ## Named Claude accounts
 
 Run the offline API fixture and driver regressions:

@@ -1341,7 +1341,7 @@ function canManageCommandAllowlist(auth: RequestAuth): boolean {
 
 const COMMAND_ALLOWLIST_DRIVERS = new Set([
   "claudeAgent", "codex", "antigravityAgent", "grokAgent", "opencodeGo", "kimiAgent",
-  "droidAgent", "cursorAgent", "qwenAgent", "geminiAgent", "hermesAgent", "customAcp",
+  "droidAgent", "cursorAgent", "qwenAgent", "geminiAgent", "hermesAgent", "customAcp", "zcodeAgent",
 ]);
 
 function commandAllowlistResponse(bot: BotRecord): CommandAllowlistResponse {
