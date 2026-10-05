@@ -8582,6 +8582,11 @@ bus.subscribe((event: RuntimeEvent) => {
   drainDelegationWakes();
 });
 
+/** 1:1 threads whose person pressed Send now on words queued behind the
+ * bot's room turn. Held only for one synchronous drain pass: the flag lets
+ * that pass start the thread beside the room, and is cleared right after. */
+const sendNowBesideRoom = new Set<string>();
+
 function drainQueuedSends() {
   if (!followupsReady) return;
   drainSteeredMessages(store, (botId, threadId, prompt, userMessage, excludeIds, unattended, head) =>
@@ -8597,6 +8602,7 @@ function drainQueuedSends() {
       void startTurn(botId, prompt, {
         threadId, userMessage, excludeMessageIds: excludeIds, unattended, onTurnSettled: resolve,
         trigger: queuedTurnTrigger(head),
+        besideGroupTurn: sendNowBesideRoom.has(threadId),
       }).catch((err) => {
         store.appendMessage(threadId, {
           role: "bot", kind: "activity",
@@ -8610,7 +8616,8 @@ function drainQueuedSends() {
     }),
     // Provider completion can precede its dispatch promise: keep the queue
     // intact until that exact handshake releases its runtime-only claim.
-    (botId, threadId) => threadBusy(botId, threadId) || botAtThreadCapacity(botId) || Boolean(activeGroupTurnForBot(botId))
+    (botId, threadId) => threadBusy(botId, threadId) || botAtThreadCapacity(botId)
+      || (!sendNowBesideRoom.has(threadId) && Boolean(activeGroupTurnForBot(botId)))
       || parksBehindCoordination(botId, threadId),
   );
   // Asides always drain after person follow-ups (see drainAsideLane): the
@@ -9242,6 +9249,10 @@ async function startTurn(
     automaticRecoveryIndex?: number;
     /** Queue receipts outlive the dispatch acknowledgment until this exact turn settles. */
     onTurnSettled?: () => void;
+    /** The person chose Send now on a 1:1 message queued behind this bot's
+     * room turn: run it beside the room instead of waiting the room out.
+     * The room's own next hop for this bot waits for the 1:1 to finish. */
+    besideGroupTurn?: boolean;
     coordination?: { id: string; resumed: boolean; settle: (outcome: { ok: boolean; text: string }) => void };
   },
 ) {
@@ -9281,7 +9292,7 @@ async function startTurn(
     throw Object.assign(new Error("this bot's cloud computer is being changed — wait for it to finish"), { status: 409 });
   }
   if (threadBusy(botId, threadId)) throw Object.assign(new Error("this thread is already working — interrupt it first"), { status: 409, code: "thread_busy" });
-  if (activeGroupTurnForBot(botId)) {
+  if (!opts?.besideGroupTurn && activeGroupTurnForBot(botId)) {
     throw Object.assign(new Error("the bot is already working in a channel — wait for it to finish"), { status: 409, code: "thread_busy" });
   }
   if (botAtThreadCapacity(botId)) {
@@ -21906,6 +21917,21 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const body = await readBody(req);
       requirePinnedClientThread(m[1], body?.threadId);
       const bot = requestedTaskBot(m[1], body?.threadId);
+      // An idle 1:1 thread whose words wait only on the bot's room turn has
+      // no running turn to steer into. Send now starts them beside the room
+      // (still bound by the thread limit) instead of waiting it out.
+      if (!threadBusy(bot.id, bot.threadId) && activeGroupTurnForBot(bot.id)) {
+        if (!isSteeredMessageQueued(bot.id, bot.threadId, m[2])) return json(res, 404, { error: "no such queued message" });
+        sendNowBesideRoom.add(bot.threadId);
+        try {
+          drainQueuedSends();
+        } finally {
+          sendNowBesideRoom.delete(bot.threadId);
+        }
+        return isSteeredMessageQueued(bot.id, bot.threadId, m[2])
+          ? json(res, 200, { ok: true, queued: true, threadId: bot.threadId })
+          : json(res, 200, { ok: true, started: true, threadId: bot.threadId });
+      }
       // Pressing Steer folds the queued words into the running turn. It does
       // not re-book that turn to whoever pressed it, and the words keep the
       // sender they were queued with.

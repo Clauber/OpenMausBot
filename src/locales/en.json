@@ -1160,6 +1160,8 @@
   "composer.queued.steerAllHint": "Steer all {count} queued messages now",
   "composer.queued.steerNextHint": "Steer the next queued message now",
   "composer.queued.steerHint": "Steer queued message now",
+  "composer.queued.sendNow": "Send now",
+  "composer.queued.sendNowHint": "Start this conversation now, while the bot keeps working in the room",
   "composer.queued.steerInterruptHint": "Stop the running turn and send this message now",
   "composer.queued.steerAllInterruptHint": "Stop the running turn and send all {count} queued messages now",
   "composer.queued.steerNextInterruptHint": "Stop the running turn and send the next queued message now",
