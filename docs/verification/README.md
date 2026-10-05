@@ -44,6 +44,7 @@ Use only mapped, tested commands:
 
 - [Pages workspace](pages.md)
 - [Space isolation boundaries](spaces.md)
+- [Computer audit log and instant revocation](computer-audit.md)
 - [Chat turns](chat-turns.md)
 - [Conversation context compaction](context-compaction.md)
 - [Work summaries and engine hooks](digests.md)

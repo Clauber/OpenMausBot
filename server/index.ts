@@ -106,6 +106,9 @@ import { groupTurnCwd } from "./room-cwd.ts";
 import { RoomTurnDeadline, RoomTurnStallRegistry, roomTurnTimeoutMessage } from "./room-turn-timeout.ts";
 import * as boat from "./boat.ts";
 import { cloudComputerRpc } from "./cloud-computer-tools.ts";
+import { ComputerAuditLog, auditedComputerCall } from "./computer-audit.ts";
+import { ComputerEpochs } from "./computer-epoch.ts";
+import { createComputerAuditRoutes } from "./routes/computer-audit.ts";
 import { TeamComputers, teamComputerAssignment, teamComputerCreate, teamComputerOwner, type TeamComputerRecord } from "./team-computers.ts";
 import { isEffortLevel, type BotVisibility, type CardAnswerer, type ResolvedSender, type SteerQueueReason, type WireBot, type WireGroup, type WireTask } from "../shared/wire.ts";
 import { isPersistentQuestionCard, QUESTION_DISMISS_MESSAGE, shouldSettleRequestCard } from "../shared/ask-question.ts";
@@ -467,7 +470,7 @@ import { buildBotOverview, type BotOverview, connectedAppsFacts } from "./bot-ov
 import { pagesDb, PageError } from "./pages-db.ts";
 import { PageProposalService, pageContext, resolvePageResponse } from "./pages.ts";
 import { createPagesRoutes } from "./routes/pages.ts";
-import { SpaceIsolationError, SpaceRegistry, guardRequest, scopeFromHeaders, setActiveSpaces } from "./space-scope.ts";
+import { SpaceIsolationError, SpaceRegistry, assertSpace, guardRequest, scopeFromHeaders, setActiveSpaces } from "./space-scope.ts";
 import { createSpacesRoutes } from "./routes/spaces.ts";
 import { ProfileRequestService } from "./profile-requests.ts";
 import { ModelRequestService } from "./model-requests.ts";
@@ -3056,12 +3059,28 @@ function connectedAppsIntegration(bot: Pick<BotRecord, "id" | "connectorTools">,
 // they hold it, the bot's computer proxies refuse every action. The record
 // lives here; the proxies consult it over loopback with the boot token.
 const computerControlRevision = new Map<string, number>();
+// Audit trail and instant revocation for computer actions (computer-audit.ts,
+// computer-epoch.ts). The audit stores tool names and outcomes, never arguments.
+const computerAudit = new ComputerAuditLog(DATA_DIR);
+const computerEpochs = new ComputerEpochs();
+const lastTakeover = new Map<string, { held: boolean; help: boolean }>();
+/** The audit/epoch key for a bot's computer: the shared computer's id, else one per bot. */
+const auditComputerId = (botId: string, teamComputerId?: string): string => teamComputerId ?? `bot-${botId}`;
 const computerControl = new ComputerControl((key, snapshot) => {
   const members = key.startsWith("computer_")
     ? store.bots.filter(bot => inheritedTeamComputer(bot)?.id === key.slice("computer_".length)).map(bot => bot.id)
     : [key];
   for (const botId of members) {
   computerControlRevision.set(botId, (computerControlRevision.get(botId) ?? 0) + 1);
+  const before = lastTakeover.get(botId) ?? { held: false, help: false };
+  const after = { held: snapshot.held, help: snapshot.helpReason !== null };
+  lastTakeover.set(botId, after);
+  const teamId = key.startsWith("computer_") ? key : undefined;
+  const takeover = (action: string, actor: "bot" | "owner") => computerAudit.append({
+    ts: Date.now(), computerId: auditComputerId(botId, teamId), botId, actor, action, outcome: "ok", durationMs: 0,
+  });
+  if (after.held !== before.held) takeover(after.held ? "takeover.take" : "takeover.release", "owner");
+  if (after.help && !before.help) takeover("takeover.help", "bot");
   // One-way, fail-closed mirror into the Electron process that owns the
   // native browser. Never send release: a loopback caller can influence the
   // server record, while only the trusted Browser panel may clear Electron's
@@ -5155,6 +5174,9 @@ const groupWithThread = (group: GroupRecord) => ({
 // endpoints whose callers need the transcript (task create/switch, imports)
 // still send their richer payload on top.
 store.onChange((change) => {
+  // Instant revocation: a bot setting changed, so any in-flight computer action
+  // that is no longer permitted is aborted now, not when it finishes.
+  if (change.type === "bot") computerEpochs.revalidate(change.botId);
   // Who owns which thread, and what each member may see, follow the fleet.
   if (change.type !== "message" && change.type !== "message.patch" && change.type !== "thread" && change.type !== "sections") forgetVisibility();
   switch (change.type) {
@@ -6461,6 +6483,20 @@ function botComputerControlSnapshot(botId: string, pinnedComputerId?: string) {
   const key = pinnedComputerId ? teamComputerOwner(pinnedComputerId) : bot ? botComputerControlKey(bot) : botId;
   const shared = computerControl.snapshot(key);
   return own.held ? own : shared.held || shared.helpReason ? shared : own;
+}
+
+/** Re-derives whether a bot may still drive its computer; a reason when not.
+ * Used as the lease check, so the same rules gate dispatch and in-flight work. */
+function computerAccessCheck(botId: string, teamComputerId?: string): () => string | null {
+  const startedMode = (() => { const bot = store.bot(botId); return bot ? approvalModeFor(bot) : "ask"; })();
+  return () => {
+    const bot = store.bot(botId);
+    if (!bot) return "the bot was removed";
+    if (bot.computer === "off") return "the owner disabled this computer for the bot";
+    if (teamComputerId && spaces.spaceOf("bot", botId) !== spaces.spaceOf("computer", teamComputerId)) return "space isolation: the computer is in another space";
+    if (startedMode !== "ask" && approvalModeFor(bot) === "ask") return "approval mode was downgraded to Ask";
+    return null;
+  };
 }
 
 function teamComputerInUse(computer: TeamComputerRecord): boolean {
@@ -15462,7 +15498,14 @@ const cloudMoveRoutes = createCloudMoveRoutes({
 // Route modules (server/routes/README.md). `workspaceAccess` is assigned at
 // boot, after this line, so the dependency reads it per request.
 const pageProposals = new PageProposalService(pagesDb, store);
+ROUTES.push(createComputerAuditRoutes({
+  audit: computerAudit, epochs: computerEpochs,
+  botExists: (botId) => Boolean(store.bot(botId)),
+  assertBotInScope: (scope, botId) => assertSpace(scope, spaces.spaceOf("bot", botId)),
+  computerIdFor: (botId) => { const bot = store.bot(botId); return auditComputerId(botId, bot ? inheritedTeamComputer(bot)?.id : undefined); },
+}));
 ROUTES.push(createSpacesRoutes({
+  onChange: () => { computerEpochs.revalidate(); },
   registry: spaces,
   exists: (kind, id) => kind === "bot" ? Boolean(store.bot(id))
     : kind === "computer" ? (() => { try { return Boolean(teamComputers.get(id)); } catch { return false; } })()
@@ -16357,11 +16400,24 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (!boxId) return json(res, 403, { error: "this turn has no cloud computer" });
         const abort = new AbortController();
         res.once("close", () => { if (!res.writableEnded) abort.abort(); });
-        return json(res, 200, { result: await cloudComputerRpc(body, {
-          cfg, boxId, signal: abort.signal,
-          gate: () => computerCallGate(internalCapability),
-          assertActive: requireActiveInternalCapability,
-        }) });
+        const isCall = (body as { method?: unknown } | null)?.method === "tools/call";
+        const params = ((body as { params?: unknown } | null)?.params ?? {}) as { name?: unknown };
+        const rpc = (signal: AbortSignal, gate: () => Promise<{ held: boolean; blockedReason?: string }>, assertActive: () => void) =>
+          cloudComputerRpc(body, { cfg, boxId, signal, gate, assertActive });
+        const ungated = () => computerCallGate(internalCapability);
+        if (!isCall) return json(res, 200, { result: await rpc(abort.signal, ungated, requireActiveInternalCapability) });
+        const botId = internalCapability.botId;
+        const outcome = await auditedComputerCall(typeof params.name === "string" ? params.name.slice(0, 40) : "unknown", {
+          audit: computerAudit, epochs: computerEpochs, botId,
+          computerId: auditComputerId(botId, internalCapability.teamComputerId),
+          check: computerAccessCheck(botId, internalCapability.teamComputerId),
+          requestSignal: abort.signal,
+          dispatch: ({ signal, gate, assertActive }) => rpc(signal, () => gate(ungated), () => assertActive(requireActiveInternalCapability)),
+        });
+        if (outcome.kind === "revoked") {
+          return json(res, 200, { result: { isError: true, content: [{ type: "text", text: `Access to this computer was revoked (${outcome.reason}). The action was cancelled or not performed. Do not retry; tell the person.` }] } });
+        }
+        return json(res, 200, { result: outcome.result });
       }
       if (method === "POST" && path === "/api/internal/phone/claim") {
         // Lazy phone exclusivity (issue #1663): the turn holds computer:phone
@@ -16398,9 +16454,21 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (why === "someone-else" || why === "memory-changed") {
           return json(res, 403, { error: why === "someone-else" ? LENDING_SOMEONE_ELSE : LENDING_MEMORY_CHANGED });
         }
+        const auditShared = (outcome: "ok" | "denied" | "error", started: number, error?: string) => computerAudit.append({
+          ts: started, computerId: parsed.data.computer_id, botId: internalCapability.botId, actor: "bot",
+          action: `shared.${parsed.data.action}`, outcome, durationMs: Date.now() - started, ...(error ? { error } : {}),
+        });
+        const sharedStarted = Date.now();
         try { spaces.assertBotUsesComputer(internalCapability.botId, parsed.data.computer_id); }
-        catch (error) { if (error instanceof SpaceIsolationError) return json(res, 403, error.body()); throw error; }
-        return json(res, 200, { result: await sharedComputers.request(parsed.data, principal, () => lendingEnabled() && internalCapabilityIsActive(internalCapability)) });
+        catch (error) {
+          if (error instanceof SpaceIsolationError) { auditShared("denied", sharedStarted, "space isolation: the computer is in another space"); return json(res, 403, error.body()); }
+          throw error;
+        }
+        try {
+          const result = await sharedComputers.request(parsed.data, principal, () => lendingEnabled() && internalCapabilityIsActive(internalCapability));
+          auditShared("ok", sharedStarted);
+          return json(res, 200, { result });
+        } catch (error) { auditShared("error", sharedStarted, error instanceof Error ? error.message : "shared computer call failed"); throw error; }
       }
       if (method === "GET" && path === "/api/internal/agents") {
         const sender = internalSender;
