@@ -2,10 +2,12 @@
 
 Approval levels belong to a bot and apply to its next provider turn, including
 when that provider resumes an existing native thread. Each level is one of the
-provider's own permission modes, passed through. OpenMausBot does not judge an
-action itself: there is no app-side allowlist, classifier, or pattern rule. A
-native tool request that reaches you is one the provider left for you. In Full
-Access, OMB also applies its own configuration tools without another approval.
+provider's own permission modes, passed through. A native tool request that
+reaches the harness is one the provider left for it. Legion's
+[approval rules and automatic review](approval-rules.md) apply to surfaced
+native permissions and harness dispatch before the approval-level fallback.
+In Full Access, OMB also applies its own configuration tools without another
+approval unless an action rule or judge requires confirmation.
 
 | Level | Behavior |
 | --- | --- |

@@ -171,3 +171,12 @@ describe("delegatedApprovalMode", () => {
     expect(delegatedApprovalMode({ ...base, senderMode: "auto", recipientDriverKind: "codex" })).toBe("auto");
   });
 });
+
+describe("action rule precedence over approval levels", () => {
+  it.each(["ask", "edits", "auto", "full", "custom"] as const)("rules override %s", mode => {
+    expect(autoVerdict(mode, "Write", { ruleDecision: "require_approval" })).toEqual({ approve: null, source: "approval-rules" });
+    expect(autoVerdict(mode, "Write", { ruleDecision: "always_allow" }).source).toBe("approval-rules");
+    expect(autoVerdict(mode, "Write", { ruleDecision: "always_allow" }).approve).not.toBeNull();
+    expect(autoVerdict(mode, "AskUserQuestion", { ruleDecision: "always_allow" }).approve).toBeNull();
+  });
+});

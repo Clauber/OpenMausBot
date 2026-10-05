@@ -443,7 +443,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       signal: abort.signal,
       open: (ask) => emit({
         ...base(turn.threadId, turnId), type: "request.opened", requestType: "permission",
-        requestId: ask.id, tool: ask.tool, summary: ask.summary, allowSession: false,
+        requestId: ask.id, tool: ask.tool, summary: ask.summary, input: ask.input, allowSession: false,
       }),
       resolved: (ask, allowed, source) => emit({
         ...base(turn.threadId, turnId), type: "request.resolved", requestId: ask.id,
@@ -650,7 +650,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
                 // an OpenAI-compatible engine stops for a card, and a Chief's
                 // delegated Full access cannot help either.
                 const allowed = turn.approvalMode === "full"
-                  || await approval.ask(call.function.name, inputPreview ?? "This tool has no arguments.");
+                  || await approval.ask(call.function.name, inputPreview ?? "This tool has no arguments.", args);
                 abort.signal.throwIfAborted();
                 emit({ ...base(turn.threadId, turnId), type: "item.started", itemType: "tool", itemId: call.id,
                   title: call.function.name, ...(inputPreview ? { input: inputPreview } : {}),

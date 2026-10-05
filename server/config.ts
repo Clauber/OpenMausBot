@@ -5,6 +5,7 @@ import { readFileSync, mkdirSync, existsSync, renameSync, statSync } from "node:
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import { normalizeApprovalRules, type ApprovalRules } from "../shared/approval-rules.ts";
 import { normalizeImageGenerationUrl, type ImageGenerationConfig } from "../shared/image-generation.ts";
 
 import { writeFileAtomic } from "./atomic.ts";
@@ -486,6 +487,7 @@ const appConfigSchema = z.object({
    * server instead of TypeSafe's (an operator setting with no UI); `jobs`
    * switches each decision on or off. Not `decisions`: that section is the
    * authorization log's retention. */
+  approvalRules: z.custom<ApprovalRules>(value => normalizeApprovalRules(value) !== null, "Invalid approval rules").optional(),
   decider: z.object({
     enabled: z.boolean().optional(),
     provider: z.enum(["jev", "off"]).optional(),
@@ -496,7 +498,7 @@ const appConfigSchema = z.object({
       .max(2048)
       .refine((value) => !value || /^https?:\/\//i.test(value), "the decision model address must start with http:// or https://")
       .optional(),
-    jobs: z.object({ roomRouting: z.boolean().optional() }).optional(),
+    jobs: z.object({ roomRouting: z.boolean().optional(), autoReview: z.boolean().optional() }).optional(),
   }).optional(),
   /** Live calls: an OpenAI project key for GPT-Live, kept apart from every
    * other OpenAI credential so a Live call never bills an image or engine key
@@ -605,7 +607,8 @@ export interface AppConfig {
   opencodeGo?: { apiKey?: string };
   tts?: { key?: string; fishKey?: string; voice?: string; provider?: "elevenlabs" | "fish" | "system" | "chatterbox" | "xai"; baseUrl?: string; model?: string; fishModel?: FishTtsModel };
   /** The decision model; see the schema above and server/decider. */
-  decider?: { enabled?: boolean; provider?: "jev" | "off"; key?: string; baseUrl?: string; jobs?: { roomRouting?: boolean } };
+  approvalRules?: ApprovalRules;
+  decider?: { enabled?: boolean; provider?: "jev" | "off"; key?: string; baseUrl?: string; jobs?: { roomRouting?: boolean; autoReview?: boolean } };
   imageGen?: ImageGenerationConfig;
   live?: { key?: string; voice?: string; readTypedReplies?: boolean; idleMinutes?: number };
   profile?: { name?: string; email?: string; aboutMe?: string };
@@ -903,6 +906,7 @@ export const FLEET_NEUTRAL_KEYS: ReadonlySet<string> = new Set([
   "tts",
   // no engine reads it: the harness asks it before a turn starts
   "decider",
+  "approvalRules",
   "imageGen",
   "live",
   "vps",
@@ -1276,6 +1280,7 @@ export function saveConfig(
   if (checkedPatch.customDomain !== undefined) disk.customDomain = checkedPatch.customDomain;
   if (checkedPatch.signIn !== undefined) disk.signIn = checkedPatch.signIn;
   // Replace the section so clearing a backup cannot revive the old selection.
+  if (checkedPatch.approvalRules !== undefined) disk.approvalRules = JSON.parse(JSON.stringify(checkedPatch.approvalRules));
   if (checkedPatch.automaticRecovery !== undefined) disk.automaticRecovery = checkedPatch.automaticRecovery;
   // A selection is replaced as one value, so changing engines also clears
   // an effort level omitted from the new selection.

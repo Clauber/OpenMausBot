@@ -324,6 +324,7 @@ export interface WireBot {
    * shareable exports and imported bots always land with none. */
   connectorTools?: Record<string, ConnectorToolGrant>;
   connectorScopes?: { apps: Record<string, "read" | "write"> };
+  approvalRules?: import("./approval-rules.ts").ApprovalRules;
   outbound?: { policy: "ask" | "allow"; dailyCap: number };
   /** Ordered backups used only by opt-in, pre-prompt startup recovery. */
   fallback?: Array<{ instanceId: string; model: string }>;
@@ -502,6 +503,9 @@ export interface WireMessage {
 }
 
 export interface OptionCardData {
+  /** Server-generated identity of the exact consequential proposal. */
+  effectKey?: string;
+  autoReview?: { decision: "allow" | "ask" | "deny"; confidence: number; reasoning: string };
   outboundRequest?: { tool: string; app: string | null };
   teamMemoryRequest?: { section: string; entryId: string; kind: string };
   title: string;

@@ -113,6 +113,8 @@ export interface OptionCardData {
   routineRequest?: RoutineRequestCardData;
   /** Staged learned-skill change; applied only after the user confirms this card. */
   skillRequest?: SkillRequestCardData;
+  effectKey?: string;
+  autoReview?: { decision: "allow" | "ask" | "deny"; confidence: number; reasoning: string };
   outboundRequest?: { tool: string; app: string | null };
   teamMemoryRequest?: { section: string; entryId: string; kind: string };
   /** Persisted profile proposal used by the server when the user confirms it. */
@@ -464,6 +466,7 @@ export interface Bot {
    * an explicit {} grants no tools. Edited from bot settings → Access. */
   connectorTools?: Record<string, ConnectorToolGrant>;
   connectorScopes?: { apps: Record<string, "read" | "write"> };
+  approvalRules?: import("../../shared/approval-rules").ApprovalRules;
   outbound?: { policy: "ask" | "allow"; dailyCap: number };
   fallback?: Array<{ instanceId: string; model: string }>;
   /** Whether this bot gets the app's built-in browser (Browser tab). On unless switched off. */

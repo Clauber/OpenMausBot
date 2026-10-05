@@ -1319,6 +1319,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             requestType: isQuestion ? "question" : "permission",
             tool,
             summary,
+            input: isQuestion ? undefined : toolCall.rawInput,
             command: isShellCommand ? acpPermissionCommand(toolCall.rawInput, commandCwd) : undefined,
             requiresExplicitApproval: isShellCommand && (
               toolCall.rawInput?.dangerouslyDisableSandbox === true || toolCall.rawInput?.sandbox_permissions === "require_escalated"

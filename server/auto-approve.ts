@@ -4,7 +4,8 @@
 // provider's own permission mode passed straight through (Claude `auto`,
 // Grok `--permission-mode`, Codex `approvalsReviewer`, …), and a request that
 // reaches this process is one the provider left for a person. The only
-// grants the app applies are Full access and the person's exact saved commands.
+// Fallback grants are Full access and the person's exact saved commands;
+// explicit action rules are consulted first by the harness.
 // Questions never come through here: a bot's question always reaches a human.
 
 import { supportsApprovalMode, type ApprovalMode } from "../shared/approval-mode.ts";
@@ -97,6 +98,9 @@ const ASKS_A_PERSON = new Set(["askuserquestion", "ask_user", "omb-ask"]);
  * `explicit-approval-block` is a sandbox widening only Full may answer;
  * `no-grant` is an Ask or Edits card, where asking is the whole point. */
 export type AutoVerdictSource =
+  | "approval-rules"
+  | "auto-review"
+  | "effect-ledger"
   | "full-access"
   | "command-allowlist"
   | "native-approval"
@@ -116,6 +120,7 @@ export function autoVerdict(
   mode: ApprovalMode,
   tool: string,
   context?: {
+    ruleDecision?: "always_allow" | "require_approval" | null;
     /** The provider is asking to widen its configured sandbox rather than
      * perform one ordinary action. Only explicit Full may synthesize this. */
     requiresExplicitApproval?: boolean;
@@ -129,6 +134,8 @@ export function autoVerdict(
   if (ASKS_A_PERSON.has(tool.replace(/^mcp__[^_]+__/, "").toLowerCase())) {
     return { approve: null, source: "no-grant" };
   }
+  if (context?.ruleDecision === "require_approval") return { approve: null, source: "approval-rules" };
+  if (context?.ruleDecision === "always_allow" && !context.requiresExplicitApproval) return { approve: `approved ${tool} (approval rule)`, source: "approval-rules" };
   // Full's promise is literal: even a sandbox widening is approved. Entering
   // Full is separately consent-gated by the bot PATCH endpoint, and the
   // request.opened caller invokes this for permissions only, never questions.
