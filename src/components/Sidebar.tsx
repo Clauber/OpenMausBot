@@ -1,5 +1,7 @@
 import { track } from "@/lib/analytics";
 import { OrganizationIdentity } from "./OrganizationIdentity";
+import { SpaceSwitcher } from "./SpaceSwitcher";
+import { inSelectedSpace, useSpaces } from "@/state/spaces";
 import { approvalCardOutcome } from "./ApprovalCard";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
@@ -1843,6 +1845,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
   const showThreads = useShowThreads();
   const remoteClient = window.ogb?.remoteClient?.active === true;
   const { capabilities } = useDesktopCapabilities();
+  const spaceFilter = useSpaces();
   const importReturnRef = useRef<HTMLButtonElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
   const [confirm, setConfirm] = useState<{ kind: BotConfirmKind; bot: Bot } | null>(null);
@@ -2059,6 +2062,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
 
   const matchingBots = state.bots
     .filter((b) => !b.hidden)
+    .filter((b) => inSelectedSpace(spaceFilter, spaceFilter.chosen, b.id))
     .filter(
       (b) =>
         !q ||
@@ -2398,6 +2402,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
 
       {density === "icons" && <DesktopWorkspaceSwitcher compact cloudHome={state.config?.cloudHome === true} owner={cloudOwner} />}
       <OrganizationIdentity compact={density === "icons"} />
+      {density !== "icons" && <SpaceSwitcher />}
       {/* Search */}
       <div className={cn("pt-1 pb-3", density === "icons" ? "hidden" : "px-3")}>
         <div className="flex items-center gap-2 rounded-md border border-hairline/40 bg-inset/40 px-2.5 py-1.5 focus-within:border-focus">

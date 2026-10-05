@@ -2,6 +2,7 @@
 // same shell pattern as InspectorPanel. Every section lives under
 // bot-settings/; this dialog owns only the fetches (overview, system-prompt,
 // history) and which accordion row is expanded.
+import { BotSpacePicker } from "./SpaceSwitcher";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronLeft, Search, X } from "lucide-react";
 
@@ -308,7 +309,7 @@ export function BotSettingsDialog({ bot, overlay = false }: {
       case "routines":
         return <RoutinesSection bot={bot} routines={derived.botRoutines} runs={state.routineRuns} />;
       case "access":
-        return <AccessSection bot={bot} derived={derived} />;
+        return <><AccessSection bot={bot} derived={derived} /><BotSpacePicker botId={bot.id} /></>;
       case "model":
         return <ModelSection bot={bot} />;
       case "permissions":

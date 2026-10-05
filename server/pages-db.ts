@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { DATA_DIR } from "./config.ts";
 import type { Page, PageDraft } from "../shared/pages.ts";
+import { normalizeSpaceId } from "./space-scope.ts";
 
 export const pageRevision = z.number().int().nonnegative();
 export const pageDraftSchema = z.object({
@@ -51,7 +52,7 @@ export class PagesDb {
       PRAGMA synchronous = NORMAL;
       PRAGMA foreign_keys = ON;
       CREATE TABLE IF NOT EXISTS pages (
-        id TEXT PRIMARY KEY, spaceId TEXT NOT NULL DEFAULT 'default',
+        id TEXT PRIMARY KEY, spaceId TEXT NOT NULL DEFAULT 'personal',
         parentId TEXT REFERENCES pages(id), title TEXT NOT NULL, content TEXT NOT NULL,
         revision INTEGER NOT NULL, sourceThreadId TEXT,
         createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL
@@ -76,6 +77,7 @@ export class PagesDb {
       CREATE TABLE IF NOT EXISTS page_threads (
         threadId TEXT PRIMARY KEY, pageId TEXT NOT NULL REFERENCES pages(id) ON DELETE CASCADE
       );
+      UPDATE pages SET spaceId='personal' WHERE spaceId='default';
     `);
     this.handle = db;
     return db;
@@ -89,15 +91,18 @@ export class PagesDb {
   get(id: string): Page | null {
     return this.db().prepare("SELECT * FROM pages WHERE id=?").get(id) as unknown as Page ?? null;
   }
-  list(spaceId = "default"): Page[] {
-    return this.db().prepare("SELECT * FROM pages WHERE spaceId=? ORDER BY title COLLATE NOCASE, id").all(spaceId) as unknown as Page[];
+  list(spaceId = "personal"): Page[] {
+    return this.db().prepare("SELECT * FROM pages WHERE spaceId=? ORDER BY title COLLATE NOCASE, id").all(normalizeSpaceId(spaceId)) as unknown as Page[];
   }
-  search(query: string, spaceId = "default"): Page[] {
+  countInSpace(spaceId: string): number {
+    return (this.db().prepare("SELECT COUNT(*) AS n FROM pages WHERE spaceId=?").get(normalizeSpaceId(spaceId)) as { n: number }).n;
+  }
+  search(query: string, spaceId = "personal"): Page[] {
     const terms = query.match(/[\p{L}\p{N}_]+/gu)?.slice(0, 32);
     if (!terms?.length) return [];
     const match = terms.map((word) => `"${word}"`).join(" AND ");
     return this.db().prepare(`SELECT p.* FROM pages_fts JOIN pages p ON p.rowid=pages_fts.rowid
-      WHERE pages_fts MATCH ? AND p.spaceId=? ORDER BY rank LIMIT 100`).all(match, spaceId) as unknown as Page[];
+      WHERE pages_fts MATCH ? AND p.spaceId=? ORDER BY rank LIMIT 100`).all(match, normalizeSpaceId(spaceId)) as unknown as Page[];
   }
   private current(id: string, revision: number): Page {
     const page = this.get(id);
@@ -119,7 +124,7 @@ export class PagesDb {
   }
   private insert(draft: PageDraft, sourceThreadId: string | null): Page {
     if (draft.revision !== 0) throw new PageError("stale_revision");
-    const id = randomUUID(), now = Date.now(), spaceId = draft.spaceId ?? "default", parentId = draft.parentId ?? null;
+    const id = randomUUID(), now = Date.now(), spaceId = normalizeSpaceId(draft.spaceId), parentId = draft.parentId ?? null;
     this.checkParent(parentId, spaceId);
     this.db().prepare(`INSERT INTO pages VALUES(?,?,?,?,?,1,?,?,?)`)
       .run(id, spaceId, parentId, draft.title, draft.content, sourceThreadId, now, now);
@@ -169,7 +174,7 @@ export class PagesDb {
         if (previous.botId !== botId) throw new PageError("proposal_owner_mismatch", 403);
         return previous;
       }
-      this.checkParent(draft.parentId ?? null, draft.spaceId ?? "default");
+      this.checkParent(draft.parentId ?? null, normalizeSpaceId(draft.spaceId));
       this.db().prepare("INSERT INTO page_proposals(threadId,proposalId,botId,draft) VALUES(?,?,?,?)")
         .run(threadId, proposalId, botId, JSON.stringify(draft));
       return this.proposal(threadId, proposalId)!;

@@ -12,7 +12,7 @@ describe("pages persistence", () => {
   const draft = (title = "Plan", content = "Launch checklist") => ({ revision: 0, title, content });
   it("creates, reads, updates, searches, deletes and persists", () => {
     const page = db.create(draft());
-    expect(page).toMatchObject({ spaceId: "default", parentId: null, revision: 1, sourceThreadId: null });
+    expect(page).toMatchObject({ spaceId: "personal", parentId: null, revision: 1, sourceThreadId: null });
     expect(db.list()).toHaveLength(1);
     expect(db.search("checklist")[0]?.id).toBe(page.id);
     const updated = db.update(page.id, { revision: 1, title: "Shipping", content: "Release notes" });

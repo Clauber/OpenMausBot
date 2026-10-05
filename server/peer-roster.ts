@@ -5,6 +5,7 @@
 // that drift.
 
 import { sameAudience } from "./bot-visibility.ts";
+import { spacesAllowBots } from "./space-scope.ts";
 import type { BotActivity } from "./store.ts";
 
 export interface RosterMember {
@@ -107,11 +108,14 @@ export function peerStatusWords(status: PeerStatus): string {
  * throwing mid-turn: the list is operator-owned local state, so degrading to
  * the documented default is safer than failing a turn. */
 export const peerAllowed = (
-  from: { peers?: string[]; visibility?: unknown },
+  from: { id?: string; peers?: string[]; visibility?: unknown },
   target: string | { id: string; visibility?: unknown },
 ): boolean => {
   const targetId = typeof target === "string" ? target : target.id;
   if (Array.isArray(from.peers) && !from.peers.includes(targetId)) return false;
+  // Spaces are authorization boundaries: a bot reaches into another space
+  // (mention, ask, delegate) only when that pair of spaces is allowlisted.
+  if ("id" in from && typeof from.id === "string" && !spacesAllowBots(from.id, targetId)) return false;
   // Given the record, also require the same audience: a teammate that other
   // people can see would carry this bot's words, or bring back a restricted
   // bot's answers, to people who cannot see the other (bot-visibility.ts).

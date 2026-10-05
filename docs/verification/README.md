@@ -43,6 +43,7 @@ recipe from sending messages to the user's running app by accident.
 Use only mapped, tested commands:
 
 - [Pages workspace](pages.md)
+- [Space isolation boundaries](spaces.md)
 - [Chat turns](chat-turns.md)
 - [Conversation context compaction](context-compaction.md)
 - [Work summaries and engine hooks](digests.md)

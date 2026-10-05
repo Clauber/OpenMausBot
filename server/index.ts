@@ -467,6 +467,8 @@ import { buildBotOverview, type BotOverview, connectedAppsFacts } from "./bot-ov
 import { pagesDb, PageError } from "./pages-db.ts";
 import { PageProposalService, pageContext, resolvePageResponse } from "./pages.ts";
 import { createPagesRoutes } from "./routes/pages.ts";
+import { SpaceIsolationError, SpaceRegistry, guardRequest, scopeFromHeaders, setActiveSpaces } from "./space-scope.ts";
+import { createSpacesRoutes } from "./routes/spaces.ts";
 import { ProfileRequestService } from "./profile-requests.ts";
 import { ModelRequestService } from "./model-requests.ts";
 import { TighteningRequestService } from "./tightening-requests.ts";
@@ -3495,6 +3497,18 @@ const store = new Store(
   (selection) => withNewBotEffort(selection, cfg.newBots?.effort, registry.get(selection.instanceId)?.adapter.capabilities.effortLevels),
 );
 const teamComputers = new TeamComputers(join(DATA_DIR, "team-computers.json"), ENVIRONMENT_ID);
+// Spaces (space-scope.ts): bots, computers, routines, webhooks and pages each live in one space.
+// A data directory that predates spaces migrates every existing bot and computer into the default one.
+const spaces = new SpaceRegistry(join(DATA_DIR, "spaces.json"), {
+  botOfThread: (threadId) => store.botByThread(threadId)?.id,
+  botOfRoutine: (id) => routines?.listRoutines().find((routine) => routine.id === id)?.botId,
+  botOfWebhook: (id) => webhooks.list().find((hook) => hook.id === id)?.botId,
+  externalCount: (spaceId) => pagesDb.countInSpace(spaceId),
+}, {
+  bot: store.bots.map((bot) => bot.id),
+  computer: (() => { try { return teamComputers.list().map((computer) => computer.id); } catch { return []; } })(),
+});
+setActiveSpaces(spaces);
 let followupsReady = false;
 const sendSequencer = new SendSequencer();
 bootSelection = await defaultSelection();
@@ -6369,8 +6383,11 @@ const localVmIdleMs = () => localVmIdleTimeoutMinutes(cfg) * 60_000;
 const LOCAL_VM_DESKTOP_WAIT_MS = 90_000;
 const localVmIdles = new Map<string, LocalVmIdleTimer>();
 
-function inheritedTeamComputer(bot: Pick<BotRecord, "section" | "computer" | "cloudBackend">): TeamComputerRecord | undefined {
-  return teamComputers.forBot(bot);
+function inheritedTeamComputer(bot: Pick<BotRecord, "section" | "computer" | "cloudBackend"> & { id?: string }): TeamComputerRecord | undefined {
+  const computer = teamComputers.forBot(bot);
+  // A computer in another space is not this bot's computer (space-scope.ts).
+  if (computer && bot.id && spaces && spaces.spaceOf("computer", computer.id) !== spaces.spaceOf("bot", bot.id)) return undefined;
+  return computer;
 }
 
 function teamComputerPrompt(computer: TeamComputerRecord | undefined): string {
@@ -15445,8 +15462,16 @@ const cloudMoveRoutes = createCloudMoveRoutes({
 // Route modules (server/routes/README.md). `workspaceAccess` is assigned at
 // boot, after this line, so the dependency reads it per request.
 const pageProposals = new PageProposalService(pagesDb, store);
+ROUTES.push(createSpacesRoutes({
+  registry: spaces,
+  exists: (kind, id) => kind === "bot" ? Boolean(store.bot(id))
+    : kind === "computer" ? (() => { try { return Boolean(teamComputers.get(id)); } catch { return false; } })()
+    : kind === "routine" ? Boolean(routines?.listRoutines().some((routine) => routine.id === id))
+    : kind === "webhook" ? webhooks.list().some((hook) => hook.id === id)
+    : Boolean(pagesDb.get(id)),
+}));
 ROUTES.push(createPagesRoutes({
-  db: pagesDb, store, proposals: pageProposals,
+  db: pagesDb, store, proposals: pageProposals, spaces,
   authorizeProposal(req, body) {
     const capability = authorizedInternalCapability(req.headers.authorization);
     if (!capability || !internalCapabilityIsActive(capability)) throw new PageError("unauthorized", 401);
@@ -15838,6 +15863,31 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // edit, a new or switched task) comes without its audience list or
       // the teammates they cannot see, whichever route answers.
       onJsonBody(res, (body) => memberBody(body, visible));
+    }
+    // Spaces: the one place a request's scope meets the entity it names
+    // (space-scope.ts). The owner is unrestricted; a scoped context gets 403.
+    const spaceCtx = scopeFromHeaders(req.headers);
+    try {
+      guardRequest(spaces, spaceCtx, path, url.searchParams, {
+        pageSpace: (id) => pagesDb.get(id)?.spaceId,
+        exists: (kind, id) => kind === "bot" ? Boolean(store.bot(id))
+          : kind === "thread" ? Boolean(threadOwner(id))
+          : kind === "routine" ? Boolean(routines?.listRoutines().some((routine) => routine.id === id))
+          : kind === "webhook" ? webhooks.list().some((hook) => hook.id === id)
+          : true,
+      });
+    } catch (error) {
+      if (error instanceof SpaceIsolationError) return json(res, 403, error.body());
+      throw error;
+    }
+    if (spaceCtx.kind === "space" && method === "GET" && path === "/api/bots") {
+      onJsonBody(res, (body) => {
+        if (!body || typeof body !== "object") return body;
+        const record = body as { bots?: Array<{ id: string }>; groups?: unknown[]; computerControl?: Record<string, unknown> };
+        const mine = (record.bots ?? []).filter((bot) => spaces.spaceOf("bot", bot.id) === spaceCtx.spaceId);
+        const ids = new Set(mine.map((bot) => bot.id));
+        return { ...record, bots: mine, groups: [], computerControl: Object.fromEntries(Object.entries(record.computerControl ?? {}).filter(([id]) => ids.has(id))) };
+      });
     }
     beginAdminAudit(req, res, method, path, auth);
 
@@ -16348,6 +16398,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (why === "someone-else" || why === "memory-changed") {
           return json(res, 403, { error: why === "someone-else" ? LENDING_SOMEONE_ELSE : LENDING_MEMORY_CHANGED });
         }
+        try { spaces.assertBotUsesComputer(internalCapability.botId, parsed.data.computer_id); }
+        catch (error) { if (error instanceof SpaceIsolationError) return json(res, 403, error.body()); throw error; }
         return json(res, 200, { result: await sharedComputers.request(parsed.data, principal, () => lendingEnabled() && internalCapabilityIsActive(internalCapability)) });
       }
       if (method === "GET" && path === "/api/internal/agents") {
