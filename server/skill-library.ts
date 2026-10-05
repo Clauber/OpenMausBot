@@ -152,6 +152,7 @@ export function renderSkillInstructions(
 export type LibraryReviewState = "approved" | "disabled";
 
 export interface SkillLibraryEntry {
+  kind?: "taught";
   name: string;
   description: string;
   source: string;
@@ -173,6 +174,7 @@ export interface SkillLibraryEntry {
 /** A library skill projected the way per-bot `SkillListing` reads, so
  * assignment resolution composes the two without adapters. */
 export interface LibrarySkillListing {
+  kind?: "taught";
   name: string;
   description: string;
   enabled: boolean;
@@ -188,6 +190,7 @@ export interface LibrarySkillListing {
 }
 
 const skillLibraryEntrySchema = z.object({
+  kind: z.literal("taught").optional(),
   name: z.string(),
   description: z.string(),
   source: z.string(),
@@ -284,6 +287,7 @@ function libraryContentMatches(root: string, entry: SkillLibraryEntry): boolean 
 function librarySkillListing(root: string, entry: SkillLibraryEntry): LibrarySkillListing {
   const intact = libraryContentMatches(root, entry);
   return {
+    ...(entry.kind ? { kind: entry.kind } : {}),
     name: entry.name,
     description: entry.description,
     enabled: entry.reviewState === "approved" && intact,
@@ -312,6 +316,7 @@ export function listLibrarySkills(root: string = skillsLibraryRoot()): LibrarySk
  * with different bytes is refused, mirroring the per-bot import rule.
  * Every failure returns `{ error }` — callers fall back. */
 export function installLibrarySkill(input: {
+  kind?: "taught";
   name: string;
   description?: string;
   instructions: string;
@@ -345,6 +350,7 @@ export function installLibrarySkill(input: {
   // tags parsed from the instructions are the source of record then.
   const tags = input.tags?.length ? input.tags : parsed.tags;
   const entry: SkillLibraryEntry = {
+    ...(input.kind ? { kind: input.kind } : {}),
     name: input.name,
     description: input.description?.trim() || parsed.description,
     source: input.source,

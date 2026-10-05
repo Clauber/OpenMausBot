@@ -4,6 +4,7 @@
 // Local browse only by design: no registry and no network fetch of any kind
 // (the skills.sh question, #1782, is still open upstream), so an import is
 // exactly the bytes pasted here.
+import { TaughtSkillsCard } from "./TaughtSkillsCard";
 import { Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { t } from "@/lib/i18n";
@@ -193,6 +194,9 @@ export function SkillsSection() {
 
   return (
     <div className="flex flex-col gap-4">
+      {bots.length > 0 && <><select aria-label="Playbook replay bot" className={inputClass} value={assignBot || bots[0].id} onChange={event => setAssignBot(event.target.value)}>
+        {bots.map(bot => <option key={bot.id} value={bot.id}>{bot.name}</option>)}
+      </select><TaughtSkillsCard key={assignBot || bots[0].id} botId={assignBot || bots[0].id} threadId={(bots.find(bot => bot.id === assignBot) ?? bots[0]).threadId} /></>}
       <Card title={t("skills.library.title")} subtitle={t("skills.library.subtitle")}>
         <div className="flex flex-col gap-3">
           <div className="flex items-center gap-2">

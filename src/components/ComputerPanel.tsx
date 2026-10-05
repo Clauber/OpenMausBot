@@ -1,3 +1,4 @@
+import { TeachControls } from "./TeachControls";
 import { boatCapableEngine, cloudEngineOf } from "@/lib/remote-desktop";
 import { canWorkOnCloud } from "../../shared/cloud-computer";
 // The bot's computer, in the right-side slot. Where it runs decides the
@@ -1498,6 +1499,7 @@ export function ComputerPanel({
         </div>
       ) : (
       <div className="flex-1 overflow-y-auto px-5 pb-5">
+        <TeachControls key={bot.id + bot.threadId} botId={bot.id} threadId={bot.threadId} />
           {/* Screen preview */}
           <div className="mb-1.5 mt-2 flex items-center justify-between text-[13px] text-ink-secondary">
             <span>{t("computer.screenOf", { name: bot.name })}</span>

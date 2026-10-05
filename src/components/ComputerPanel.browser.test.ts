@@ -6,7 +6,7 @@ import { browserAvailable, type FeatureFlagConfig } from "@/lib/feature-flags";
 import { t } from "@/lib/i18n";
 
 const fixture = vi.hoisted(() => {
-  vi.stubGlobal("window", {});
+  vi.stubGlobal("window", { location: { hash: "" } });
   vi.stubGlobal("document", { visibilityState: "visible" });
   const view = { current: "browser" };
   vi.stubGlobal("localStorage", { getItem: () => view.current });

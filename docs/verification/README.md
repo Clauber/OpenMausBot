@@ -245,6 +245,10 @@ The [automatic recovery fixture](automatic-recovery.md) checks opt-in, one-shot
 backup model dispatch after proven pre-prompt ACP failures, preserving the
 conversation, approval level and Stop/new-message precedence.
 
+The [taught skills fixture](taught-skills.md) records computer demos, reviews
+the standard skill approval card, and replays ordered steps against a fake MCP
+computer, including stop-on-failure and real Computer/Skills UI checks.
+
 The [skill approval lifecycle recipe](skill-approval-lifecycle.md) checks Deny,
 missing staged records and active-thread deletion in two isolated app windows,
 including the surviving conversation and sending again without deleting the bot.
