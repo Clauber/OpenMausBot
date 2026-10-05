@@ -402,11 +402,11 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   );
 }
 
-function Application() {
+function Application({ initialSession }: { initialSession?: unknown }) {
   useEffect(() => {
     initAnalytics();
   }, []);
-  const viewer = useWelcomeViewer();
+  const viewer = useWelcomeViewer(initialSession);
   return (
     <DesktopCapabilitiesProvider>
       <StoreProvider>
@@ -422,6 +422,6 @@ function Application() {
   );
 }
 
-export default function App() {
-  return <WorkspaceBackupRecovery><Application /></WorkspaceBackupRecovery>;
+export default function App({ initialSession }: { initialSession?: unknown }) {
+  return <WorkspaceBackupRecovery><Application initialSession={initialSession} /></WorkspaceBackupRecovery>;
 }

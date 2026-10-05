@@ -2752,16 +2752,16 @@ export async function loadSnapshotBoundary<Key extends string>(
   peripherals: readonly PeripheralSnapshotLoad<Key>[],
   onPeripheralFailure: (part: PeripheralSnapshotLoad<Key>, error: Error) => void,
 ): Promise<boolean> {
-  const [chat, ...settledPeripherals] = await Promise.allSettled([
-    loadChat(),
-    ...peripherals.map((part) => part.load()),
-  ]);
-  settledPeripherals.forEach((result, index) => {
-    if (result.status === "rejected") {
-      onPeripheralFailure(peripherals[index]!, normalizeSnapshotFailure(result.reason));
-    }
-  });
-  return chat.status === "fulfilled";
+  const chat = loadChat();
+  for (const part of peripherals) {
+    void part.load().catch((error) => onPeripheralFailure(part, normalizeSnapshotFailure(error)));
+  }
+  try {
+    await chat;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** The desktop shows a reply once it is finished (the turn's busy state is
@@ -3671,28 +3671,28 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       {
         key: "instances",
         request: async () => {
-          const { instances } = await api("/api/instances");
+          const { instances } = await api("/api/instances", { timeoutMs: 10_000 });
           return () => rawDispatch({ type: "instances", instances });
         },
       },
       {
         key: "config",
         request: async () => {
-          const config = await api("/api/config");
+          const config = await api("/api/config", { timeoutMs: 10_000 });
           return () => rawDispatch({ type: "configStatus", config });
         },
       },
       {
         key: "routines",
         request: async () => {
-          const { routines, runs } = await api("/api/routines");
+          const { routines, runs } = await api("/api/routines", { timeoutMs: 10_000 });
           return () => rawDispatch({ type: "routinesHydrated", routines, runs });
         },
       },
       ...(window.ogb?.remoteClient?.active ? [] : [{
         key: "webhooks",
         request: async () => {
-          const { webhooks, attempts, ingress } = await api("/api/webhooks");
+          const { webhooks, attempts, ingress } = await api("/api/webhooks", { timeoutMs: 10_000 });
           return () =>
             rawDispatch({ type: "webhooksHydrated", webhooks, attempts: attempts ?? [], ingress });
         },
@@ -3775,7 +3775,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         });
       const peripherals = peripheralParts.map((part) => ({
         key: part.key,
-        load: () => loadPeripheral(part, false),
+        load: () => loadPeripheral(part, true),
       }));
       const chatReady = await loadSnapshotBoundary(chat, peripherals, (failed, error) => {
         const part = partByKey.get(failed.key);

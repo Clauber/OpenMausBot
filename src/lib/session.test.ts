@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  BROWSER_SIGN_IN_FAILED, cloudOwnerOf, isConnected, isOwnerOrAdmin, previewBrowserSignIn, readSessionState, reasonWorthShowing, SERVICE_TRUST_REASON, signInWithBrowserGrant,
+  BROWSER_SIGN_IN_FAILED, cloudOwnerOf, isConnected, isOwnerOrAdmin, previewBrowserSignIn, readSessionBootstrap, readSessionState, reasonWorthShowing, SERVICE_TRUST_REASON, signInWithBrowserGrant,
   takeBrowserSignInFromLocation, takeInvitedEmailFromLocation, takePairingCodeFromLocation,
 } from "./session";
 
@@ -114,5 +114,33 @@ describe("an SSH tunnel to a server that treats local requests as a service", ()
     expect(isConnected({ kind: "unauthenticated", error: "pair" })).toBe(false);
     expect(isConnected(null)).toBe(false);
     expect(reasonWorthShowing(SERVICE_TRUST_REASON)).toBe(SERVICE_TRUST_REASON);
+  });
+});
+
+
+describe("auth startup deadlines", () => {
+  it.each(["session", "preview", "body"])("bounds a stalled %s even when fetch ignores abort", async (kind) => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    const stalled = vi.fn((_path: unknown, init?: RequestInit) => {
+      signal = init?.signal ?? undefined;
+      return kind === "body" ? Promise.resolve({ json: () => new Promise(() => {}) }) : new Promise(() => {});
+    }) as unknown as typeof fetch;
+    try {
+      const pending = kind === "preview" ? previewBrowserSignIn("credential", stalled) : readSessionState(stalled);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(signal?.aborted).toBe(true);
+      expect(await pending).toEqual(kind === "preview" ? null : { kind: "unreachable", error: "The server took too long to respond." });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps onboarding metadata from the same successful session request", async () => {
+    const body = { kind: "loopback", hosted: true, cloudHome: true, scopes: ["admin"] };
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify(body)));
+    expect(await readSessionBootstrap(fetchImpl)).toEqual({ session: { kind: "loopback" }, body });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });

@@ -735,6 +735,66 @@ class SnapshotEventSource implements LiveEventSourceLike {
 }
 
 describe("replacement snapshot boundary", () => {
+  it("commits the cursor and delivers live frames while an optional peripheral never settles", async () => {
+    const sources: SnapshotEventSource[] = [];
+    const applied: unknown[] = [];
+    const pending: unknown[] = [];
+    const scheduleRetry = vi.fn();
+    let hydrated = false;
+    let completeChat!: () => void;
+    const chat = new Promise<void>((resolve) => { completeChat = resolve; });
+    const stop = openLiveEvents({
+      onSnapshotRequired: async () => {
+        const ready = await loadSnapshotBoundary(() => chat, [
+          { key: "config", load: () => new Promise<void>(() => {}) },
+        ], scheduleRetry);
+        if (ready) {
+          hydrated = true;
+          applied.push(...pending.splice(0));
+        }
+        return ready;
+      },
+      onFrame: (frame) => { (hydrated ? applied : pending).push(frame); },
+      retryMinMs: 1,
+      retryMaxMs: 1,
+    }, {
+      createEventSource: (url) => {
+        const source = new SnapshotEventSource(url);
+        sources.push(source);
+        return source;
+      },
+      isOnline: () => true,
+      isVisible: () => true,
+      now: Date.now,
+    });
+    try {
+      sources[0]!.message({ kind: "hello", resumed: false, cursor: "stream00:4" });
+      sources[0]!.message({ kind: "message", threadId: "thread", message: { id: "buffered" } }, "stream00:5");
+      expect(applied).toHaveLength(0);
+      completeChat();
+      await vi.waitFor(() => expect(applied).toHaveLength(1));
+      sources[0]!.message({ kind: "message", threadId: "thread", message: { id: "live" } }, "stream00:6");
+      expect(applied).toHaveLength(2);
+      sources[0]!.onerror?.();
+      await vi.waitFor(() => expect(sources).toHaveLength(2));
+      expect(sources[1]!.url).toContain("since=stream00%3A6");
+      expect(scheduleRetry).not.toHaveBeenCalled();
+    } finally {
+      stop();
+    }
+  });
+
+  it("leaves the boundary uncommitted when chat fails and reports late peripheral failures", async () => {
+    let failPeripheral!: (error: Error) => void;
+    const retry = vi.fn();
+    const optional = new Promise<void>((_, reject) => { failPeripheral = reject; });
+    expect(await loadSnapshotBoundary(async () => { throw new Error("chat failed"); }, [
+      { key: "routines", load: () => optional },
+    ], retry)).toBe(false);
+    failPeripheral(new Error("late failure"));
+    await vi.waitFor(() => expect(retry).toHaveBeenCalledWith(expect.objectContaining({ key: "routines" }), expect.any(Error)));
+  });
+
   it("flushes bot frames without reconnecting when a peripheral snapshot fails", async () => {
     const sources: SnapshotEventSource[] = [];
     const applied: unknown[] = [];

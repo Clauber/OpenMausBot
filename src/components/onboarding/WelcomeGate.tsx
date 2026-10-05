@@ -25,11 +25,11 @@ export function localDesktopPage(): boolean {
 /** Null while the answer is on its way. The desktop app's own page knows at
  * once: its own server's owner, or a remote client, which never gets a
  * first-run surface anyway. A failed answer keeps the old behaviour. */
-export function useWelcomeViewer(): WelcomeViewer | null {
+export function useWelcomeViewer(initialSession?: unknown): WelcomeViewer | null {
   const local = localDesktopPage();
-  const [viewer, setViewer] = useState<WelcomeViewer | null>(local ? LOCAL_VIEWER : null);
+  const [viewer, setViewer] = useState<WelcomeViewer | null>(local ? LOCAL_VIEWER : initialSession === undefined ? null : welcomeViewer(initialSession));
   useEffect(() => {
-    if (local) return;
+    if (local || initialSession !== undefined) return;
     let active = true;
     void api("/api/auth/session", { timeoutMs: 10_000 })
       .then((session) => {
@@ -41,7 +41,7 @@ export function useWelcomeViewer(): WelcomeViewer | null {
     return () => {
       active = false;
     };
-  }, [local]);
+  }, [local, initialSession]);
   return viewer;
 }
 
