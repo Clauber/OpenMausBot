@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { ProviderInstance, RuntimeEvent } from "../contracts.ts";
 import { recordEvents, type EventRecorder } from "../testing/events.ts";
-import { ZcodeDriver, zcodeAllowOption, zcodeCatalogFromSnapshot, zcodeMcpServerParam, zcodeModelId, zcodeParseModelId, zcodePermissionMode, zcodeRequestSummary, zcodeWorkspaceRef } from "./zcode.ts";
+import { ZcodeDriver, zcodeAllowOption, zcodeCatalogFromSnapshot, zcodeConfigModels, zcodeMergePersonalConfigs, zcodeMcpServerParam, zcodeModelId, zcodeParseModelId, zcodePermissionMode, zcodeRequestSummary, zcodeWorkspaceRef } from "./zcode.ts";
 import { removeTempDir } from "../testing/cleanup.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-zcode-app-server.ts");
@@ -51,10 +51,50 @@ describe("ZcodeDriver config and pure helpers", () => {
     expect(zcodeModelId({ providerId: "", modelId: "glm-5" })).toBeNull();
     expect(zcodeParseModelId("zai/glm-5")).toEqual({ providerId: "zai", modelId: "glm-5" });
     expect(zcodeParseModelId("zai/glm-5$max")).toEqual({ providerId: "zai", modelId: "glm-5", options: { reasoningLevel: "max" } });
+    // Personal model ids may carry their own slashes; the provider ends at
+    // the first slash.
+    expect(zcodeParseModelId("prov/kiro/claude-opus-5")).toEqual({ providerId: "prov", modelId: "kiro/claude-opus-5" });
     expect(zcodeParseModelId("agent-default")).toBeNull();
     expect(zcodeParseModelId("no-slash")).toBeNull();
-    expect(zcodeParseModelId("a/b/c")).toBeNull();
     expect(zcodeParseModelId("zai/glm-5$")).toBeNull();
+  });
+
+  it("merges every personal provider config into one candidate set", () => {
+    const merged = zcodeMergePersonalConfigs([
+      {
+        config: {
+          providerOrder: ["zai-fake", "deepseek"],
+          providerConfigRules: { providerRules: [
+            { providerId: "zai-fake", providerName: "Z.AI Fake", config: { personalModelIds: ["glm-5"], modelOrder: ["glm-5"] } },
+          ] },
+          modelConfigRules: { providerModelRules: [
+            { providerId: "zai-fake", modelId: "glm-5", config: { properties: { contextWindow: 200000 } } },
+          ] },
+        },
+      },
+      {
+        config: {
+          providerOrder: ["deepseek", "zai-fake"],
+          providerConfigRules: { providerRules: [
+            { providerId: "deepseek", providerName: "DeepSeek", enabled: true, config: { personalModelIds: ["deepseek-chat"] } },
+            { providerId: "zai-fake", providerName: "Duplicate ignored", config: { personalModelIds: ["other"] } },
+          ] },
+          modelConfigRules: { providerModelRules: [] },
+        },
+      },
+    ]);
+    expect(zcodeConfigModels(merged!)).toEqual([
+      { providerId: "zai-fake", providerName: "Z.AI Fake", modelId: "glm-5", contextWindow: 200000 },
+      { providerId: "deepseek", providerName: "DeepSeek", modelId: "deepseek-chat" },
+    ]);
+    // A disabled provider offers nothing.
+    const disabled = zcodeMergePersonalConfigs([{
+      config: { providerConfigRules: { providerRules: [
+        { providerId: "off", providerName: "Off", enabled: false, config: { personalModelIds: ["m"] } },
+      ] }, modelConfigRules: { providerModelRules: [] } },
+    }]);
+    expect(zcodeConfigModels(disabled!)).toEqual([]);
+    expect(zcodeMergePersonalConfigs([])).toBeNull();
   });
 
   it("builds the catalog from a snapshot's settings state, current selection first", () => {

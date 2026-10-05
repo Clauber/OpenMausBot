@@ -26,11 +26,11 @@
 // machine-readable sign-in status, so the snapshot infers auth from the
 // credential files `zcode login` writes.
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { stripWorkspaceCredentialEnv } from "../config.ts";
+import { DATA_DIR, stripWorkspaceCredentialEnv } from "../config.ts";
 import { augmentedPath } from "../env-path.ts";
 import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
 import { isHarnessOwnedMcpEnvName } from "../mcp-registry.ts";
@@ -122,7 +122,9 @@ export function zcodeModelId(
 }
 
 /** Reverse of zcodeModelId for a turn's model choice. Null when the id is
- * not a provider-qualified selection (never silently mapped to a model). */
+ * not a provider-qualified selection (never silently mapped to a model).
+ * The provider id ends at the FIRST slash — personal model ids may carry
+ * their own slashes (AvelloCC's "kiro/claude-opus-5"). */
 export function zcodeParseModelId(id: string): {
   providerId: string;
   modelId: string;
@@ -136,12 +138,170 @@ export function zcodeParseModelId(id: string): {
   if (slash <= 0 || slash === base.length - 1) return null;
   const providerId = base.slice(0, slash);
   const modelId = base.slice(slash + 1);
-  if (modelId.includes("/")) return null;
   return {
     providerId,
     modelId,
     ...(level ? { options: { reasoningLevel: level } } : {}),
   };
+}
+
+// ── personal provider config ───────────────────────────────────────────
+// The engine's registry = its builtin providers + ONE personal provider
+// config: the ZCODE_PERSONAL_PROVIDER_CONFIG_FILE env path, else
+// `<dataBase>/.zcode/v2/provider_config.json` (provider-runtime-env.ts) —
+// and Clauber's headless wrapper overrides that env with its own file.
+// Only the current model ever crosses the protocol wire, so the catalog's
+// custom models come from these files: the driver merges every config it
+// can find into one file under its own data dir and points its children
+// at it, so all of the person's providers exist in the child registry.
+
+export interface ZcodePersonalProviderConfig {
+  schemaVersion?: unknown;
+  config?: {
+    providerOrder?: unknown;
+    providerConfigRules?: { providerRules?: Array<{
+      providerId?: unknown;
+      providerName?: unknown;
+      enabled?: unknown;
+      config?: { personalModelIds?: unknown; modelOrder?: unknown };
+    }> };
+    modelConfigRules?: {
+      providerModelRules?: Array<{
+        providerId?: unknown;
+        modelId?: unknown;
+        config?: { properties?: { contextWindow?: unknown } };
+      }>;
+      manualProviderModelRules?: Array<{ providerId?: unknown; modelId?: unknown }>;
+    };
+  };
+}
+
+/** Where a personal provider config may live, most specific first: the
+ * env override, then the CLI's v2 default, then the headless wrapper's
+ * file. Only existing paths are returned. */
+export function zcodePersonalConfigCandidates(
+  env: Record<string, string | undefined>,
+  home: string,
+): string[] {
+  const dataBase = env.ZCODE_DATA_BASE_DIR?.trim() || home;
+  const candidates = [
+    env.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE?.trim(),
+    join(dataBase, ".zcode", "v2", "provider_config.json"),
+    join(home, ".zcode", "headless", "provider_config.json"),
+  ].filter((p): p is string => Boolean(p && p.trim()));
+  return [...new Set(candidates)].filter((p) => existsSync(p));
+}
+
+function readPersonalConfig(path: string): ZcodePersonalProviderConfig | null {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    if (parsed && typeof parsed === "object" && (parsed as ZcodePersonalProviderConfig).config) return parsed;
+  } catch { /* an unreadable config is skipped, never fatal */ }
+  return null;
+}
+
+/** Merge personal configs into one document: provider rules and model
+ * rules concatenate with first-file-wins dedupe by id; the first file's
+ * providerOrder is kept and later providers append. */
+export function zcodeMergePersonalConfigs(docs: ZcodePersonalProviderConfig[]): ZcodePersonalProviderConfig | null {
+  const rules: NonNullable<NonNullable<ZcodePersonalProviderConfig["config"]>["providerConfigRules"]>["providerRules"] = [];
+  const seenProviders = new Set<string>();
+  const modelRules: NonNullable<NonNullable<ZcodePersonalProviderConfig["config"]>["modelConfigRules"]>["providerModelRules"] = [];
+  const manualModelRules: NonNullable<NonNullable<ZcodePersonalProviderConfig["config"]>["modelConfigRules"]>["manualProviderModelRules"] = [];
+  const seenModels = new Set<string>();
+  const providerOrder: string[] = [];
+  let schemaVersion: unknown = 1;
+  for (const doc of docs) {
+    if (doc.schemaVersion !== undefined) schemaVersion = doc.schemaVersion;
+    const config = doc.config ?? {};
+    if (Array.isArray(config.providerOrder)) {
+      for (const id of config.providerOrder) {
+        if (typeof id === "string" && !providerOrder.includes(id)) providerOrder.push(id);
+      }
+    }
+    for (const rule of config.providerConfigRules?.providerRules ?? []) {
+      const id = typeof rule?.providerId === "string" ? rule.providerId : null;
+      if (!id || seenProviders.has(id)) continue;
+      seenProviders.add(id);
+      rules.push(rule);
+    }
+    for (const rule of config.modelConfigRules?.providerModelRules ?? []) {
+      const key = `${String(rule?.providerId)}\u0000${String(rule?.modelId)}`;
+      if (!rule || seenModels.has(key)) continue;
+      seenModels.add(key);
+      modelRules.push(rule);
+    }
+    for (const rule of config.modelConfigRules?.manualProviderModelRules ?? []) {
+      const key = `manual\u0000${String(rule?.providerId)}\u0000${String(rule?.modelId)}`;
+      if (!rule || seenModels.has(key)) continue;
+      seenModels.add(key);
+      manualModelRules.push(rule);
+    }
+  }
+  if (!rules.length) return null;
+  return {
+    schemaVersion,
+    config: {
+      providerOrder,
+      providerConfigRules: { providerRules: rules },
+      // The CLI's on-disk schema is strict: manualProviderModelRules is
+      // required alongside providerModelRules, and a missing key rejects
+      // the whole file.
+      modelConfigRules: { providerModelRules: modelRules, manualProviderModelRules: manualModelRules },
+    },
+  };
+}
+
+/** Every selectable model a merged personal config declares, in
+ * providerOrder then modelOrder: the catalog's candidate list. */
+export function zcodeConfigModels(merged: ZcodePersonalProviderConfig): Array<{
+  providerId: string;
+  providerName: string;
+  modelId: string;
+  contextWindow?: number;
+}> {
+  const config = merged.config ?? {};
+  const rulesById = new Map<string, { name: string; enabled: boolean; modelIds: string[] }>();
+  for (const rule of config.providerConfigRules?.providerRules ?? []) {
+    const id = typeof rule?.providerId === "string" ? rule.providerId : null;
+    if (!id) continue;
+    const personal = Array.isArray(rule.config?.personalModelIds)
+      ? rule.config.personalModelIds.filter((m): m is string => typeof m === "string")
+      : [];
+    const ordered = Array.isArray(rule.config?.modelOrder)
+      ? rule.config.modelOrder.filter((m): m is string => typeof m === "string")
+      : [];
+    rulesById.set(id, {
+      name: typeof rule.providerName === "string" && rule.providerName ? rule.providerName : id,
+      enabled: rule.enabled !== false,
+      modelIds: [...new Set([...ordered, ...personal])],
+    });
+  }
+  const contextByModel = new Map<string, number>();
+  for (const rule of config.modelConfigRules?.providerModelRules ?? []) {
+    if (typeof rule?.providerId !== "string" || typeof rule?.modelId !== "string") continue;
+    const window = rule.config?.properties?.contextWindow;
+    if (typeof window === "number" && window > 0) contextByModel.set(`${rule.providerId}\u0000${rule.modelId}`, window);
+  }
+  const order = [...(Array.isArray(config.providerOrder) ? config.providerOrder : []).filter((id): id is string => typeof id === "string"), ...rulesById.keys()];
+  const rows: Array<{ providerId: string; providerName: string; modelId: string; contextWindow?: number }> = [];
+  const seen = new Set<string>();
+  for (const providerId of order) {
+    const provider = rulesById.get(providerId);
+    if (!provider || !provider.enabled) continue;
+    for (const modelId of provider.modelIds) {
+      const key = `${providerId}\u0000${modelId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push({
+        providerId,
+        providerName: provider.name,
+        modelId,
+        ...(contextByModel.has(key) ? { contextWindow: contextByModel.get(key) } : {}),
+      });
+    }
+  }
+  return rows;
 }
 
 /** Model rows from a snapshot's settings state. The wire serves only the
@@ -255,6 +415,24 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
 
   async create(input: DriverCreateInput<ZcodeConfig>): Promise<ProviderInstance> {
     const { instanceId, config } = input;
+    // Merge every personal provider config this machine has into one file
+    // under the harness's data dir, and point the driver's children at it:
+    // the merged set — the person's own providers plus any wrapper-injected
+    // ones — is what the catalog advertises and what setModel can reach.
+    let personalConfigPath: string | null = null;
+    try {
+      const docs = zcodePersonalConfigCandidates(process.env, homedir())
+        .map(readPersonalConfig)
+        .filter((doc): doc is ZcodePersonalProviderConfig => doc !== null);
+      const merged = zcodeMergePersonalConfigs(docs);
+      if (merged) {
+        const directory = join(DATA_DIR, "providers", "zcode", createHash("sha256").update(instanceId).digest("hex"));
+        mkdirSync(directory, { recursive: true, mode: 0o700 });
+        personalConfigPath = join(directory, "provider_config.json");
+        writeFileSync(personalConfigPath, JSON.stringify(merged, null, 2), { mode: 0o600 });
+      }
+    } catch { // a broken config layout must not shadow the instance; children keep their default resolution
+    }
     const childEnv = (): Record<string, string | undefined> => {
       const env: Record<string, string | undefined> = {
         ...process.env,
@@ -264,6 +442,7 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
       // The harness process may hold workspace credentials; none of them are
       // this CLI's to see.
       stripWorkspaceCredentialEnv(env);
+      if (personalConfigPath) env.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE = personalConfigPath;
       return env;
     };
     const listeners = new Set<RuntimeEventListener>();
@@ -379,8 +558,56 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
         if (!sessionId) throw new Error("zcode did not return a session id");
         const subscribed = await request("session/subscribe", { sessionId, deliveryKind: "desktop-continuous", includeSnapshot: true });
         const catalog = zcodeCatalogFromSnapshot(subscribed?.snapshot?.settings ?? {});
+        // The snapshot serves only the current model; the person's other
+        // providers come from the merged personal config. Each candidate is
+        // validated against the child's own registry with setModel — the
+        // error taxonomy cleanly separates not-a-model from
+        // needs-a-reasoning-level — and the winning level is baked into the
+        // catalog id, since the object form of setModel rejects a missing
+        // level outright.
+        const rows: NonNullable<ModelCatalog["options"]> = [...catalog.options];
+        const currentId = catalog.default;
+        // One row per provider/model pair: the snapshot's current selection
+        // (with its own default level) wins over a ladder-discovered twin.
+        const seenBaseIds = new Set(rows.map((row) => row.id.replace(/\$[^$]*$/, "")));
+        const candidates = personalConfigPath
+          ? zcodeConfigModels(readPersonalConfig(personalConfigPath) ?? {})
+          : [];
+        const budget = Date.now() + 90_000;
+        for (const candidate of candidates) {
+          if (rows.length >= 200 || Date.now() > budget) break;
+          const baseId = zcodeModelId({ providerId: candidate.providerId, modelId: candidate.modelId });
+          if (!baseId || seenBaseIds.has(baseId)) continue;
+          let accepted: { level?: string } | null = null;
+          for (const attempt of [undefined, "high", "low", "medium", "max"] as const) {
+            try {
+              await request("session/setModel", {
+                sessionId,
+                model: { providerId: candidate.providerId, modelId: candidate.modelId, ...(attempt ? { options: { reasoningLevel: attempt } } : {}) },
+                persistAsWorkspaceLastUsed: false,
+              }, 6_000);
+              accepted = { level: attempt };
+              break;
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              if (/不存在|not exist/i.test(message)) break; // not this registry's model — skip for good
+              if (!/reasoning/i.test(message)) break; // a model that fails for another reason is not offered
+              // reasoning-level-missing / -not-supported: try the next rung
+            }
+          }
+          if (!accepted) continue;
+          const id = zcodeModelId({ providerId: candidate.providerId, modelId: candidate.modelId }, accepted.level);
+          if (!id || seenBaseIds.has(id.replace(/\$[^$]*$/, ""))) continue;
+          seenBaseIds.add(id.replace(/\$[^$]*$/, ""));
+          rows.push({
+            id,
+            label: candidate.modelId,
+            provider: candidate.providerName,
+            ...(candidate.contextWindow ? { contextWindow: candidate.contextWindow } : {}),
+          });
+        }
         await request("session/close", { sessionId }).catch(() => {});
-        return catalog;
+        return { default: currentId, options: rows };
       } finally {
         done();
       }
@@ -392,8 +619,10 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
         const discovered = await discoverCatalog();
         if (disposed) return;
         if (discovered.options.length) models = discovered;
-      } catch {
-        // Keep the last usable catalog (or the passthrough fallback).
+      } catch (error) {
+        // Keep the last usable catalog (or the passthrough fallback), but
+        // say why — a silent fallback looks like a broken engine.
+        console.error("zcode: model catalog probe failed:", error instanceof Error ? error.message : error);
       }
     };
     void refreshModels().catch(() => {});
