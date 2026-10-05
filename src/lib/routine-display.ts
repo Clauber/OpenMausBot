@@ -28,12 +28,13 @@ export function routineDateTime(at: number): string {
 }
 
 export function routineScheduleState(routine: Routine): string {
+  if (routine.github) return routine.enabled ? "Listening for GitHub" : t("routines.pausedSchedule");
   // A consumed one-shot has no next date. It is not a paused recurring schedule.
   if (routine.schedule.type === "once" && routine.nextRunAt == null && routine.schedule.at <= Date.now()) return t("routines.finishedSchedule");
   return routine.enabled ? t("routines.activeSchedule") : t("routines.pausedSchedule");
 }
 
 export function routineNextLabel(routine: Routine): string {
-  if (!routine.enabled) return routineScheduleState(routine);
+  if (!routine.enabled || routine.github) return routineScheduleState(routine);
   return routine.nextRunAt == null ? t("routines.noNextRun") : t("routines.nextRun", { time: routineDateTime(routine.nextRunAt) });
 }

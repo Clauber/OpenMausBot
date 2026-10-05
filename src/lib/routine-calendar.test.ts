@@ -19,6 +19,17 @@ import {
   toLocalTimeInput,
 } from "./routine-calendar";
 
+it("projects GitHub run receipts without inventing occurrences of its dormant schedule", () => {
+  const routine: Routine = {
+    id: "github", name: "GitHub review", prompt: "Review event", target: "bot", botId: "fixture", runOn: "maus", enabled: true,
+    schedule: { type: "interval", everyMinutes: 5, anchorAt: 0 }, github: { repo: "owner/name", events: ["push"] },
+    durationMinutes: 30, nextRunAt: null, createdAt: 0, updatedAt: 0,
+  };
+  expect(projectedRoutineItems([routine], [], 0, 3_600_000)).toEqual([]);
+  const run: RoutineRun = { id: "run", routineId: routine.id, routineName: routine.name, target: "bot", botId: "fixture", runOn: "maus", scheduledFor: 1000, createdAt: 1000, status: "completed", manual: false, triggerSource: "webhook" };
+  expect(projectedRoutineItems([routine], [run], 0, 3_600_000)).toMatchObject([{ run: { id: "run" } }]);
+});
+
 describe("routine editor timestamp precision", () => {
   it("uses the next cadence point as an edited interval's end-date floor", () => {
     const now = new Date(2026, 8, 9, 23, 59).getTime();

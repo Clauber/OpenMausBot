@@ -13,6 +13,20 @@
 - Vite merges configured proxy keys in order; an inherited `/api` proxy can
   swallow a more specific updater fixture proxy. Use an explicit preview config
   and assert the installed version through the actual Settings panel.
+## LEGION-17: GitHub routine deliveries
+
+- Verify HMAC over raw bytes before decoding or parsing. A merged PR is a
+  `pull_request` payload with `action: closed` and `merged: true`.
+- Routine webhook runs should use the definition's normal run constructor
+  to retain its results destination and execution settings. Commit the
+  delivery receipt with the run and restore both on a failed save.
+- A GitHub trigger keeps its saved schedule dormant. Exclude that schedule
+  from dispatch and calendar projections; a null next-run date means it is
+  listening, including when the dormant schedule is a past one-shot.
+- Exercise the real editor's save and reopen sequence. Saving closes its
+  details drawer, and long forms need scrolling above the sticky footer
+  before clicking event checkboxes in the headless fixture.
+
 
 ## LEGION-9: approval gates
 

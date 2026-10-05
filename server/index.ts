@@ -512,6 +512,7 @@ import { connectorAccessDecision, describeConnectorScopes, normalizeConnectorSco
 import { bindThreadLogCapProvider } from "./thread-log-rotation.ts";
 import { listenWebhookIngress, webhookCredential, type WebhookIngress } from "./webhook-ingress.ts";
 import { assertModelVariantSupported, memberTurnSelection } from "./member-turn.ts";
+import { createGithubIngress } from "./github-webhook.ts";
 import { WebhookManager } from "./webhooks.ts";
 import type { WebhookTrigger } from "../shared/webhooks.ts";
 import { SPAWNED_PROXIES } from "./proxy-paths.ts";
@@ -12244,6 +12245,7 @@ try {
     port: WEBHOOK_PORT, publicBaseUrl: WEBHOOK_PUBLIC_URL,
     claimRequest: () => workspaceMaintenance.request(),
     telegram,
+    github: createGithubIngress(routines!, webhooks),
   });
   const advertised = WEBHOOK_PUBLIC_URL ? ` (advertised as ${webhookIngress.baseUrl})` : "";
   console.log(`openmausbot webhook receiver on http://${webhookIngress.host}:${webhookIngress.port}${advertised}`);
@@ -19352,7 +19354,7 @@ const handleRequestInScope = async (req: IncomingMessage, res: ServerResponse) =
     // relay never has to expose the rest of OpenMausBot's control surface.
     if (path === "/api/webhooks" && method === "GET") {
       const shownHooks = webhooks.list().filter((webhook) => visible.bot(webhook.botId));
-      const shownIds = new Set(shownHooks.map((webhook) => webhook.id));
+      const shownIds = new Set([...shownHooks.map((webhook) => webhook.id), ...routines!.listRoutines().filter(routine => routineVisible(routine, visible) && routine.github).map(routine => routine.id)]);
       return json(res, 200, { webhooks: shownHooks, attempts: webhooks.listAttempts().filter((attempt) => visible.everything || shownIds.has(attempt.webhookId)), ingress: webhookIngressStatus() });
     }
     if (path === "/api/webhooks" && method === "POST") {

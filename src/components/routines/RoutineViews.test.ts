@@ -12,6 +12,14 @@ const routine: Routine = {
 };
 const run: RoutineRun = { id: "run", routineId: routine.id, routineName: routine.name, target: "bot", botId: routine.botId, runOn: "maus", scheduledFor: 100, createdAt: 100, status: "completed", manual: false, output: "Brief prepared." };
 
+it("labels GitHub routines as listening, including dormant one-shot schedules", () => {
+  const github = { ...routine, github: { repo: "owner/name", events: ["push"] }, schedule: { type: "once" as const, at: 1 }, nextRunAt: null };
+  expect(routineNextLabel(github)).toBe("Listening for GitHub");
+  const markup = list({ routines: [github] });
+  expect(markup).toContain("GitHub · owner/name · push");
+  expect(markup).not.toContain("Finished schedule");
+});
+
 function list(props: Partial<Parameters<typeof RoutineList>[0]> = {}) {
   return renderToStaticMarkup(createElement(RoutineList, { routines: [routine], runs: [run], onOpen: vi.fn(), onLogs: vi.fn(), ...props }));
 }

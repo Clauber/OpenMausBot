@@ -84,6 +84,18 @@ export function isRoutineProblemRun(run: { status: RoutineRunStatus }): boolean 
  * indicators count, or one exact status. */
 export type RoutineRunStatusFilter = "all" | "problems" | RoutineRunStatus;
 
+export interface GithubRoutineTrigger {
+  repo: string;
+  events: string[];
+  /** Applies to events with an action; merged matches closed PRs with merged=true. */
+  actions?: string[];
+}
+
+export interface GithubRoutineTriggerInput extends GithubRoutineTrigger {
+  /** Required at creation. Omission on update preserves the private secret. */
+  secret?: string;
+}
+
 export interface Routine {
   id: string;
   name: string;
@@ -94,6 +106,8 @@ export interface Routine {
   runOn: RoutineRunOn;
   enabled: boolean;
   schedule: RoutineSchedule;
+  /** When set, GitHub deliveries replace timer dispatch. */
+  github?: GithubRoutineTrigger;
   durationMinutes: number;
   /** Optional wall-clock safety limit. Missing means the run is unlimited. */
   timeoutMinutes?: number;
@@ -154,6 +168,8 @@ export interface RoutineInput {
   runOn?: RoutineRunOn;
   enabled?: boolean;
   schedule: RoutineScheduleInput;
+  /** null switches back to the saved schedule. */
+  github?: GithubRoutineTriggerInput | null;
   durationMinutes?: number;
   /** `null` explicitly removes the limit; omission preserves it on updates. */
   timeoutMinutes?: number | null;

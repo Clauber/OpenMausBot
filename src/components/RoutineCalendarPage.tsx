@@ -47,6 +47,8 @@ import { CalendarSidebar } from "@/components/routines/CalendarSidebar";
 import { RoutineList } from "@/components/routines/RoutineList";
 import { RoutineLogs } from "@/components/routines/RoutineLogs";
 import { ResultsDestination } from "@/components/routines/ResultsDestination";
+import { GithubSecretSetup, GithubTriggerFields, newGithubSecret } from "@/components/routines/GithubTriggerFields";
+import type { GithubRoutineTriggerInput } from "../../shared/routines";
 import { CronScheduleFields, CronSchedulePreview } from "@/components/routines/CronScheduleFields";
 import { cronChoiceFor, cronDraftFor, cronEditorValue, isCronChoice, type CronChoice } from "@/components/routines/cron-editor";
 import { routineRunLabel, routineRunTime, routineScheduleState } from "@/lib/routine-display";
@@ -350,7 +352,9 @@ export function EventEditor({
 }) {
   const { state, dispatch } = useStore();
   const existingRoutine = seed.routine;
-  const { request: editorRequest } = useBotEditor();
+  const [github, setGithub] = useState<GithubRoutineTriggerInput | null>(existingRoutine?.github ?? null);
+  const [githubSetup, setGithubSetup] = useState<{ id: string; secret: string } | null>(null);
+  const { request: editorRequest, draft: botDraft } = useBotEditor();
   const existingCall = seed.call;
   const [kind, setKind] = useState<EventKind>(routinesOnly ? "routine" : seed.kind);
   const [editorOpenedAt] = useState(() => Date.now());
@@ -524,10 +528,10 @@ export function EventEditor({
       if (kind === "routine" || routinesOnly) {
         const savedAt = Date.now();
         const intervalAnchorAt = intervalAnchorForSave(savedAt, intervalMinutes, existingIntervalSchedule);
-        if (recurrence === "interval" && intervalEndsAt != null && intervalEndsAt < nextIntervalForSave(savedAt, intervalMinutes, existingIntervalSchedule)) {
+        if (!github && recurrence === "interval" && intervalEndsAt != null && intervalEndsAt < nextIntervalForSave(savedAt, intervalMinutes, existingIntervalSchedule)) {
           throw new Error("Choose an end date after the first run.");
         }
-        const nextSchedule = isCronChoice(recurrence) ? cron?.schedule : makeRoutineSchedule(recurrence, at, weekdays, intervalMinutes, {
+        const nextSchedule = github ? existingRoutine?.schedule ?? { type: "once" as const, at: savedAt } : isCronChoice(recurrence) ? cron?.schedule : makeRoutineSchedule(recurrence, at, weekdays, intervalMinutes, {
           anchorAt: intervalAnchorAt,
           weekdays: selectedIntervalWeekdays ? [...selectedIntervalWeekdays].sort() : null,
           window: selectedIntervalWindow ?? null,
@@ -543,6 +547,7 @@ export function EventEditor({
           runOn: routineTarget === "room-goal" ? "maus" : runOn,
           enabled: existingRoutine ? undefined : true,
           schedule: nextSchedule,
+          github,
           durationMinutes,
           timeoutMinutes,
           overlap,
@@ -554,6 +559,10 @@ export function EventEditor({
           body: JSON.stringify(input),
         });
         dispatch({ type: "routinePatched", routine: response.routine });
+        if (github?.secret) {
+          setGithubSetup({ id: response.routine.id, secret: github.secret });
+          return;
+        }
       } else {
         if (recurrence === "interval" || isCronChoice(recurrence)) throw new Error("Choose a supported call schedule.");
         const nextSchedule = makeCalendarSchedule(recurrence, at, weekdays);
@@ -588,11 +597,7 @@ export function EventEditor({
       : routineTarget === "room-goal"
         ? groupId && botIds[0] && roomMembers.some((bot) => bot.id === botIds[0])
         : botIds.length > 0)
-    && !intervalInvalid
-    && !intervalDaysInvalid
-    && !intervalWindowInvalid
-    && !intervalEndInvalid
-    && !cron?.error,
+    && (github ? /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(github.repo.trim()) && github.events.length > 0 && (Boolean(existingRoutine?.github) || Boolean(github.secret)) : !intervalInvalid && !intervalDaysInvalid && !intervalWindowInvalid && !intervalEndInvalid && !cron?.error),
   );
   const canSwitchKind = !routinesOnly && !existingRoutine && !existingCall && !lockedBotId;
   const advanced = useAdvancedMode();
@@ -897,6 +902,8 @@ export function EventEditor({
     ["weekly", "routines.repeat.weekly"],
   ] as const;
 
+  if (githubSetup) return <GithubSecretSetup routineId={githubSetup.id} secret={githubSetup.secret} onClose={onClose} />;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-3 backdrop-blur-sm" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <div ref={dialogRef} role="dialog" aria-modal="true" aria-label={existingRoutine || existingCall ? "Edit calendar event" : "Create calendar event"} tabIndex={-1} className="max-h-[94vh] w-full max-w-[760px] overflow-y-auto rounded-2xl border border-hairline/60 bg-panel shadow-2xl">
@@ -915,7 +922,12 @@ export function EventEditor({
             <input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder={kind === "routine" ? (advanced ? "Add title" : t("routines.editor.titlePlaceholder")) : "Add call title"} className="min-w-0 flex-1 border-b border-hairline/60 bg-transparent px-1 pb-2 text-[22px] font-medium text-ink outline-none placeholder:text-ink-tertiary focus:border-accent" />
           </div>
 
-          {advanced ? (
+          {kind === "routine" && !botDraft && <label className="block text-[12.5px] font-medium text-ink">Trigger
+            <select aria-label="Routine trigger" value={github ? "github" : "schedule"} onChange={event => setGithub(event.target.value === "github" ? { repo: "", events: ["push"], secret: newGithubSecret() } : null)} className="ml-3 rounded-lg border border-hairline/50 bg-inset px-3 py-2 text-ink">
+              <option value="schedule">Schedule</option><option value="github">GitHub</option>
+            </select>
+          </label>}
+          {github && kind === "routine" ? <><GithubTriggerFields value={github} routineId={existingRoutine?.id} onChange={setGithub} />{runLimitControls}</> : advanced ? (
             <div className="flex items-start gap-4">
               <Clock3 size={18} className="mt-2.5 shrink-0 text-ink-secondary" />
               <div className="min-w-0 flex-1 space-y-3">
@@ -1026,9 +1038,7 @@ export function EventEditor({
                   {kindSwitchControl}
                   {routineTypeControl}
                   <div className="space-y-3">
-                    {repeatSelect}
-                    {scheduleNote}
-                    {repeatDetails}
+                    {!github && <>{repeatSelect}{scheduleNote}{repeatDetails}</>}
                     {runLimitControls}
                   </div>
                   {resultsControl}
@@ -1617,8 +1627,8 @@ export function EventDetails({
         {isRoomGoal && <DrawerField label={t("routines.drawer.group")}><div className="text-[12.5px] text-ink">{goalGroup?.name ?? "Group unavailable"}</div></DrawerField>}
         {(routine || call) && (
           <DrawerField label={t("routines.drawer.schedule")}>
-            <div className="text-[12.5px] text-ink">{scheduleLabel((routine ?? call)!.schedule)}</div>
-            {routine?.schedule.type === "cron" && <div className="mt-2"><CronSchedulePreview schedule={routine.schedule} paused={!routine.enabled} /></div>}
+            <div className="text-[12.5px] text-ink">{routine?.github ? `GitHub · ${routine.github.repo} · ${routine.github.events.join(", ")}` : scheduleLabel((routine ?? call)!.schedule)}</div>
+            {!routine?.github && routine?.schedule.type === "cron" && <div className="mt-2"><CronSchedulePreview schedule={routine.schedule} paused={!routine.enabled} /></div>}
           </DrawerField>
         )}
         {description && <DrawerField label={isCall ? t("routines.drawer.agenda") : t("routines.drawer.what")}><div className="whitespace-pre-wrap text-[12.5px] leading-relaxed text-ink">{description}</div></DrawerField>}
@@ -1744,7 +1754,7 @@ export function PausedList({
                 {room ? <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-accent/12 text-accent"><UsersRound size={17} /></span> : bot && <BotAvatar bot={bot} state="sleeping" size={36} animated={false} />}
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-[12.5px] font-medium text-ink">{routine.name}</div>
-                  <div className="mt-0.5 truncate text-[10.5px] text-ink-secondary">{room ? `Team goal · ${room.name} · ` : ""}{scheduleLabel(routine.schedule)}</div>
+                  <div className="mt-0.5 truncate text-[10.5px] text-ink-secondary">{room ? `Team goal · ${room.name} · ` : ""}{routine.github ? `GitHub · ${routine.github.repo}` : scheduleLabel(routine.schedule)}</div>
                 </div>
                 {room && <button onClick={() => { onOpenRoom(room.id); onClose(); }} className="rounded-lg px-2 py-1.5 text-[11px] text-ink-secondary hover:bg-inset">Group</button>}
                 <button onClick={() => dispatch({ type: "updateRoutine", routineId: routine.id, patch: { enabled: true } })} className="rounded-lg bg-accent/15 px-2.5 py-1.5 text-[11px] font-medium text-accent">Resume</button>

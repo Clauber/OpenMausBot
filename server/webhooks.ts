@@ -461,6 +461,13 @@ export class WebhookManager {
     });
   }
 
+  /** GitHub routine deliveries share this bounded, persisted attempt log. */
+  recordRoutineAttempt(routineId: string, event: Partial<WebhookEvent>, details: Pick<WebhookAttempt, "outcome" | "statusCode"> & Partial<Pick<WebhookAttempt, "deliveryId" | "runId" | "reason">>): WebhookAttempt {
+    const attempt = this.appendAttempt({ id: routineId }, event, details);
+    this.save();
+    return attempt;
+  }
+
   recordRejected(endpointId: string, statusCode: number, reason: string, event: Partial<WebhookEvent> = {}): WebhookAttempt | null {
     const trigger = this.webhooks.find((candidate) => candidate.endpointId === endpointId);
     if (!trigger) return null;
@@ -618,7 +625,7 @@ export class WebhookManager {
   }
 
   private appendAttempt(
-    trigger: StoredWebhookTrigger,
+    trigger: Pick<StoredWebhookTrigger, "id">,
     event: Partial<WebhookEvent>,
     details: Pick<WebhookAttempt, "outcome" | "statusCode"> & Partial<Pick<WebhookAttempt, "deliveryId" | "runId" | "reason">>,
   ): WebhookAttempt {
