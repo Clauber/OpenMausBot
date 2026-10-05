@@ -3553,6 +3553,63 @@ const wireTask = (task: TaskRecord): WireTask => {
   return asleep ? { ...coordinated, snoozedUntil } : coordinated;
 };
 
+/** An approval level the person chose while the bot was working. A running
+ * provider session keeps the mode it started with, so the change waits for
+ * the bot to go idle; "restart" stops its running 1:1 turns first and then
+ * continues them under the new level. In memory only: a restart drops it. */
+interface PendingApprovalChange {
+  mode: ApprovalMode;
+  allThreads: boolean;
+  /** Threads that were working when the change was chosen: they get it too. */
+  threadIds: string[];
+  /** Threads stopped for the change, continued once it lands. */
+  resume: string[];
+  trigger: UsageTrigger;
+}
+const pendingApprovalChanges = new Map<string, PendingApprovalChange>();
+
+const APPROVAL_MODE_NAMES: Record<ApprovalMode, string> = {
+  ask: "Ask for approval", edits: "Auto-accept edits", auto: "Approve for me", full: "Full access", custom: "Custom",
+};
+
+/** Land every pending level whose bot is now idle. Runs at each turn
+ * boundary (drainQueuedSends) before queued messages start, so the next
+ * turn already starts under the new level. */
+function applyPendingApprovalChanges(): void {
+  for (const [botId, change] of pendingApprovalChanges) {
+    const bot = store.bot(botId);
+    if (!bot) {
+      pendingApprovalChanges.delete(botId);
+      continue;
+    }
+    if (bot.busy || bot.approvalGrant || hasDirectDispatch(botId) || activeGroupTurnForBot(botId)) continue;
+    pendingApprovalChanges.delete(botId);
+    store.patchBot(botId, { approvalMode: change.mode, autoApprove: change.mode === "auto" });
+    if (change.mode === "full" && change.allThreads) store.setAllThreadApprovalMode(botId, "full");
+    else for (const threadId of change.threadIds) store.refreshTaskPermissions(botId, threadId);
+    for (const threadId of change.resume) {
+      // A message the person queued meanwhile drives the thread instead.
+      if (!store.taskByThread(botId, threadId) || hasQueuedSteeredMessages(botId, threadId)) continue;
+      void startTurn(botId, `Continue where you left off. Your approval level is now ${APPROVAL_MODE_NAMES[change.mode]}.`, {
+        threadId, trigger: change.trigger,
+      }).catch((err) => {
+        store.appendMessage(threadId, {
+          role: "bot", kind: "activity",
+          tool: failedTurnTool(`could not continue after the approval change — ${err instanceof Error ? err.message : String(err)}`),
+        });
+      });
+    }
+  }
+}
+
+// A turn's ordinary drain can run before its thread is marked idle, so a
+// pending level also lands the moment the store reports that bot idle.
+// Deferred: applying writes the store, which must not re-enter its emit.
+store.onChange((change) => {
+  if (change.type !== "bot" || !pendingApprovalChanges.has(change.botId) || store.bot(change.botId)?.busy) return;
+  queueMicrotask(applyPendingApprovalChanges);
+});
+
 const wireBot = (bot: BotRecord): WireBot => {
   const { resumeCursors: _resumeCursors, tasks, approvalGrant, lastProfileRequestId: _lastProfileRequestId, lastTighteningRequestId: _lastTighteningRequestId, lastTeamSetupReceipt: _lastTeamSetupReceipt, packageBase: _packageBase, assignedSkills: _assignedSkills, ...rest } = bot;
   // An elevated selection is inert until the desktop confirms its exact
@@ -3561,8 +3618,10 @@ const wireBot = (bot: BotRecord): WireBot => {
   const visible = approvalGrant && !approvalGrant.threadOnly
     ? { ...rest, approvalMode: "ask" as const, autoApprove: false }
     : rest;
+  const pendingApproval = pendingApprovalChanges.get(bot.id);
   return { ...visible, waitingForTeammates: activeCoordinationForThread(bot.threadId) && !threadBusy(bot.id, bot.threadId),
-    avatarUrl: visible.avatarUrl ?? null, ...(tasks ? { tasks: tasks.map(wireTask) } : {}) };
+    avatarUrl: visible.avatarUrl ?? null, ...(tasks ? { tasks: tasks.map(wireTask) } : {}),
+    ...(pendingApproval ? { pendingApprovalMode: pendingApproval.mode } : {}) };
 };
 
 function toolScopeForTurn(botId: string) {
@@ -8508,6 +8567,7 @@ bus.subscribe((event: RuntimeEvent) => {
 const sendNowBesideRoom = new Set<string>();
 
 function drainQueuedSends() {
+  applyPendingApprovalChanges();
   if (!followupsReady) return;
   drainSteeredMessages(store, (botId, threadId, prompt, userMessage, excludeIds, unattended, head) =>
     // A plain attended turn — no automationSource, no comms depth: exactly
@@ -22199,6 +22259,68 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       store.patchTask(bot.id, bot.threadId, { rewound: true });
       return json(res, 200, { activeLeafId: leaf });
     }
+    // An approval level chosen while the bot works. The bot PATCH refuses a
+    // busy bot; this records the change and lands it when the bot goes idle
+    // ("next-turn"), or stops the bot's running 1:1 turns, lands it, and
+    // continues them ("restart"). Same checks as the idle change.
+    m = path.match(/^\/api\/bots\/([\w-]+)\/approval-mode-when-busy$/);
+    if (m && method === "POST") {
+      const body = await readBody(req);
+      if (auth.kind === "session" && !auth.scopes.includes("admin")) {
+        return json(res, 403, { error: "forbidden: changing a bot's approval level needs the admin scope" });
+      }
+      if (CLOUD_HOME && !cloudOwnerSession(auth)) {
+        return json(res, 403, { error: "On this Cloud only its owner can change how a bot asks for approval." });
+      }
+      // A bot curling the loopback API from a tool call must not schedule
+      // its own level: only a paired browser or an owner/admin session may.
+      if (auth.kind === "loopback" && !DESKTOP_MANAGED && !req.headers.origin) {
+        return json(res, 403, { error: "Change approval levels from the app or a paired device." });
+      }
+      if (body?.whenBusy !== "next-turn" && body?.whenBusy !== "restart") {
+        return json(res, 400, { error: "whenBusy must be next-turn or restart" });
+      }
+      if (!isApprovalMode(body.approvalMode)) return json(res, 400, { error: "approvalMode must be ask, edits, auto, full, or custom" });
+      const mode: ApprovalMode = body.approvalMode;
+      const target = store.bot(m[1]);
+      if (!target) return json(res, 404, { error: "no such bot" });
+      if (target.approvalGrant) return json(res, 409, { error: "the bot's approval mode is still being confirmed" });
+      const current = approvalModeFor(target);
+      if (mode === "custom" || current === "custom") {
+        return json(res, 403, { error: "Custom approval changes require the packaged desktop app" });
+      }
+      if (!supportsApprovalMode(target.modelSelection, mode)) {
+        return json(res, 400, { error: "This provider does not support the selected approval level" });
+      }
+      if (mode === "full") {
+        if (!OPERATOR_FULL_ACCESS) return json(res, 403, { error: "This approval-level change can only be made from the packaged desktop app" });
+        if (body.confirmFullAccess !== true) return json(res, 400, { error: "Confirm the Full access warning first (confirmFullAccess)" });
+      }
+      if (mode === "auto" && target.computer === "local" && current !== "auto" && body.acknowledgeLocalAuto !== true) {
+        return json(res, 400, { error: "Auto mode on this computer requires confirming the warning first (acknowledgeLocalAuto)" });
+      }
+      const busyThreads = store.tasks(target.id).map((task) => task.threadId).filter((threadId) => threadBusy(target.id, threadId));
+      if (mode === current && body.applyToAllThreads !== true) {
+        // Choosing the level the bot already has withdraws a pending change.
+        pendingApprovalChanges.delete(target.id);
+      } else {
+        pendingApprovalChanges.set(target.id, {
+          mode,
+          allThreads: mode === "full" && body.applyToAllThreads === true,
+          threadIds: busyThreads,
+          resume: body.whenBusy === "restart" ? busyThreads : [],
+          trigger: usageTriggerFor(auth),
+        });
+        if (body.whenBusy === "restart") {
+          await Promise.allSettled(busyThreads.map((threadId) => interruptDirectThread(target.id, threadId)));
+        }
+      }
+      applyPendingApprovalChanges();
+      const fresh = store.bot(target.id)!;
+      broadcast({ kind: "bot", bot: wireBot(fresh) });
+      return json(res, 200, { ok: true, pending: pendingApprovalChanges.has(target.id), bot: wireBot(fresh) });
+    }
+
     // "Always allow everything" from a waiting approval card: the operator's
     // opt-in Full access grant, made while the bot is mid-turn. The bot PATCH
     // refuses level changes on a busy bot because the provider session keeps

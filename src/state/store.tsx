@@ -428,6 +428,8 @@ export interface Bot {
   autoApprove?: boolean;
   /** Explicit approval level; absent records use the legacy autoApprove bit. */
   approvalMode?: ApprovalMode;
+  /** A level chosen while the bot was working; lands when it goes idle. */
+  pendingApprovalMode?: ApprovalMode;
   /** tools this bot may always use without asking */
   alwaysAllow?: string[];
   /** speak this bot's replies aloud as they settle */

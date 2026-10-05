@@ -17,7 +17,8 @@ import { Crown } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
-import { useStore, type Bot } from "@/state/store";
+import { api, useStore, type Bot } from "@/state/store";
+import type { LocaleKey } from "@/locales";
 import type { ApprovalMode } from "../../../shared/approval-mode";
 import { DEFAULT_OUTBOUND_POLICY, type OutboundPolicy } from "../../../shared/outbound";
 import { ApprovalModeSelector } from "../ApprovalModeSelector";
@@ -45,18 +46,45 @@ export function PermissionsSection({
   const [fullAccessTarget, setFullAccessTarget] = useState<string | null>(null);
   const [allThreads, setAllThreads] = useState(true);
   const [commandAllowlistTarget, setCommandAllowlistTarget] = useState<{ botId: string; botName: string } | null>(null);
-  const setApprovalMode = (mode: ApprovalMode) => {
-    if (bot.busy || mode === approvalMode) return;
+  // A level picked while the bot works: first how to apply it (stop and
+  // continue now, or when the turn finishes), then the usual warnings.
+  const [busyChoice, setBusyChoice] = useState<{ botId: string; mode: ApprovalMode } | null>(null);
+  const [whenBusy, setWhenBusy] = useState<"next-turn" | "restart" | null>(null);
+  const scheduleApprovalMode = (
+    botId: string,
+    mode: ApprovalMode,
+    timing: "next-turn" | "restart",
+    extra: { confirmFullAccess?: boolean; applyToAllThreads?: boolean; acknowledgeLocalAuto?: boolean } = {},
+  ) => {
+    api(`/api/bots/${botId}/approval-mode-when-busy`, {
+      method: "POST",
+      body: JSON.stringify({ approvalMode: mode, whenBusy: timing, ...extra }),
+    }).catch((error) => dispatch({ type: "error", message: error instanceof Error ? error.message : String(error) }));
+  };
+  const chooseApprovalMode = (mode: ApprovalMode, timing: "next-turn" | "restart" | null) => {
+    setWhenBusy(timing);
     if (mode === "full") {
       setAllThreads(true);
       setFullAccessTarget(bot.id);
       return;
     }
-    if (mode === "auto" && bot.computer === "local") {
+    if (mode === "auto" && bot.computer === "local" && approvalMode !== "auto") {
       setLocalAutoWarning(bot.id);
       return;
     }
-    patch({ approvalMode: mode });
+    if (timing) scheduleApprovalMode(bot.id, mode, timing);
+    else patch({ approvalMode: mode });
+  };
+  const setApprovalMode = (mode: ApprovalMode) => {
+    if (bot.busy) {
+      if (mode === (bot.pendingApprovalMode ?? approvalMode)) return;
+      // Back to the current level just withdraws the pending change.
+      if (mode === approvalMode) return scheduleApprovalMode(bot.id, mode, "next-turn");
+      setBusyChoice({ botId: bot.id, mode });
+      return;
+    }
+    if (mode === approvalMode) return;
+    chooseApprovalMode(mode, null);
   };
 
   return (
@@ -146,11 +174,15 @@ export function PermissionsSection({
             onSelect={setApprovalMode}
             menuDirection="down"
             wide
-            disabled={Boolean(bot.busy)}
             trustedModesAvailable={trustedModesAvailable}
             onManageCommandAllowlist={!draft && ownerOrAdmin === true ? () => setCommandAllowlistTarget({ botId: bot.id, botName: bot.name }) : undefined}
           />
         </div>
+        {!draft && bot.pendingApprovalMode && bot.pendingApprovalMode !== approvalMode && <div className="mt-2 text-[13px] text-ink-secondary">
+          {t("approvalMode.pending", { mode: t(`approvalMode.${bot.pendingApprovalMode}.label` as LocaleKey) })}
+          {" "}<button type="button" className="text-accent hover:underline"
+            onClick={() => scheduleApprovalMode(bot.id, approvalMode, "next-turn")}>{t("approvalMode.pendingKeep")}</button>
+        </div>}
         {!draft && approvalMode === "full" && trustedModesAvailable && <button
           type="button" disabled={Boolean(bot.busy)}
           className="mt-3 text-[13px] text-accent hover:underline disabled:opacity-40"
@@ -176,7 +208,8 @@ export function PermissionsSection({
           const target = localAutoWarning;
           setLocalAutoWarning(null);
           if (!target) return;
-          dispatch({ type: "updateBot", botId: target, patch: { approvalMode: "auto", acknowledgeLocalAuto: true } });
+          if (whenBusy) scheduleApprovalMode(target, "auto", whenBusy, { acknowledgeLocalAuto: true });
+          else dispatch({ type: "updateBot", botId: target, patch: { approvalMode: "auto", acknowledgeLocalAuto: true } });
         }}
       />
       <FullAccessWarning
@@ -188,9 +221,19 @@ export function PermissionsSection({
           const target = fullAccessTarget;
           setFullAccessTarget(null);
           if (!target) return;
-          dispatch({ type: "updateBot", botId: target, patch: { approvalMode: "full", confirmFullAccess: true, applyToAllThreads: allThreads } });
+          if (whenBusy) scheduleApprovalMode(target, "full", whenBusy, { confirmFullAccess: true, applyToAllThreads: allThreads });
+          else dispatch({ type: "updateBot", botId: target, patch: { approvalMode: "full", confirmFullAccess: true, applyToAllThreads: allThreads } });
         }}
       />
+      {busyChoice && busyChoice.botId === bot.id && <BusyApprovalChoice
+        botName={bot.name}
+        mode={busyChoice.mode}
+        onCancel={() => setBusyChoice(null)}
+        onChoose={(timing) => {
+          setBusyChoice(null);
+          chooseApprovalMode(busyChoice.mode, timing);
+        }}
+      />}
     </div>
   );
 }
@@ -285,6 +328,46 @@ function OutboundControl({ bot, onChange }: { bot: Bot; onChange: (policy: Outbo
           </span>
         </div>
       )}
+    </div>
+  );
+}
+
+/** How a level picked mid-run should land: the running provider session
+ * keeps the level it started with, so it is either stopped and continued
+ * under the new one, or the change waits for the turn to finish. */
+function BusyApprovalChoice({ botName, mode, onCancel, onChoose }: {
+  botName: string;
+  mode: ApprovalMode;
+  onCancel: () => void;
+  onChoose: (timing: "next-turn" | "restart") => void;
+}) {
+  const option = "w-full rounded-xl border border-hairline/40 px-4 py-3 text-left hover:bg-raised";
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-6"
+      onMouseDown={(event) => event.target === event.currentTarget && onCancel()}>
+      <div role="dialog" aria-modal="true" aria-labelledby="busy-approval-title"
+        className="w-full max-w-[440px] rounded-2xl border border-hairline/40 bg-panel p-5 shadow-2xl">
+        <h2 id="busy-approval-title" className="text-[15px] font-semibold text-ink">
+          {t("approvalMode.busy.title", { name: botName, mode: t(`approvalMode.${mode}.label` as LocaleKey) })}
+        </h2>
+        <p className="mt-1.5 text-[13px] leading-relaxed text-ink-secondary">{t("approvalMode.busy.body", { name: botName })}</p>
+        <div className="mt-4 flex flex-col gap-2">
+          <button type="button" className={option} onClick={() => onChoose("restart")}>
+            <div className="text-[14px] font-medium text-ink">{t("approvalMode.busy.restart")}</div>
+            <div className="text-[12.5px] text-ink-secondary">{t("approvalMode.busy.restartHint")}</div>
+          </button>
+          <button type="button" className={option} onClick={() => onChoose("next-turn")}>
+            <div className="text-[14px] font-medium text-ink">{t("approvalMode.busy.nextTurn")}</div>
+            <div className="text-[12.5px] text-ink-secondary">{t("approvalMode.busy.nextTurnHint")}</div>
+          </button>
+        </div>
+        <div className="mt-4 flex justify-end">
+          <button type="button" onClick={onCancel}
+            className="rounded-xl px-4 py-2 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink">
+            {t("approvalMode.busy.cancel")}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
