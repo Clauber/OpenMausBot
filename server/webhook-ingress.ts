@@ -8,6 +8,11 @@ export const MAX_WEBHOOK_BODY_BYTES = 256 * 1024;
 const statusErrorSchema = z.object({ status: z.number().int().optional() });
 const serverAddressSchema = z.object({ port: z.number().int().min(1).max(65_535) });
 
+/** Telegram's webhook calls, handled by server/messaging/telegram-service.ts. */
+export interface TelegramIngress {
+  receive(bindingId: string, secretHeader: string | undefined, payload: unknown): { status: number; body: Record<string, JsonValue> };
+}
+
 export interface WebhookIngress {
   server: Server;
   host: string;
@@ -88,11 +93,27 @@ function eventName(req: IncomingMessage): string | undefined {
   )?.trim() || undefined;
 }
 
-export function createWebhookIngressHandler(manager: WebhookManager, claimRequest?: () => () => void) {
+export function createWebhookIngressHandler(manager: WebhookManager, claimRequest?: () => () => void, telegram?: TelegramIngress) {
   return async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (req.method === "GET" && url.pathname === "/health") {
       return json(res, 200, { app: "openmausbot-webhooks", ready: true });
+    }
+    const telegramMatch = telegram ? url.pathname.match(/^\/hooks\/telegram\/(tg_[A-Za-z0-9_-]+)$/) : null;
+    if (telegram && telegramMatch) {
+      if (req.method !== "POST") return json(res, 405, { error: "Telegram webhooks accept POST requests" });
+      let release: (() => void) | undefined;
+      try {
+        release = claimRequest?.();
+        const payload = parsePayload(await readRawBody(req), "application/json");
+        const result = telegram.receive(telegramMatch[1]!, header(req, "x-telegram-bot-api-secret-token"), payload);
+        return json(res, result.status, result.body);
+      } catch (error) {
+        const parsedError = statusErrorSchema.safeParse(error);
+        return json(res, parsedError.success ? parsedError.data.status ?? 500 : 500, { error: error instanceof Error ? error.message : String(error) });
+      } finally {
+        release?.();
+      }
     }
     const match = url.pathname.match(/^\/hooks\/(wh_[A-Za-z0-9_-]+)(?:\/([^/]+))?$/);
     if (!match) return json(res, 404, { error: "Unknown webhook endpoint" });
@@ -164,11 +185,11 @@ export function advertisedWebhookBase(raw: string): string {
 
 export async function listenWebhookIngress(
   manager: WebhookManager,
-  options: { host?: string; port: number; publicBaseUrl?: string; claimRequest?: () => () => void },
+  options: { host?: string; port: number; publicBaseUrl?: string; claimRequest?: () => () => void; telegram?: TelegramIngress },
 ): Promise<WebhookIngress> {
   const host = options.host ?? "127.0.0.1";
   const advertised = options.publicBaseUrl === undefined ? undefined : advertisedWebhookBase(options.publicBaseUrl);
-  const server = createServer(createWebhookIngressHandler(manager, options.claimRequest));
+  const server = createServer(createWebhookIngressHandler(manager, options.claimRequest, options.telegram));
   await new Promise<void>((resolve, reject) => {
     const onError = (error: Error) => reject(error);
     server.once("error", onError);

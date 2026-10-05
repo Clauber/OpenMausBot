@@ -388,6 +388,10 @@ export function verificationServerEnvironment(parentEnv: NodeJS.ProcessEnv, data
     childEnv.OMB_OPENAI_LIVE_URL = liveUrl;
     if (parentEnv.OMB_OPENAI_LIVE_KEY) childEnv.OMB_OPENAI_LIVE_KEY = parentEnv.OMB_OPENAI_LIVE_KEY;
   }
+  // The Telegram adapter against server/testing/fake-telegram.ts only: a
+  // loopback URL, so no bot token can ever be sent to the real Bot API.
+  const telegramBase = parentEnv.TELEGRAM_API_BASE?.trim() ?? "";
+  if (/^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(telegramBase)) childEnv.TELEGRAM_API_BASE = telegramBase;
   // Voice-note e2e fault injection: arms the one-shot audio-append failure
   // prelude inside the fixture server (see fail-audio-append-once.mjs).
   if (parentEnv.OMB_TEST_FAIL_AUDIO_APPEND_ONCE) {
