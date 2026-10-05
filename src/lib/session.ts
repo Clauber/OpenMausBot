@@ -22,13 +22,40 @@ export type SessionState =
 /** Ask the server who we are. A 401/403 means "go pair"; a network failure
  * is reported separately so the pair page can say the server is down. */
 export async function readSessionState(fetchImpl: typeof fetch = fetch): Promise<SessionState> {
-  let res: Response;
+  return (await readSessionBootstrap(fetchImpl)).session;
+}
+
+/** Keep the raw answer for first-run decisions without another session fetch. */
+export async function readSessionBootstrap(fetchImpl: typeof fetch = fetch): Promise<{ session: SessionState; body: unknown }> {
   try {
-    res = await fetchImpl("/api/auth/session", { credentials: "same-origin" });
+    return await withAuthDeadline(async (signal) => {
+      const res = await fetchImpl("/api/auth/session", { credentials: "same-origin", signal });
+      const body: unknown = await res.json().catch(() => ({}));
+      return { session: sessionStateFromResponse(res, body), body };
+    });
   } catch (error) {
-    return { kind: "unreachable", error: error instanceof Error ? error.message : String(error) };
+    return { session: { kind: "unreachable", error: error instanceof Error ? error.message : String(error) }, body: null };
   }
-  const body: unknown = await res.json().catch(() => ({}));
+}
+
+/** Bound both fetch and body reading, including transports that ignore abort. */
+async function withAuthDeadline<T>(request: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error("The server took too long to respond."));
+    }, 5_000);
+  });
+  try {
+    return await Promise.race([request(controller.signal), deadline]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
+
+function sessionStateFromResponse(res: Response, body: unknown): SessionState {
   const record = Object(body) as Record<string, unknown>; // SAFETY: read with typeof checks below; never trusted as a shape
   if (res.status === 401 || res.status === 403) {
     return { kind: "unauthenticated", error: typeof record.error === "string" ? record.error : `${res.status}` };
@@ -142,14 +169,17 @@ export async function pairWithCode(
  * one at all. */
 export async function previewBrowserSignIn(credential: string, fetchImpl: typeof fetch = fetch): Promise<{ owner: string } | null> {
   try {
-    const res = await fetchImpl("/api/auth/pair", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ code: credential, browser: true, preview: true }),
+    return await withAuthDeadline(async (signal) => {
+      const res = await fetchImpl("/api/auth/pair", {
+        signal,
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code: credential, browser: true, preview: true }),
+      });
+      const owner: unknown = Reflect.get(Object(await res.json().catch(() => ({}))), "owner");
+      return res.ok && typeof owner === "string" && owner ? { owner } : null;
     });
-    const owner: unknown = Reflect.get(Object(await res.json().catch(() => ({}))), "owner");
-    return res.ok && typeof owner === "string" && owner ? { owner } : null;
   } catch {
     return null;
   }

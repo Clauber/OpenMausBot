@@ -244,3 +244,13 @@ describe("useWelcomeViewer", () => {
     expect(viewer()).toEqual(LOCAL_VIEWER);
   });
 });
+
+
+it("reuses the bootstrap session for hosted member onboarding without a second request", () => {
+  const body = { kind: "session", hosted: true, cloudHome: true, scopes: ["client"] };
+  let viewer: WelcomeViewer | null = null;
+  render(() => { viewer = useWelcomeViewer(body); return null; });
+  for (const effect of fixture.effects) effect();
+  expect(viewer).toEqual({ hosted: true, canSave: false, cloudHome: true });
+  expect(store.api).not.toHaveBeenCalled();
+});
