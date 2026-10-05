@@ -163,13 +163,13 @@ it("every state reads as one sentence and one next step, for the Cloud and any o
   expect(blocked("shared_workspace")).toMatchObject({ message: { text: "bots.example.test is shared with other people, so it can't receive this computer's bots and chats. Copy to a server only you use." }, action: null });
   expect(blocked("same_computer")).toMatchObject({ message: { text: "bots.example.test is this computer's own server." }, action: null });
   expect(blocked("outdated", { cloud: { ...emptyCloud, appVersion: "0.1.90" } })).toMatchObject({ message: { text: "bots.example.test runs 0.1.90; this computer runs 0.1.96. Update bots.example.test, then copy again." }, action: { kind: "check", label: "Check again" } });
-  expect(blocked("outdated", { cloud: null }).message?.text).toBe("Update OpenMausBot on bots.example.test, then copy again.");
+  expect(blocked("outdated", { cloud: null }).message?.text).toBe("Update Legion on bots.example.test, then copy again.");
   expect(view({}, { destination: CLOUD, blocked: "outdated", cloud: null }).message?.text).toBe("Your Cloud has not updated to a version that can receive a move yet. Try again once it has.");
   expect(blocked("unreachable")).toMatchObject({ message: { text: "bots.example.test didn't answer. Check that it's running, then try again." }, action: { kind: "check" } });
   expect(blocked("busy_elsewhere", { busyWith: "My Cloud" })).toMatchObject({ message: { text: "A copy to My Cloud is running. Wait for it to finish." }, action: null });
   // Failures: what happened, then the one step that can help.
   expect(failed({ code: "restart_timeout", message: "" }, VPS)).toMatchObject({
-    message: { tone: "error", text: "bots.example.test hasn't come back yet. If it doesn't start again on its own, start OpenMausBot there; it finishes installing the copy when it starts." },
+    message: { tone: "error", text: "bots.example.test hasn't come back yet. If it doesn't start again on its own, start Legion there; it finishes installing the copy when it starts." },
     action: { kind: "open", label: "Open bots.example.test" } });
   expect(failed({ code: "restart_timeout", message: "" }).message?.text).toBe("My Cloud is taking longer than usual to restart. Check it again in a few minutes.");
   expect(failed({ code: "outdated", message: "", destVersion: "0.1.95", localVersion: "0.1.96" }, VPS)).toMatchObject({

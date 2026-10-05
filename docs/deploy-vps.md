@@ -1,4 +1,4 @@
-# Deploy OpenMausBot on a VPS
+# Deploy Legion on a VPS
 
 From a blank Linux server to OpenMausBot running on it around the clock, reachable from your laptop, the desktop app and your phone, with your bots working while every laptop is closed. It assumes nothing beyond being able to open a terminal and paste commands. About twenty minutes, most of it waiting.
 

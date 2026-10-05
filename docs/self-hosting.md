@@ -1,4 +1,4 @@
-# Self-hosting the OpenMausBot server
+# Self-hosting the Legion server
 
 Run the harness server on an always-on Linux box (a VPS, a home server, a
 Mac mini in a closet) and pair browsers, the desktop app, or phones with it.

@@ -36,7 +36,7 @@ describe("brand", () => {
     const hangs = (_: RequestInfo | URL, init?: RequestInit) =>
       new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted"))));
     expect((await bootstrapBrand(hangs, 20)).brand).toEqual(DEFAULT_BRAND);
-    expect(brand()).toEqual(DEFAULT_BRAND);
+    expect(brand()).toEqual({ name: "Legion" });
   });
 
   it("applies a served brand without a DOM", async () => {

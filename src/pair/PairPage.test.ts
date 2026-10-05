@@ -29,7 +29,7 @@ it("opening My Cloud from the app needs no click and no code to type", async () 
   vi.stubGlobal("window", { ogb: { workspaces: {} } });
   f.pair.mockResolvedValue({ ok: true });
   const html = render(code);
-  expect(html).toContain("Connecting to this OpenMausBot…");
+  expect(html).toContain("Connecting to this Legion…");
   expect(html).not.toContain("Pairing code"); expect(html).not.toContain("<form");
   f.effects[0](); await flush();
   expect(f.pair).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ code }));
@@ -52,7 +52,7 @@ it("a browser keeps the code in the form for the person to confirm", () => {
 
 it("an OMB Cloud says where its connection starts, never 'the code shown on the server'", () => {
   const cloud = pairIntro({ mode: "code", sent: false, email: "", cloudHome: true });
-  expect(cloud).toContain("Connect to my Cloud in the OpenMausBot app");
+  expect(cloud).toContain("Connect to my Cloud in the Legion app");
   expect(cloud).toContain("Settings → OMB Cloud");
   expect(cloud).not.toContain("shown on the server");
   expect(pairIntro({ mode: "code", sent: false, email: "", cloudHome: false })).toContain("shown on the server");

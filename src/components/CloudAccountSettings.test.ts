@@ -176,7 +176,7 @@ it("on the person's own Cloud, Settings shows the plan read only, with Manage an
   // This app cannot vouch for this Cloud: where the plan is managed, and nothing that would fail.
   plan.state.mockRejectedValueOnce(new Error("cloud-plan:state is only available in this app's window")); f.values = []; view(); f.effects[0](); await flush();
   const refused = view();
-  expect(refused.html).toContain("Your plan is managed in the OpenMausBot app on your computer.");
+  expect(refused.html).toContain("Your plan is managed in the Legion app on your computer.");
   expect(refused.nodes.some(node => node.type === "button")).toBe(false);
   none(refused.html, ["Could not complete", 'role="alert"', "Loading"]);
 });
