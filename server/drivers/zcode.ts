@@ -42,6 +42,12 @@ import { canUseMcpServer } from "../../shared/tool-scope.ts";
 import { assertToolScopeSupported } from "../../shared/tool-scope-support.ts";
 import type { ApprovalMode } from "../../shared/approval-mode.ts";
 
+// session/create alone takes 7–9 s on a healthy host, longer while other
+// engines start; the 8 s RPC default lost that race and left the catalog empty.
+const PROBE_SESSION_TIMEOUT_MS = 45_000;
+const PROBE_ATTEMPTS = 3;
+const PROBE_RETRY_MS = 30_000;
+
 const DENY_TIMEOUT_NOTE =
   "OpenMausBot: nobody answered this permission request in time. Skip this action and finish what you can without it.";
 
@@ -553,10 +559,10 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
           workspace: zcodeWorkspaceRef(probeCwd),
           mode: "build",
           persistence: "deferred",
-        });
+        }, PROBE_SESSION_TIMEOUT_MS);
         const sessionId = created?.session?.sessionId;
         if (!sessionId) throw new Error("zcode did not return a session id");
-        const subscribed = await request("session/subscribe", { sessionId, deliveryKind: "desktop-continuous", includeSnapshot: true });
+        const subscribed = await request("session/subscribe", { sessionId, deliveryKind: "desktop-continuous", includeSnapshot: true }, PROBE_SESSION_TIMEOUT_MS);
         const catalog = zcodeCatalogFromSnapshot(subscribed?.snapshot?.settings ?? {});
         // The snapshot serves only the current model; the person's other
         // providers come from the merged personal config. Each candidate is
@@ -614,15 +620,23 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
     };
     let models = FALLBACK_ZCODE_MODELS;
     const refreshModels = async () => {
-      if (disposed) return;
-      try {
-        const discovered = await discoverCatalog();
+      // A probe that loses a race with a busy startup must not leave the
+      // engine on its one-model fallback until the next restart.
+      for (let attempt = 1; attempt <= PROBE_ATTEMPTS; attempt++) {
         if (disposed) return;
-        if (discovered.options.length) models = discovered;
-      } catch (error) {
-        // Keep the last usable catalog (or the passthrough fallback), but
-        // say why — a silent fallback looks like a broken engine.
-        console.error("zcode: model catalog probe failed:", error instanceof Error ? error.message : error);
+        try {
+          const discovered = await discoverCatalog();
+          if (disposed) return;
+          if (discovered.options.length) models = discovered;
+          return;
+        } catch (error) {
+          // Keep the last usable catalog (or the passthrough fallback), but
+          // say why — a silent fallback looks like a broken engine.
+          console.error(`zcode: model catalog probe failed (attempt ${attempt}/${PROBE_ATTEMPTS}):`, error instanceof Error ? error.message : error);
+        }
+        if (attempt < PROBE_ATTEMPTS) {
+          await new Promise<void>((resolve) => setTimeout(resolve, PROBE_RETRY_MS * attempt).unref?.());
+        }
       }
     };
     void refreshModels().catch(() => {});
