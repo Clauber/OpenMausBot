@@ -540,6 +540,7 @@ export interface OptionCardData {
   routineRequest?: RoutineRequestCardData;
   /** A durable profile-change proposal (propose_profile). */
   profileRequest?: ProfileRequestCardData;
+  pageRequest?: import("./pages.ts").PageRequestCardData;
   /** A durable default-model proposal (propose_model). */
   modelRequest?: ModelRequestCardData;
   /** A durable authority-tightening proposal (propose_tightening). */

@@ -1202,6 +1202,47 @@
       }
     },
     {
+      "name": "propose_page",
+      "description": "Propose a markdown page for user review. Saves only after approval. Reuse proposal_id on retries to prevent duplicates; revision must be 0 for a new page.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "proposal_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "revision": {
+            "type": "integer",
+            "const": 0
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 100000
+          },
+          "parent_id": {
+            "type": "string"
+          },
+          "space_id": {
+            "type": "string",
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "proposal_id",
+          "revision",
+          "title",
+          "content"
+        ]
+      }
+    },
+    {
       "name": "propose_profile",
       "description": "Submit user-requested changes to your own name, title, description, standing instructions (SOUL.md), working folder (cwd), or your alert and voice toggles (notifications, speakReplies). Keep SOUL.md short — who you are and the rules you never break; put step-by-step procedure into a skill instead. A Chief of Staff may pass for_bot_id (from list_bots) for a requested change to another bot in its section. Read the result: granted Full Access may apply the change immediately. If applied, continue the requested work without another confirmation. Only a pending result requires ending the turn and waiting for the in-app decision. Never claim success from the permission mode alone; report failed or cancelled results honestly. This does not elevate another bot's execution permissions.",
       "inputSchema": {

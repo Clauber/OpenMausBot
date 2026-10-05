@@ -17,6 +17,7 @@ import { QUESTION_DISMISS_MESSAGE } from "../../shared/ask-question";
 /** The only field that decides it: a permission card names its tool. */
 interface CardKind {
   tool?: string;
+  pageRequest?: import("../../shared/pages").PageRequestCardData;
 }
 export interface CardResponse {
   behavior: "allow" | "deny" | "answer";
@@ -26,6 +27,7 @@ export interface CardResponse {
 
 /** The response for pressing one of a card's options. */
 export function answerResponse(card: CardKind, answer: string): CardResponse {
+  if (card.pageRequest) return { behavior: answer === "Cancel" || answer === "Deny" ? "deny" : "allow" };
   if (!card.tool) return { behavior: "answer", message: answer };
   // A permission card's own options are Allow / Deny / Always allow; the
   // grant behind "always" is written separately, so anything that is not a

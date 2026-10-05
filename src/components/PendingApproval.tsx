@@ -71,6 +71,7 @@ export function pendingApprovals(messages: Message[]): Pending[] {
  * 20,000 characters). Calls should announce the concise, visible title and
  * let the user review those details on screen instead of reading them all. */
 export function spokenApprovalPrompt(pending: Pending, requester: string): string {
+  if (pending.message.card?.pageRequest) return `${requester}: Review ${pending.message.card.pageRequest.title} on screen before saving the page.`;
   if (pending.message.card?.teamSetupRequest) return `${requester}: ${pending.message.card.title} Review the details and choose ${pending.message.card.options[0]} or Cancel.`;
   const isRoutineRequest = isRoutineApproval(pending);
   const isSkillRequest = isSkillApproval(pending);
@@ -107,6 +108,7 @@ export function spokenApprovalPrompt(pending: Pending, requester: string): strin
 }
 
 function label(pending: Pending): string {
+  if (pending.message.card?.pageRequest) return "Save this page?";
   if (pending.message.card?.teamSetupRequest) return pending.message.card.title;
   if (isSkillApproval(pending)) {
     return pending.message.card?.skillRequest?.action === "update"
@@ -225,7 +227,8 @@ export function PendingApprovalActions({
   const isSkillRequest = isSkillApproval(pending);
   const isProfileRequest = isProfileApproval(pending);
   const isTeamSetup = Boolean(pending.message.card?.teamSetupRequest);
-  const durableRequest = isRoutineRequest || isSkillRequest || isProfileRequest || isTeamSetup;
+  const isPageRequest = Boolean(pending.message.card?.pageRequest);
+  const durableRequest = isPageRequest || isRoutineRequest || isSkillRequest || isProfileRequest || isTeamSetup;
   const canRememberCommand = ownerOrAdmin === true && !durableRequest && !pending.allowKey && Boolean(pending.commandAllowlist);
   const reviewedSha256 = pending.message.card?.skillRequest
     ? reviewedSkillSha256(pending.message.card.skillRequest)
@@ -258,7 +261,7 @@ export function PendingApprovalActions({
         autoFocus={isTeamSetup}
         className={cn(base, "border border-danger/40 text-danger hover:bg-danger/10")}
       >
-        {isRoutineRequest || isProfileRequest || isTeamSetup ? t("approval.action.cancel") : t("approval.action.deny")}
+        {isPageRequest || isRoutineRequest || isProfileRequest || isTeamSetup ? t("approval.action.cancel") : t("approval.action.deny")}
       </button>
       {!durableRequest && bot && pending.allowKey && (
         <button
@@ -289,13 +292,13 @@ export function PendingApprovalActions({
       )}
       <button
         onClick={() => decide("allow")}
-        disabled={isSkillRequest && !reviewedSha256}
+        disabled={(isSkillRequest && !reviewedSha256) || (isPageRequest && ownerOrAdmin !== true)}
         className={cn(
           base,
           "bg-accent font-medium text-white hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40",
         )}
       >
-        {isTeamSetup ? pending.message.card?.options[0] : isSkillRequest
+        {isPageRequest ? "Save page" : isTeamSetup ? pending.message.card?.options[0] : isSkillRequest
           ? pending.message.card?.skillRequest?.action === "update"
             ? t("approval.action.update")
             : t("approval.action.enable")

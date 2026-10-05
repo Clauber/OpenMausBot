@@ -35,8 +35,9 @@ const SKILL_SETTLED_LABEL = {
 export function approvalCardOutcome(card: OptionCardData): string | undefined {
   if (card.expired === true) return t("approval.status.expired");
   if (!card.answered) return undefined;
-  const isProposal = Boolean(card.routineRequest || card.skillRequest || card.profileRequest || card.teamSetupRequest);
+  const isProposal = Boolean(card.pageRequest || card.routineRequest || card.skillRequest || card.profileRequest || card.teamSetupRequest);
   if (card.answered !== "allow") return isProposal ? t("approval.status.cancelled") : t("approval.status.denied");
+  if (card.pageRequest) return "Page saved";
   if (card.teamSetupRequest) return card.teamSetupRequest.deletion ? "Bot deleted" : "Team setup applied";
   const routineAction = card.routineRequest?.operation.action;
   if (routineAction) return t(ROUTINE_SETTLED_LABEL[routineAction]);
@@ -165,6 +166,7 @@ export function ApprovalCard({
         {card.subtitle}
       </pre>
 
+      {card.pageRequest?.pageId && <a className="mt-2 inline-block text-sm text-accent underline" href={`#/pages/${card.pageRequest.pageId}`}>Open saved page</a>}
       {card.skillRequest && <SkillRequestPreview request={card.skillRequest} />}
 
       {heldNote && (
