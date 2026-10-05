@@ -40,6 +40,7 @@ import { csvCell } from "./usage-ledger.ts";
  * auto-approve rules — with no card in front of a person; user-* rows
  * record what a person actually answered. */
 export type DecisionKind =
+  | "update"
   | "auto-approved"
   | "auto-denied"
   | "card-shown"
@@ -58,6 +59,7 @@ export type DecisionKind =
  * come from the connected-app grants verdict: the person pre-decided them
  * by editing a bot's connectorTools, so the call itself needed no card. */
 export type DecisionSource =
+  | "updater"
   | AutoVerdictSource
   | "question"
   | "auto-fallback"

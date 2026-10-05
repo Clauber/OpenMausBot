@@ -1,5 +1,19 @@
 # Legion implementation lessons
 
+## LEGION-15: self-update
+
+- A detached updater process can still die with the old systemd service's
+  cgroup. Copy the bundled worker outside the installation and run it in an
+  independent transient user unit before restarting the server. If launch
+  acknowledgment is uncertain, retain the lock and job inputs.
+- Node strip-only mode rejects TypeScript constructor parameter properties.
+  The fixture server must import the same sources the packaged build uses.
+- npm rejects using one path as both userconfig and globalconfig. Use distinct
+  empty files and a private offline cache for bundled vendor-tgz installs.
+- Vite merges configured proxy keys in order; an inherited `/api` proxy can
+  swallow a more specific updater fixture proxy. Use an explicit preview config
+  and assert the installed version through the actual Settings panel.
+
 ## LEGION-9: approval gates
 
 - Native CLI permission modes can approve tools without emitting a harness

@@ -90,6 +90,7 @@ Use only mapped, tested commands:
 - [Memory: recall, upkeep and the tidy-up](memory-layer.md)
 - [Spend cap and sell prices](spend-cap.md)
 - [Enterprise layer loading and license expiry](enterprise-license.md)
+- [Server self-update, verified artifact and rollback](self-update.md)
 
 `control-omb ui` ([Chat UI, driven headlessly](chat-ui.md)) drives the real
 renderer in a headless Chrome by accessible name, so composer sends, transcript
@@ -119,6 +120,10 @@ Admin server, including cancellation, revocation and unchanged normal startup.
 
 The [personal Cloud account smoke](cloud-account.md) checks optional browser
 sign-in, server-verified Pro status and sign-out in a disposable Electron profile.
+
+The [self-update fixture](self-update.md) checks private-registry planning,
+real isolated npm installation, health failure rollback and the actual Software
+Update settings section in Chromium, with a synthetic service manager.
 
 The [embedded server recovery smoke](desktop-server-recovery.md) crashes real
 Electron-owned fixture servers, verifies bounded recovery and private access,

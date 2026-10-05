@@ -482,6 +482,8 @@ import { SpaceIsolationError, SpaceRegistry, assertSpace, guardRequest, scopeFro
 import { createSpacesRoutes } from "./routes/spaces.ts";
 import { TEACH_CAPTURE_PATH, createTeachCapture, createTeachRoutes } from "./routes/teach.ts";
 import { createApprovalRulesRoutes } from "./routes/approval-rules.ts";
+import { createUpdaterRoutes } from "./routes/updater.ts";
+import { SelfUpdater } from "./updater.ts";
 import { ProfileRequestService } from "./profile-requests.ts";
 import { ModelRequestService } from "./model-requests.ts";
 import { TighteningRequestService } from "./tightening-requests.ts";
@@ -15779,6 +15781,13 @@ ROUTES.push(createSpacesRoutes({
     : kind === "webhook" ? webhooks.list().some((hook) => hook.id === id)
     : Boolean(pagesDb.get(id)),
 }));
+ROUTES.push(createUpdaterRoutes(new SelfUpdater({
+  config: () => cfg.updater,
+  dataDir: DATA_DIR,
+  port: PORT,
+  version: serverVersion(),
+  runningTurns: () => activeInternalGenerationByThread.size + foreignTurns.size,
+})));
 ROUTES.push(createApprovalRulesRoutes({
   bot: (id) => store.bot(id),
   workspaceRules: () => cfg.approvalRules,
@@ -23770,7 +23779,7 @@ const handleRequestInScope = async (req: IncomingMessage, res: ServerResponse) =
     // child proves it is OURS by echoing its pid (a stray dev server has
     // the same API shape but a different pid)
     if (method === "GET" && path === "/api/health") {
-      return json(res, 200, { app: "openmausbot", pid: process.pid, static: Boolean(STATIC_DIR), capabilities: {
+      return json(res, 200, { app: "openmausbot", version: serverVersion(), pid: process.pid, static: Boolean(STATIC_DIR), capabilities: {
         guardedMessages: 1, guardedRequests: 1, guardedFullAccess: 1, guardedOnBehalfOf: 1,
         ...(sharedWorkspaceFullAccessEnabled() ? { sharedWorkspaceFullAccess: 1 } : {}),
       } });
