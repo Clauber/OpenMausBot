@@ -7,8 +7,8 @@
 // the detail printed raw in a monospace block that is NEVER truncated
 // (it scrolls instead), and the buttons ordered least-destructive-last so
 // the primary action sits under your thumb.
-import { memo } from "react";
-import { useStore, type Bot, type Message } from "@/state/store";
+import { memo, useState } from "react";
+import { api, useStore, type Bot, type Message } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { t, tFromServer } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
@@ -16,6 +16,8 @@ import { SkillRequestPreview } from "@/components/SkillRequestPreview";
 import { toolLabel } from "./ApprovalCard";
 import { reviewedSkillSha256 } from "../../shared/skill-request";
 import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
+import { approvalModeFor } from "../../shared/approval-mode";
+import { FullAccessWarning } from "./FullAccessWarning";
 
 interface ApprovalLabels {
   [tool: string]: LocaleKey;
@@ -212,12 +214,15 @@ export function PendingApprovalActions({
   threadId,
   bot,
   onCancelTurn,
+  operatorFullAccess = false,
 }: {
   pending: Pending;
   threadId: string;
   /** who asked — "always allow" is remembered against them */
   bot?: Bot;
   onCancelTurn: () => void;
+  /** The server's OMB_OPERATOR_FULL_ACCESS opt-in: the web UI may grant Full. */
+  operatorFullAccess?: boolean;
 }) {
   const { dispatch } = useStore();
   const ownerOrAdmin = useOwnerOrAdmin();
@@ -227,6 +232,9 @@ export function PendingApprovalActions({
   const isTeamSetup = Boolean(pending.message.card?.teamSetupRequest);
   const durableRequest = isRoutineRequest || isSkillRequest || isProfileRequest || isTeamSetup;
   const canRememberCommand = ownerOrAdmin === true && !durableRequest && !pending.allowKey && Boolean(pending.commandAllowlist);
+  const mode = bot ? approvalModeFor(bot) : undefined;
+  const offerAllowEverything = operatorFullAccess && ownerOrAdmin === true && !durableRequest && !pending.allowKey &&
+    mode !== "custom" && mode !== "full";
   const reviewedSha256 = pending.message.card?.skillRequest
     ? reviewedSkillSha256(pending.message.card.skillRequest)
     : undefined;
@@ -278,6 +286,7 @@ export function PendingApprovalActions({
           {t("approval.action.alwaysAllowSession")}
         </button>
       )}
+      {offerAllowEverything && bot && <AllowEverythingButton bot={bot} threadId={threadId} className={base} />}
       {canRememberCommand && pending.commandAllowlist && (
         <button
           onClick={() => decide("allow", false, true)}
@@ -304,5 +313,38 @@ export function PendingApprovalActions({
             : t("approval.action.allowOnce")}
       </button>
     </div>
+  );
+}
+
+/** The operator's opt-in lets the web UI grant Full access. From a waiting
+ * card the grant covers the bot default and every thread, and the server
+ * answers the bot's open permission asks; later asks in the running turn
+ * are answered under Full as they arrive. */
+function AllowEverythingButton({ bot, threadId, className }: { bot: Bot; threadId: string; className: string }) {
+  const { dispatch } = useStore();
+  const [warning, setWarning] = useState(false);
+  const [granting, setGranting] = useState(false);
+  const grant = () => {
+    setWarning(false);
+    setGranting(true);
+    api(`/api/bots/${bot.id}/allow-everything`, {
+      method: "POST",
+      body: JSON.stringify({ threadId, confirmFullAccess: true }),
+    })
+      .catch((error) => dispatch({ type: "error", message: error instanceof Error ? error.message : String(error) }))
+      .finally(() => setGranting(false));
+  };
+  return (
+    <>
+      <button
+        onClick={() => setWarning(true)}
+        disabled={granting}
+        title={t("approval.action.allowEverythingHint", { name: bot.name })}
+        className={cn(className, "border border-hairline/50 text-ink hover:bg-control disabled:cursor-wait disabled:opacity-60")}
+      >
+        {t("approval.action.allowEverything")}
+      </button>
+      <FullAccessWarning open={warning} onCancel={() => setWarning(false)} onConfirm={grant} />
+    </>
   );
 }
