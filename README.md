@@ -1,6 +1,6 @@
 <div align="center">
 
-# OpenMausBot
+# Legion
 
 Legion is a fork of [OpenMausBot](https://github.com/milind-soni/OpenMausBot) by Milind Soni, used and modified under the Apache-2.0 license.
 
@@ -291,7 +291,7 @@ flowchart LR
 | App | `src/` | The chat shell. Server-backed store, one reducer, zero client-side transports. |
 | Desktop | `electron/` | macOS, Windows, and Ubuntu shells with an embedded harness and platform capabilities; Apple speech stays macOS-only, Ubuntu Xorg has opt-in local control, and Wayland remains fail-closed. |
 
-### Orchestrate OpenMausBot over MCP
+### Orchestrate Legion over MCP
 
 OpenMausBot ships a stdio MCP server for external clients such as Claude Desktop and Cursor. It exposes a
 deliberately bounded team control plane: inspect bots and channels, read/search compact transcript pages,

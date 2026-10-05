@@ -144,7 +144,7 @@ test("native workspace choices use saved IDs and connect opens settings without 
 
 test("native window identity distinguishes hosted HTML, companion data, and the local workspace", () => {
   const state = { environments: [{ id: "old", name: "Old team", origin: "https://old.example" }], activeId: "old" };
-  assert.equal(env.workspaceWindowTitle(state), "OpenMausBot — Hosted: Old team (old.example)");
-  assert.equal(env.workspaceWindowTitle(state, { serverName: "Office", endpoint: "https://c-office.openmausbot.com" }), "OpenMausBot — Connected to: Office (c-office.openmausbot.com)");
-  assert.equal(env.workspaceWindowTitle(env.withActive(state, "local")), "OpenMausBot");
+  assert.equal(env.workspaceWindowTitle(state), "Legion — Hosted: Old team (old.example)");
+  assert.equal(env.workspaceWindowTitle(state, { serverName: "Office", endpoint: "https://c-office.openmausbot.com" }), "Legion — Connected to: Office (c-office.openmausbot.com)");
+  assert.equal(env.workspaceWindowTitle(env.withActive(state, "local")), "Legion");
 });

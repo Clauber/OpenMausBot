@@ -1,4 +1,4 @@
-# OpenMausBot MCP server
+# Legion MCP server
 
 The OpenMausBot desktop app includes a local stdio MCP server. It lets another MCP client coordinate your
 OpenMausBot team while the desktop app and its harness are running.

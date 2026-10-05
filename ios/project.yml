@@ -72,12 +72,8 @@ targets:
     info:
       path: App/Info.plist
       properties:
-        # What appears under the icon. This MUST stay close to the App Store
-        # listing name ("MausBot") or review rejects the build under
-        # guideline 2.3.8: a person who installs "MausBot" has to be able to
-        # find it on the home screen. The desktop app is "OpenMausBot", which
-        # is near enough to read as the same family and still tell them apart.
-        CFBundleDisplayName: MausBot
+        # The fork name shown under the app icon.
+        CFBundleDisplayName: Legion
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSApplicationCategoryType: public.app-category.productivity
@@ -112,16 +108,16 @@ targets:
         # It looks exactly like "no computers on this network", which is a
         # confusing hour if you don't know to look here.
         NSLocalNetworkUsageDescription: >-
-          OpenMausBot finds your computer on this network so your bots can
+          Legion finds your computer on this network so your bots can
           reach you here.
         NSCameraUsageDescription: >-
-          OpenMausBot uses the camera only to scan a pairing QR code shown on
+          Legion uses the camera only to scan a pairing QR code shown on
           your computer.
         NSMicrophoneUsageDescription: >-
-          OpenMausMobile listens while you dictate a message to a bot or talk
+          Legion listens while you dictate a message to a bot or talk
           to it on a Live call.
         NSSpeechRecognitionUsageDescription: >-
-          OpenMausMobile converts your speech into text so you can send it
+          Legion converts your speech into text so you can send it
           to a bot. Recognition runs on this phone when it can.
         NSBonjourServices:
           - _openmausbot._tcp
@@ -192,7 +188,7 @@ targets:
     info:
       path: ShareExtension/Info.plist
       properties:
-        CFBundleDisplayName: MausBot
+        CFBundleDisplayName: Legion
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         OpenMausKeychainAccessGroup: $(AppIdentifierPrefix)group.com.openmausbot.shared
@@ -268,7 +264,7 @@ targets:
     info:
       path: Widgets/Info.plist
       properties:
-        CFBundleDisplayName: MausBot
+        CFBundleDisplayName: Legion
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         OpenMausKeychainAccessGroup: $(AppIdentifierPrefix)group.com.openmausbot.shared
