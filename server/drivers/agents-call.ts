@@ -447,6 +447,21 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     if (!stdout && !stderr && !body.timedOut) lines.push("(no output)");
     return { text: lines.join("\n"), ...(exitCode !== 0 || body.timedOut ? { isError: true } : {}) };
   }
+  if (name === "web_fetch" || name === "web_search") {
+    const { ok, body } = await apiResponse(`/api/internal/${name.replace("_", "-")}`, {
+      method: "POST",
+      body: JSON.stringify(name === "web_fetch" ? { url: args.url } : { query: args.query }),
+    });
+    if (!ok) return { text: String(body.error ?? `${name} failed.`), isError: true };
+    if (name === "web_search") {
+      const results = Array.isArray(body.results) ? body.results as Json[] : [];
+      return { text: results.length
+        ? results.map((r, i) => `${i + 1}. ${String(r.title)}\n   ${String(r.url)}\n   ${String(r.snippet ?? "")}`).join("\n")
+        : "No results." };
+    }
+    return { text: [`URL: ${String(body.url)}`, ...(body.title ? [`Title: ${String(body.title)}`] : []),
+      ...(body.truncated ? ["(Text truncated to 30000 characters.)"] : []), "", String(body.text ?? "")].join("\n") };
+  }
   if (name === "attach_file") {
     const { ok, body } = await apiResponse("/api/internal/attach-file", {
       method: "POST",

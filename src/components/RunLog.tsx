@@ -4,6 +4,7 @@ import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import { runLogText, type TimelineEvent } from "@/lib/taskTimeline";
 import { formatTime } from "@/state/store";
+import { ArtifactsList } from "./ArtifactsList";
 
 const STATUS = {
   running: "inspector.run.running",
@@ -12,7 +13,7 @@ const STATUS = {
   observed: "inspector.run.observed",
 } as const;
 
-export function RunLog({ events }: { events: TimelineEvent[] }) {
+export function RunLog({ events, threadId }: { events: TimelineEvent[]; threadId?: string }) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   // The full conversation remains in chat. Keep the debugging view bounded.
   const recent = events.slice(-200);
@@ -61,6 +62,7 @@ export function RunLog({ events }: { events: TimelineEvent[] }) {
           })}
         </ol>
       )}
+      {threadId && <ArtifactsList threadId={threadId} />}
     </div>
   );
 }
