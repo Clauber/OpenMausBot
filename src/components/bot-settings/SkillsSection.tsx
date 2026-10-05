@@ -5,6 +5,7 @@
 // dialog's own z-50, plus: an Import from GitHub row, a static "when it's
 // used" line on every row (learned skills have no triggers to show), and a
 // read-only click-through view of a skill's full text.
+import { TaughtSkillsCard } from "../TaughtSkillsCard";
 import { BookOpen, Trash2 } from "lucide-react";
 import { t } from "@/lib/i18n";
 import { useEffect, useRef, useState } from "react";
@@ -399,6 +400,7 @@ export function SkillsSection({ bot }: { bot: Bot }) {
 
   return (
     <div className="flex flex-col gap-4">
+      <TaughtSkillsCard key={bot.id + bot.threadId} botId={bot.id} threadId={bot.threadId} />
       <div className="rounded-xl bg-card p-4">
         <div className="flex items-center gap-2">
           <BookOpen size={16} className="text-ink-secondary" />

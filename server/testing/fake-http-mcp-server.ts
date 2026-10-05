@@ -20,6 +20,8 @@ export interface FakeHttpMcpOptions {
   silentTools?: boolean;
   description?: string;
   tools?: Array<{ name: string; inputSchema: Record<string, unknown> }>;
+  /** Deterministic tool results, including screenshots and failures. */
+  onCall?: (params: unknown) => unknown;
 }
 
 export interface FakeHttpMcp {
@@ -60,7 +62,7 @@ export async function startFakeHttpMcp(options: FakeHttpMcpOptions = {}): Promis
     }
     if (frame.method === "tools/call" && options.tools) {
       calls.push(frame.params);
-      return { jsonrpc: "2.0", id: frame.id, result: { content: [{ type: "text", text: "remote execution recorded" }] } };
+      return { jsonrpc: "2.0", id: frame.id, result: options.onCall ? options.onCall(frame.params) : { content: [{ type: "text", text: "remote execution recorded" }] } };
     }
     return null;
   };

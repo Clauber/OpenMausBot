@@ -30,6 +30,7 @@ import { StringDecoder } from "node:string_decoder";
 import { CONTROL_REFUSAL_PLAIN, createControlClient } from "./control-client.ts";
 import { augmentedPath, resolveCliSpawn } from "./env-path.ts";
 import { createToolListNormalizer } from "./mcp-tool-schema.ts";
+import { createTeachCaptureClient } from "./teach-capture-client.ts";
 
 // 45s of TOTAL silence before the bridge even probes. An MCP session is
 // legitimately quiet between tool calls and a slow screenshot can take tens
@@ -278,7 +279,15 @@ export function runMcpBridge(options: BridgeOptions): void {
     : null;
   let refusalReason: string | undefined;
 
-  const answer = (line: string) => process.stdout.write(line + "\n");
+  const capture = options.gate ? createTeachCaptureClient(options.gate) : undefined;
+  let pendingOutput = Promise.resolve();
+  const answer = (line: string) => {
+    pendingOutput = pendingOutput.then(async () => {
+      try { await capture?.after(line); }
+      catch { process.stderr.write("teaching result capture failed; inspect the recording before saving\n"); }
+      process.stdout.write(line + "\n");
+    });
+  };
   const forward = (line: string) => child.stdin.write(line + "\n");
   const intercept = createMcpBridgeInterceptor({
     answer,
@@ -301,8 +310,16 @@ export function runMcpBridge(options: BridgeOptions): void {
   let pendingInput = Promise.resolve();
   const inbound = createLineSplitter((line) => {
     toolLists.observeRequest(line);
-    const completion = intercept(line);
-    if (completion) pendingInput = completion;
+    pendingInput = pendingInput.then(async () => {
+      try { await capture?.before(line); await intercept(line); }
+      catch (error) {
+        try {
+          const frame = JSON.parse(line);
+          if (frame.id !== undefined) answer(JSON.stringify({ jsonrpc: "2.0", id: frame.id,
+            result: { isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : "Teaching capture failed." }] } }));
+        } catch { /* an invalid frame is already handled by the transport */ }
+      }
+    });
   });
 
   const onStdin = (chunk: Buffer) => inbound.push(chunk);
@@ -317,7 +334,7 @@ export function runMcpBridge(options: BridgeOptions): void {
   // Injected responses and refusals must never land inside one of the
   // child's half-written frames, so the child's stdout is re-emitted at
   // line granularity as well.
-  const outbound = createLineSplitter((line) => process.stdout.write(toolLists.rewriteResponse(line) + "\n"));
+  const outbound = createLineSplitter((line) => answer(toolLists.rewriteResponse(line)));
   child.stdout.on("data", (chunk) => outbound.push(chunk));
   child.stdout.on("end", () => outbound.flush());
 

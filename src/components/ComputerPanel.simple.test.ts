@@ -12,7 +12,7 @@ import type { FeatureFlagConfig } from "@/lib/feature-flags";
 const fixture = vi.hoisted(() => {
   const view = { current: "computer" as string };
   const ogb: Record<string, unknown> = {};
-  vi.stubGlobal("window", { ogb });
+  vi.stubGlobal("window", { ogb, location: { hash: "" } });
   vi.stubGlobal("document", { visibilityState: "visible" });
   vi.stubGlobal("localStorage", { getItem: (key: string) => key.startsWith("omb-computer-panel-view") ? view.current : null, setItem: () => {} });
   return {

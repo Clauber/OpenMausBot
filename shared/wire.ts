@@ -713,6 +713,7 @@ export type BotQueuedMessages = Record<string, Array<{ queueId: string; text: st
  * from the org package stamp when one exists; locally imported skills
  * carry null. */
 export interface SkillsLibrarySkillWire {
+  kind?: "taught";
   name: string;
   description: string;
   source: string;

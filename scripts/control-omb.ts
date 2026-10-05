@@ -417,7 +417,12 @@ export async function launchVerificationServer(
   extraProviders: Array<"codex"> = [],
   /** Programmatic tests only: an owned loopback Boat provider, never a live account. */
   boatFixtureApi?: string,
+  /** Repository fake MCP computer; isolated fixture launch only. */
+  taughtFixtureMcp?: string,
 ): Promise<VerificationServer> {
+  if (taughtFixtureMcp && !/^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}\/mcp$/.test(taughtFixtureMcp)) {
+    throw new ControlOmbError("Taught fixture requires an explicit loopback MCP server");
+  }
   if (boatFixtureApi) {
     if (!/^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}$/.test(boatFixtureApi)) {
       throw new ControlOmbError("Boat verification requires an explicit loopback HTTP provider");
@@ -476,6 +481,7 @@ export async function launchVerificationServer(
     AGENT_BROWSER_EXECUTABLE_PATH: browser.executablePath,
   });
   if (boatFixtureApi) childEnv.OMB_BOX_API = boatFixtureApi;
+  if (taughtFixtureMcp) childEnv.OMB_TEST_TAUGHT_MCP = taughtFixtureMcp;
   const serverArgs = ["--experimental-strip-types"];
   if (childEnv.OMB_TEST_FAIL_AUDIO_APPEND_ONCE === "1") {
     serverArgs.push("--import", pathToFileURL(join(ROOT, "server", "testing", "fail-audio-append-once.mjs")).href);

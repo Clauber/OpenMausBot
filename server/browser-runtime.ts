@@ -37,7 +37,7 @@ type Pending = { resolve: (result: unknown) => void; reject: (error: Error) => v
 
 /** A server-owned JSONL client. Neither child stderr nor its environment is
  * returned to the agent. Reuse the existing cross-platform spawn/kill rules. */
-class BrowserClient {
+export class BrowserClient {
   readonly child: ReturnType<typeof spawnCli>;
   readonly ready: Promise<void>;
   private pending = new Map<number, Pending>();

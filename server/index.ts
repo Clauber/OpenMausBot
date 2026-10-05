@@ -106,6 +106,10 @@ import { groupTurnCwd } from "./room-cwd.ts";
 import { RoomTurnDeadline, RoomTurnStallRegistry, roomTurnTimeoutMessage } from "./room-turn-timeout.ts";
 import * as boat from "./boat.ts";
 import { cloudComputerRpc } from "./cloud-computer-tools.ts";
+import { TeachingSessions, taughtSummary } from "./teaching-session.ts";
+import type { TaughtTool } from "../shared/taught-skills.ts";
+import type { TaughtComputer } from "./teaching-session.ts";
+import { RemoteMcpClient } from "./mcp-http.ts";
 import { TeamComputers, teamComputerAssignment, teamComputerCreate, teamComputerOwner, type TeamComputerRecord } from "./team-computers.ts";
 import { isEffortLevel, type BotVisibility, type CardAnswerer, type ResolvedSender, type SteerQueueReason, type WireBot, type WireGroup, type WireTask } from "../shared/wire.ts";
 import { isPersistentQuestionCard, QUESTION_DISMISS_MESSAGE, shouldSettleRequestCard } from "../shared/ask-question.ts";
@@ -445,7 +449,7 @@ import * as vps from "./vps-computer.ts";
 import { RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
 import { CalendarCallManager, type CalendarCall } from "./calendar-calls.ts";
 import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
-import { BrowserRuntime, browserRuntimeEnv } from "./browser-runtime.ts";
+import { BrowserClient, BrowserRuntime, browserRuntimeEnv } from "./browser-runtime.ts";
 import { BrowserLive } from "./browser-live.ts";
 import {
   agentBrowserFrame,
@@ -3057,6 +3061,8 @@ function connectedAppsIntegration(bot: Pick<BotRecord, "id" | "connectorTools">,
 // The person can take the wheel of a bot's computer from the panel; while
 // they hold it, the bot's computer proxies refuse every action. The record
 // lives here; the proxies consult it over loopback with the boot token.
+const teaching = new TeachingSessions();
+const teachingCaptures = new Map<string, { botId: string; threadId: string; finish: (result: unknown) => void }>();
 const computerControlRevision = new Map<string, number>();
 const computerControl = new ComputerControl((key, snapshot) => {
   const members = key.startsWith("computer_")
@@ -6465,6 +6471,102 @@ function botComputerControlSnapshot(botId: string, pinnedComputerId?: string) {
   return own.held ? own : shared.held || shared.helpReason ? shared : own;
 }
 
+/** Resolve only a ready, explicitly bound computer. Teaching never provisions or wakes one. */
+async function openTaughtComputer(botId: string, threadId: string): Promise<TaughtComputer> {
+  const bot = store.projectBotForTask(botId, threadId);
+  if (!bot || !store.taskByThread(botId, threadId)) throw new Error("Unknown bot conversation.");
+  const owner = { threadId: `teach:${randomUUID()}`, generation: randomUUID() };
+  const mode = approvalModeForTurn(bot, false, threadId);
+  const signature = JSON.stringify([bot.computer, bot.cloudBackend, inheritedTeamComputer(bot)?.id]);
+  let id: string, kind: string, resource: string;
+  let call!: TaughtComputer["call"];
+  let tools: TaughtTool[] = [];
+  let stop = async () => {};
+  const check = () => {
+    const current = store.projectBotForTask(botId, threadId);
+    if (!current || !store.taskByThread(botId, threadId) || JSON.stringify([current.computer, current.cloudBackend, inheritedTeamComputer(current)?.id]) !== signature)
+      throw new Error("Computer binding changed during teaching.");
+    if (botHasActiveTurn(botId, true)) throw new Error("Wait for this bot's active turn to finish before demonstrating or replaying.");
+    if (approvalModeForTurn(current, false, threadId) !== mode) throw new Error("Bot approval mode changed during replay.");
+    const refusal = computerPlaceRefusal(kind === "cloud:box" ? "box" : kind === "cloud:vps" ? "vps" : kind === "local" ? "thisComputer" : "localVm");
+    if (refusal) throw new Error(refusal.message);
+    if (botComputerControlSnapshot(botId).held) throw new Error("Release human control before replaying computer tools.");
+    if (!claimTurnResource(owner, resource)) throw new Error("Another thread is using this computer.");
+  };
+  try {
+    const fake = process.env.OMB_TEST_TAUGHT_MCP;
+    if (fake) {
+      if (turnSurfacePlan(bot, undefined, threadId).computer !== "vm") throw new Error("The fixture computer must be explicitly bound as Local VM.");
+      if (!/^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}\/mcp$/.test(fake)) throw new Error("Invalid fixture computer.");
+      kind = "vm"; id = "vm:fixture"; resource = "computer:vm:fixture";
+      const client = new RemoteMcpClient({ type: "http", url: fake, headers: {} }, { maxBytes: 16_777_216 });
+      stop = async () => { await client.close(); };
+      await client.initialize("taught-skills", AbortSignal.timeout(5000));
+      tools = ((await client.request("tools/list", {}, AbortSignal.timeout(5000))) as { tools: TaughtTool[] }).tools;
+      call = (tool, args) => client.request("tools/call", { name: tool, arguments: args }, AbortSignal.timeout(30_000));
+    } else {
+      const team = inheritedTeamComputer(bot);
+      const surface = turnSurfacePlan(bot, undefined, threadId).computer;
+      let spec: { command: string; args: string[]; env: Record<string, string | undefined> } | undefined;
+      if (surface === "vm") {
+        const target = localVmTargetForStatus(botId, threadId);
+        const status = await containerComputerStatus(undefined, undefined, target);
+        if (!status.ready || !status.runtime) throw new Error("Bound Local VM is not reachable.");
+        kind = "vm"; id = `vm:${target.key}`; resource = `computer:vm:${target.key}`;
+        spec = containerComputerMcp(status.runtime, undefined, target);
+      } else if (surface === "local") {
+        const connection = readCuaConnection();
+        if (!connection) throw new Error("Bound local computer is not reachable.");
+        kind = "local"; id = "host"; resource = "computer:host"; spec = connection;
+      } else if (surface === "cloud" && bot.cloudBackend === "vps" && !team) {
+        const status = await vps.vpsComputerStatus(cfg, botId);
+        if (!status.ready) throw new Error("Bound VPS computer is not reachable.");
+        kind = "cloud:vps"; id = `vps:${vpsSshAlias(cfg)}:${botId}`; resource = `computer:vps:${vpsSshAlias(cfg)}:${botId}`;
+        spec = vps.vpsComputerMcp(cfg, botId);
+      } else if (surface === "cloud" || team) {
+        const machine = await boat.findBoat(cfg, team ? teamComputerOwner(team.id) : botId);
+        if (!machine || boat.boatTurnLifecycleAction({ explicitCloud: false, state: machine.state }) !== "attach") throw new Error("Bound cloud computer is not reachable.");
+        kind = "cloud:box"; id = `box:${machine.id}`; resource = `computer:box:${machine.id}`;
+        tools = ((await cloudComputerRpc({ method: "tools/list" }, { cfg, boxId: machine.id, signal: AbortSignal.timeout(5000), gate: async () => ({ held: false }), assertActive: () => {} })) as { tools: TaughtTool[] }).tools;
+        call = (tool, args) => cloudComputerRpc({ method: "tools/call", params: { name: tool, arguments: args } }, {
+          cfg, boxId: machine.id, signal: AbortSignal.timeout(130_000), gate: async () => { check(); return { held: false }; }, assertActive: check,
+        });
+      } else throw new Error("Choose an explicit Local VM, local or cloud computer before teaching.");
+      if (spec) {
+        const client = new BrowserClient(spec, 130_000, 60_000, 1, () => {}, () => {});
+        stop = () => client.stop();
+        await client.ready;
+        tools = ((await client.rpc("tools/list", {})) as { tools: TaughtTool[] }).tools;
+        call = (tool, args) => client.rpc("tools/call", { name: tool, arguments: args });
+      }
+    }
+    return { id: id!, kind: kind!, approvalMode: mode, tools,
+      call: async (tool, args) => { check(); const result = await call(tool, args); check(); return result; },
+      close: async () => { try { await stop(); } finally { releaseTurnResources(owner); } },
+    };
+  } catch (error) { await stop(); releaseTurnResources(owner); throw error; }
+}
+
+function startTaughtReplay(runId: string) {
+  const run = teaching.run(runId);
+  if (!run) return;
+  void teaching.execute(run, () => openTaughtComputer(run.botId, run.threadId)).then(() => {
+    if (store.taskByThread(run.botId, run.threadId)) store.appendMessage(run.threadId, { role: "bot", kind: "text",
+      text: run.status === "success" ? `Playbook "${run.name}" completed (${run.completedSteps} steps).` :
+        `Playbook "${run.name}" stopped${run.failedStep === undefined ? " during pre-flight" : ` at step ${run.failedStep + 1} (index ${run.failedStep})`}: ${run.error}`,
+    });
+  }).catch(error => console.error("[taught-skills] Replay settlement failed:", redactSecretsInText(String(error))));
+}
+
+function settleTaughtSkillStage(stagedId: string, allowed: boolean) {
+  const run = teaching.runForStage(stagedId);
+  if (!run) return;
+  if (allowed) {
+    const approved = teaching.approve(run.id, stagedId);
+    if (approved) startTaughtReplay(approved.id);
+  } else teaching.reject(run.id);
+}
+
 function teamComputerInUse(computer: TeamComputerRecord): boolean {
   computer = teamComputers.get(computer.id) ?? computer;
   return computerControl.snapshot(teamComputerOwner(computer.id)).held ||
@@ -6694,9 +6796,9 @@ function managedBoatOwners(): boat.ManagedBoatOwner[] {
   }))];
 }
 
-function botHasActiveTurn(botId: string): boolean {
+function botHasActiveTurn(botId: string, ignoreTaught = false): boolean {
   const bot = store.bot(botId);
-  return bot?.busy === true ||
+  return (!ignoreTaught && teaching.runningForBot(botId)) || bot?.busy === true ||
     hasDirectDispatch(botId) ||
     activeGroupTurnForBot(botId) !== null;
 }
@@ -14096,7 +14198,7 @@ function stagedSkillCleanupsForThread(threadId: string): Array<{ botId: string; 
 }
 
 function rejectDeletedThreadSkillStages(cleanups: Array<{ botId: string; stagedId: string }>): void {
-  for (const cleanup of cleanups) rejectStagedSkillWrite(cleanup.botId, cleanup.stagedId);
+  for (const cleanup of cleanups) { rejectStagedSkillWrite(cleanup.botId, cleanup.stagedId); settleTaughtSkillStage(cleanup.stagedId, false); }
 }
 
 function skillCardCopy(staged: { action: "create" | "update"; name: string; gist: string; warnings: string[] }): {
@@ -14195,8 +14297,10 @@ function resolveSkillRequest(args: {
       store.patchMessage(args.threadId, message.id, {
         card: { ...card, answered: "allow", dismissed: false, held: undefined },
       });
+      settleTaughtSkillStage(request.stagedId, true);
       return { claimed: true, outcome: "allowed-once", alreadySettled: true };
     }
+    settleTaughtSkillStage(request.stagedId, card.answered === "allow");
     return { claimed: true, outcome: card.answered === "allow" ? "allowed-once" : "rejected", alreadySettled: true };
   }
   if (args.behavior !== "allow") {
@@ -14218,6 +14322,7 @@ function resolveSkillRequest(args: {
         decision: "user-approved",
         source: "user",
       });
+      settleTaughtSkillStage(request.stagedId, true);
       return { claimed: true, outcome: "allowed-once" };
     }
     store.patchMessage(args.threadId, message.id, {
@@ -14233,6 +14338,7 @@ function resolveSkillRequest(args: {
       decision: "user-denied",
       source: "user",
     });
+    settleTaughtSkillStage(request.stagedId, false);
     return { claimed: true, outcome: "rejected" };
   }
   if (typeof request.preview !== "string" || typeof request.sha256 !== "string") {
@@ -14288,6 +14394,7 @@ function resolveSkillRequest(args: {
       decision: "user-approved",
       source: "user",
     });
+    settleTaughtSkillStage(request.stagedId, true);
     return { claimed: true, outcome: "allowed-once" };
   }
   if (
@@ -14325,6 +14432,7 @@ function resolveSkillRequest(args: {
     decision: "user-approved",
     source: "user",
   });
+  settleTaughtSkillStage(request.stagedId, true);
   return { claimed: true, outcome: "allowed-once" };
 }
 
@@ -16192,7 +16300,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         ? "phone"
         : path.startsWith("/api/internal/connectors/")
         ? "connectors"
-        : path === "/api/internal/computer-control" || path === "/api/internal/computer/mcp"
+        : path === "/api/internal/computer-control" || path === "/api/internal/computer/mcp" || path === "/api/internal/teach-capture"
           ? "computer"
           : "agents";
       if (internalCapability.kind !== requiredCapabilityKind) {
@@ -16376,17 +16484,38 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
       // The cloud computer's tools (harness-mcp-proxy computer): the turn's
       // capability names its Boat, and the Boat credential stays here.
+      if (method === "POST" && path === "/api/internal/teach-capture") {
+        const body = await readInternalBody();
+        const { botId, threadId } = internalCapability;
+        if (body.phase === "begin") {
+          const resource = turnComputerResources.get(threadId)?.resource;
+          const computerId = internalCapability.boxId ? `box:${internalCapability.boxId}` : resource?.startsWith("computer:") ? resource.slice("computer:".length) : internalCapability.localVmTarget ? `vm:${internalCapability.localVmTarget.key}` : "host";
+          const finish = teaching.begin(botId, threadId, computerId, body.tool, body.args ?? {});
+          const captureId = finish ? randomUUID() : undefined;
+          if (captureId && finish) teachingCaptures.set(captureId, { botId, threadId, finish });
+          return json(res, 200, { captureId });
+        }
+        const capture = teachingCaptures.get(body.captureId);
+        if (capture && capture.botId === botId && capture.threadId === threadId) {
+          teachingCaptures.delete(body.captureId); capture.finish(body.result);
+        }
+        return json(res, 200, { ok: true });
+      }
       if (method === "POST" && path === "/api/internal/computer/mcp") {
         const body = await readInternalBody();
         const boxId = internalCapability.boxId;
         if (!boxId) return json(res, 403, { error: "this turn has no cloud computer" });
         const abort = new AbortController();
         res.once("close", () => { if (!res.writableEnded) abort.abort(); });
-        return json(res, 200, { result: await cloudComputerRpc(body, {
+        const finish = body?.method === "tools/call" ? teaching.begin(internalCapability.botId, internalCapability.threadId, `box:${boxId}`, body.params?.name, body.params?.arguments ?? {}) : undefined;
+        let result;
+        try { result = await cloudComputerRpc(body, {
           cfg, boxId, signal: abort.signal,
           gate: () => computerCallGate(internalCapability),
           assertActive: requireActiveInternalCapability,
-        }) });
+        }); } catch (error) { finish?.({ isError: true, content: [{ type: "text", text: String(error) }] }); throw error; }
+        finish?.(result);
+        return json(res, 200, { result });
       }
       if (method === "POST" && path === "/api/internal/phone/claim") {
         // Lazy phone exclusivity (issue #1663): the turn holds computer:phone
@@ -21665,6 +21794,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const index = readSkillLibraryIndex();
       const skills: SkillsLibrarySkillWire[] = listLibrarySkills()
         .map((listing): SkillsLibrarySkillWire => ({
+          ...(listing.kind ? { kind: listing.kind } : {}),
           name: listing.name,
           description: listing.description,
           source: listing.source,
@@ -22997,6 +23127,50 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       } finally {
         titleRegenerations.delete(m[2]);
       }
+    }
+
+    if ((m = path.match(/^\/api\/bots\/([^/]+)\/tasks\/([^/]+)\/teach(?:\/(start|stop|discard|action|replay|settings))?$/))) {
+      const [botId, threadId, operation] = m.slice(1);
+      const bot = store.projectBotForTask(botId, threadId);
+      if (!bot || !store.taskByThread(botId, threadId)) return json(res, 404, { error: "Unknown bot conversation." });
+      if (method === "GET" && !operation) return json(res, 200, { session: teaching.current(botId, threadId) ?? null, playbooks: teaching.list(botId), alwaysAsk: teaching.alwaysAsk(botId) });
+      if (method !== "POST" || !operation) return json(res, 405, { error: "Unknown teaching operation." });
+      const body = await readBody(req);
+      try {
+        if (operation === "settings") {
+          if (typeof body.alwaysAsk !== "boolean") return json(res, 400, { error: "alwaysAsk must be boolean" });
+          teaching.setAlwaysAsk(botId, body.alwaysAsk); return json(res, 200, { alwaysAsk: body.alwaysAsk });
+        }
+        if (operation === "discard") { teaching.discard(botId, threadId); return json(res, 200, { ok: true }); }
+        if (operation === "stop") return json(res, 201, { playbook: teaching.stop(botId, threadId) });
+        const computer = await openTaughtComputer(botId, threadId);
+        try {
+          if (operation === "start") return json(res, 201, { session: teaching.start(botId, threadId, computer, String(body.title ?? ""), String(body.notes ?? "")) });
+          if (operation === "action") {
+            if (!teaching.current(botId, threadId)) throw new Error("Start recording before demonstrating actions.");
+            if (!body.args || typeof body.args !== "object" || Array.isArray(body.args)) throw new Error("Action args must be an object.");
+            return json(res, 200, { result: await teaching.perform(botId, threadId, computer, body.tool, body.args) });
+          }
+          if (operation === "replay") {
+            const persistence = skillProposalPersistence(botId, threadId);
+            if (!persistence.ok) return json(res, persistence.status, { error: persistence.error });
+            if (!listSkills(botId).some(skill => skill.name === body.name && skill.enabled)) teaching.revoke(botId, String(body.name ?? ""));
+            const run = teaching.request(String(body.name ?? ""), botId, threadId, computer, body.compareScreenshots === true);
+            if (run.status === "awaiting-approval") {
+              const source = `learn:taught:${run.id}`;
+              const summary = taughtSummary(teaching.read(run.name)) + `\nReplay request: ${run.id}\n`;
+              const staged = stageSkillWrite(botId, { action: listSkills(botId).some(skill => skill.name === run.name) ? "update" : "create",
+                targetName: run.name, files: [{ path: "SKILL.md", content: summary }], source, gist: `Replay ${run.name} on ${computer.kind}. Review every recorded argument.` });
+              if ("error" in staged) { teaching.reject(run.id, staged.error); throw new Error(staged.error); }
+              teaching.staged(run, staged.id);
+              try { const card = appendSkillRequestCard({ botId, threadId, staged }); return json(res, 202, { run, ...card }); }
+              catch (error) { rejectStagedSkillWrite(botId, staged.id); teaching.reject(run.id, String(error)); throw error; }
+            }
+            startTaughtReplay(run.id); return json(res, 202, { run });
+          }
+          return json(res, 404, { error: "Unknown teaching operation." });
+        } finally { await computer.close(); }
+      } catch (error) { return json(res, 409, { error: redactSecretsInText(error instanceof Error ? error.message : String(error)) }); }
     }
 
     // Named team Boats use real independent ownership, never a hidden bot or
