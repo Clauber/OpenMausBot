@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { SPACE_KINDS, SpaceError, SpaceIsolationError, scopeFromHeaders, type SpaceEntityKind, type SpaceRegistry } from "../space-scope.ts";
+import type { ServerResponse } from "node:http";
 import { PASS, type RouteHandler } from "./table.ts";
 
 export interface SpacesRouteDeps {
@@ -7,6 +8,8 @@ export interface SpacesRouteDeps {
   /** Whether an entity of this kind exists, so a typo cannot park an id in a space. */
   exists(kind: SpaceEntityKind, id: string): boolean;
   onChange?(): void;
+  /** Rewrites the JSON body this response is about to send (harness/http.ts onJsonBody). */
+  onJsonBody(res: ServerResponse, rewrite: (body: unknown) => unknown): void;
 }
 
 const name = z.object({ name: z.string() }).strict();
@@ -18,6 +21,18 @@ export function createSpacesRoutes(deps: SpacesRouteDeps): RouteHandler {
   const { registry } = deps;
   const snapshot = () => ({ spaces: registry.list(), assignments: registry.assignments(), allowlist: registry.allowlist() });
   return async ({ req, res, path, method, auth, json, readBody }) => {
+    if (method === "GET" && path === "/api/bots") {
+      // A space-scoped context lists only its own space's bots, and no groups.
+      const scope = scopeFromHeaders(req.headers);
+      if (scope.kind === "space") deps.onJsonBody(res, (body) => {
+        if (!body || typeof body !== "object") return body;
+        const record = body as { bots?: Array<{ id: string }>; groups?: unknown[]; computerControl?: Record<string, unknown> };
+        const mine = (record.bots ?? []).filter((bot) => registry.spaceOf("bot", bot.id) === scope.spaceId);
+        const ids = new Set(mine.map((bot) => bot.id));
+        return { ...record, bots: mine, groups: [], computerControl: Object.fromEntries(Object.entries(record.computerControl ?? {}).filter(([id]) => ids.has(id))) };
+      });
+      return PASS;
+    }
     if (path !== "/api/spaces" && !path.startsWith("/api/spaces/")) return PASS;
     res.setHeader("cache-control", "no-store");
     try {

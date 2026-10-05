@@ -106,7 +106,7 @@ import { groupTurnCwd } from "./room-cwd.ts";
 import { RoomTurnDeadline, RoomTurnStallRegistry, roomTurnTimeoutMessage } from "./room-turn-timeout.ts";
 import * as boat from "./boat.ts";
 import { cloudComputerRpc } from "./cloud-computer-tools.ts";
-import { TeachingSessions, taughtSummary } from "./teaching-session.ts";
+import { TeachingSessions } from "./teaching-session.ts";
 import type { TaughtTool } from "../shared/taught-skills.ts";
 import type { TaughtComputer } from "./teaching-session.ts";
 import { RemoteMcpClient } from "./mcp-http.ts";
@@ -479,6 +479,7 @@ import { PageProposalService, pageContext, resolvePageResponse } from "./pages.t
 import { createPagesRoutes } from "./routes/pages.ts";
 import { SpaceIsolationError, SpaceRegistry, assertSpace, guardRequest, scopeFromHeaders, setActiveSpaces } from "./space-scope.ts";
 import { createSpacesRoutes } from "./routes/spaces.ts";
+import { TEACH_CAPTURE_PATH, createTeachCapture, createTeachRoutes } from "./routes/teach.ts";
 import { ProfileRequestService } from "./profile-requests.ts";
 import { ModelRequestService } from "./model-requests.ts";
 import { TighteningRequestService } from "./tightening-requests.ts";
@@ -3066,7 +3067,13 @@ function connectedAppsIntegration(bot: Pick<BotRecord, "id" | "connectorTools">,
 // they hold it, the bot's computer proxies refuse every action. The record
 // lives here; the proxies consult it over loopback with the boot token.
 const teaching = new TeachingSessions();
-const teachingCaptures = new Map<string, { botId: string; threadId: string; finish: (result: unknown) => void }>();
+const teachCapture = createTeachCapture({
+  teaching,
+  computerId: (capability: InternalCapability) => {
+    const resource = turnComputerResources.get(capability.threadId)?.resource;
+    return capability.boxId ? `box:${capability.boxId}` : resource?.startsWith("computer:") ? resource.slice("computer:".length) : capability.localVmTarget ? `vm:${capability.localVmTarget.key}` : "host";
+  },
+}, randomUUID);
 const computerControlRevision = new Map<string, number>();
 // Audit trail and instant revocation for computer actions (computer-audit.ts,
 // computer-epoch.ts). The audit stores tool names and outcomes, never arguments.
@@ -6588,6 +6595,8 @@ function settleTaughtSkillStage(stagedId: string, allowed: boolean) {
     const approved = teaching.approve(run.id, stagedId);
     if (approved) startTaughtReplay(approved.id);
   } else teaching.reject(run.id);
+}
+
 /** Re-derives whether a bot may still drive its computer; a reason when not.
  * Used as the lease check, so the same rules gate dispatch and in-flight work. */
 function computerAccessCheck(botId: string, teamComputerId?: string): () => string | null {
@@ -6600,7 +6609,6 @@ function computerAccessCheck(botId: string, teamComputerId?: string): () => stri
     if (startedMode !== "ask" && approvalModeFor(bot) === "ask") return "approval mode was downgraded to Ask";
     return null;
   };
-
 }
 
 function teamComputerInUse(computer: TeamComputerRecord): boolean {
@@ -15615,6 +15623,7 @@ ROUTES.push(createComputerAuditRoutes({
   computerIdFor: (botId) => { const bot = store.bot(botId); return auditComputerId(botId, bot ? inheritedTeamComputer(bot)?.id : undefined); },
 }));
 ROUTES.push(createSpacesRoutes({
+  onJsonBody,
   onChange: () => { computerEpochs.revalidate(); },
   registry: spaces,
   exists: (kind, id) => kind === "bot" ? Boolean(store.bot(id))
@@ -15622,6 +15631,15 @@ ROUTES.push(createSpacesRoutes({
     : kind === "routine" ? Boolean(routines?.listRoutines().some((routine) => routine.id === id))
     : kind === "webhook" ? webhooks.list().some((hook) => hook.id === id)
     : Boolean(pagesDb.get(id)),
+}));
+ROUTES.push(createTeachRoutes({
+  teaching,
+  projectBotForTask: (botId, threadId) => store.projectBotForTask(botId, threadId),
+  taskByThread: (botId, threadId) => store.taskByThread(botId, threadId),
+  openTaughtComputer, skillProposalPersistence, stageSkillWrite, rejectStagedSkillWrite, appendSkillRequestCard,
+  isSkillEnabled: (botId, name) => listSkills(botId).some(skill => skill.name === name && skill.enabled),
+  hasSkill: (botId, name) => listSkills(botId).some(skill => skill.name === name),
+  startTaughtReplay, redactSecretsInText,
 }));
 ROUTES.push(createPagesRoutes({
   db: pagesDb, store, proposals: pageProposals, spaces,
@@ -16056,15 +16074,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (error instanceof SpaceIsolationError) return json(res, 403, error.body());
       throw error;
     }
-    if (spaceCtx.kind === "space" && method === "GET" && path === "/api/bots") {
-      onJsonBody(res, (body) => {
-        if (!body || typeof body !== "object") return body;
-        const record = body as { bots?: Array<{ id: string }>; groups?: unknown[]; computerControl?: Record<string, unknown> };
-        const mine = (record.bots ?? []).filter((bot) => spaces.spaceOf("bot", bot.id) === spaceCtx.spaceId);
-        const ids = new Set(mine.map((bot) => bot.id));
-        return { ...record, bots: mine, groups: [], computerControl: Object.fromEntries(Object.entries(record.computerControl ?? {}).filter(([id]) => ids.has(id))) };
-      });
-    }
     beginAdminAudit(req, res, method, path, auth);
 
     if (method === "POST" && path === "/api/workspace-backup/restore" && teamComputers.list().some(computer => computer.section !== null)) {
@@ -16343,7 +16352,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         ? "phone"
         : path.startsWith("/api/internal/connectors/")
         ? "connectors"
-        : path === "/api/internal/computer-control" || path === "/api/internal/computer/mcp" || path === "/api/internal/teach-capture"
+        : path === "/api/internal/computer-control" || path === "/api/internal/computer/mcp" || path === TEACH_CAPTURE_PATH
           ? "computer"
           : "agents";
       if (internalCapability.kind !== requiredCapabilityKind) {
@@ -16527,23 +16536,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
       // The cloud computer's tools (harness-mcp-proxy computer): the turn's
       // capability names its Boat, and the Boat credential stays here.
-      if (method === "POST" && path === "/api/internal/teach-capture") {
-        const body = await readInternalBody();
-        const { botId, threadId } = internalCapability;
-        if (body.phase === "begin") {
-          const resource = turnComputerResources.get(threadId)?.resource;
-          const computerId = internalCapability.boxId ? `box:${internalCapability.boxId}` : resource?.startsWith("computer:") ? resource.slice("computer:".length) : internalCapability.localVmTarget ? `vm:${internalCapability.localVmTarget.key}` : "host";
-          const finish = teaching.begin(botId, threadId, computerId, body.tool, body.args ?? {});
-          const captureId = finish ? randomUUID() : undefined;
-          if (captureId && finish) teachingCaptures.set(captureId, { botId, threadId, finish });
-          return json(res, 200, { captureId });
-        }
-        const capture = teachingCaptures.get(body.captureId);
-        if (capture && capture.botId === botId && capture.threadId === threadId) {
-          teachingCaptures.delete(body.captureId); capture.finish(body.result);
-        }
-        return json(res, 200, { ok: true });
-      }
+      if (method === "POST" && path === TEACH_CAPTURE_PATH) return json(res, 200, teachCapture(internalCapability, await readInternalBody()));
       if (method === "POST" && path === "/api/internal/computer/mcp") {
         const body = await readInternalBody();
         const boxId = internalCapability.boxId;
@@ -23199,50 +23192,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       } finally {
         titleRegenerations.delete(m[2]);
       }
-    }
-
-    if ((m = path.match(/^\/api\/bots\/([^/]+)\/tasks\/([^/]+)\/teach(?:\/(start|stop|discard|action|replay|settings))?$/))) {
-      const [botId, threadId, operation] = m.slice(1);
-      const bot = store.projectBotForTask(botId, threadId);
-      if (!bot || !store.taskByThread(botId, threadId)) return json(res, 404, { error: "Unknown bot conversation." });
-      if (method === "GET" && !operation) return json(res, 200, { session: teaching.current(botId, threadId) ?? null, playbooks: teaching.list(botId), alwaysAsk: teaching.alwaysAsk(botId) });
-      if (method !== "POST" || !operation) return json(res, 405, { error: "Unknown teaching operation." });
-      const body = await readBody(req);
-      try {
-        if (operation === "settings") {
-          if (typeof body.alwaysAsk !== "boolean") return json(res, 400, { error: "alwaysAsk must be boolean" });
-          teaching.setAlwaysAsk(botId, body.alwaysAsk); return json(res, 200, { alwaysAsk: body.alwaysAsk });
-        }
-        if (operation === "discard") { teaching.discard(botId, threadId); return json(res, 200, { ok: true }); }
-        if (operation === "stop") return json(res, 201, { playbook: teaching.stop(botId, threadId) });
-        const computer = await openTaughtComputer(botId, threadId);
-        try {
-          if (operation === "start") return json(res, 201, { session: teaching.start(botId, threadId, computer, String(body.title ?? ""), String(body.notes ?? "")) });
-          if (operation === "action") {
-            if (!teaching.current(botId, threadId)) throw new Error("Start recording before demonstrating actions.");
-            if (!body.args || typeof body.args !== "object" || Array.isArray(body.args)) throw new Error("Action args must be an object.");
-            return json(res, 200, { result: await teaching.perform(botId, threadId, computer, body.tool, body.args) });
-          }
-          if (operation === "replay") {
-            const persistence = skillProposalPersistence(botId, threadId);
-            if (!persistence.ok) return json(res, persistence.status, { error: persistence.error });
-            if (!listSkills(botId).some(skill => skill.name === body.name && skill.enabled)) teaching.revoke(botId, String(body.name ?? ""));
-            const run = teaching.request(String(body.name ?? ""), botId, threadId, computer, body.compareScreenshots === true);
-            if (run.status === "awaiting-approval") {
-              const source = `learn:taught:${run.id}`;
-              const summary = taughtSummary(teaching.read(run.name)) + `\nReplay request: ${run.id}\n`;
-              const staged = stageSkillWrite(botId, { action: listSkills(botId).some(skill => skill.name === run.name) ? "update" : "create",
-                targetName: run.name, files: [{ path: "SKILL.md", content: summary }], source, gist: `Replay ${run.name} on ${computer.kind}. Review every recorded argument.` });
-              if ("error" in staged) { teaching.reject(run.id, staged.error); throw new Error(staged.error); }
-              teaching.staged(run, staged.id);
-              try { const card = appendSkillRequestCard({ botId, threadId, staged }); return json(res, 202, { run, ...card }); }
-              catch (error) { rejectStagedSkillWrite(botId, staged.id); teaching.reject(run.id, String(error)); throw error; }
-            }
-            startTaughtReplay(run.id); return json(res, 202, { run });
-          }
-          return json(res, 404, { error: "Unknown teaching operation." });
-        } finally { await computer.close(); }
-      } catch (error) { return json(res, 409, { error: redactSecretsInText(error instanceof Error ? error.message : String(error)) }); }
     }
 
     // Named team Boats use real independent ownership, never a hidden bot or
