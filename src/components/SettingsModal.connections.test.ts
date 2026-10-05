@@ -15,7 +15,7 @@ vi.mock("@/state/store", async (importOriginal) => ({
 vi.mock("@/lib/analytics", () => ({ analyticsEnabled: () => false, setAnalyticsEnabled: vi.fn() }));
 
 beforeEach(() => {
-  vi.stubGlobal("window", {});
+  vi.stubGlobal("window", { location: { hash: "" } });
   vi.stubGlobal("document", { documentElement: { dataset: {} } });
   setLocale("en");
 });

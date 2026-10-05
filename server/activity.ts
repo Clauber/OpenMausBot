@@ -109,6 +109,7 @@ const MATCH_BEFORE_MS = 5_000;
 const MATCH_AFTER_MS = 30_000;
 
 const OUTCOME_OF_DECISION: Record<DecisionKind, ActivityOutcome> = {
+  update: "allowed",
   "auto-approved": "allowed",
   "auto-denied": "denied",
   "user-approved": "allowed",

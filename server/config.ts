@@ -393,7 +393,14 @@ const threadsPatchSchema = threadsConfigSchema.extend({
   eventLogMaxBytes: threadsConfigSchema.shape.eventLogMaxBytes.nullable(),
   eventLogRetentionDays: threadsConfigSchema.shape.eventLogRetentionDays.nullable(),
 });
+const updaterConfigSchema = z.object({
+  enabled: z.boolean(),
+  channel: z.string().regex(/^[a-z0-9-]{1,32}$/).optional(),
+  registryUrl: z.string().min(1).max(2048).optional(),
+  unit: z.string().regex(/^[a-zA-Z0-9_][a-zA-Z0-9_.@-]{0,127}$/).optional(),
+}).strict();
 const appConfigSchema = z.object({
+  updater: updaterConfigSchema.optional(),
   /** Verified by the dedicated domain endpoint, never a generic config patch. */
   customDomain: z.string().optional(),
   /** Who may sign in with an emailed code (server/account-signin.ts):
@@ -569,6 +576,8 @@ const appConfigPatchSchema = appConfigSchema.omit({ instances: true, mcpServers:
 const jsonObjectSchema = z.record(z.string(), z.json());
 
 export interface AppConfig {
+  /** Private artifact registry only; absent means disabled. */
+  updater?: { enabled: boolean; channel?: string; registryUrl?: string; unit?: string };
   customDomain?: string;
   signIn?: { admins?: string[]; members?: string[] };
   /** Preferred selection for newly created bots; existing bots keep theirs. */
@@ -913,6 +922,7 @@ export const FLEET_NEUTRAL_KEYS: ReadonlySet<string> = new Set([
   "rooms",
   "threads",
   "automaticRecovery",
+  "updater",
   "context",
   "memory",
   "localVm",
@@ -1275,6 +1285,7 @@ export function saveConfig(
     disk[key] = merged;
   }
   if (checkedPatch.vps !== undefined) disk.vps = normalizeVpsConfig(checkedPatch.vps);
+  if (checkedPatch.updater !== undefined) disk.updater = checkedPatch.updater;
   // scalar, not a section: the merge loop above only walks objects
   if (checkedPatch.language !== undefined) disk.language = checkedPatch.language;
   if (checkedPatch.customDomain !== undefined) disk.customDomain = checkedPatch.customDomain;

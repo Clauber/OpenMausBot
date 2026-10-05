@@ -47,6 +47,7 @@ const ENTRY_POINTS = [
   "openmausbot.ts",
   "pair-cli.ts",
   "workspace-backup.worker.ts",
+  "updater.worker.ts",
   // the OMB Cloud Pro home image's entry point (deploy/fly/Dockerfile): it
   // spawns index.js beside it and the Caddy edge
   "cloud-home-start.ts",
