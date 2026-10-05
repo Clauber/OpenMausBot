@@ -611,6 +611,9 @@ import { json, onJsonBody, parsedBodyOf, readBody } from "./harness/http.ts";
 import { ROUTES, dispatchRoutes } from "./routes/table.ts";
 import { createHostedSlackRoutes } from "./routes/hosted-slack.ts";
 import { createBotPresetRoutes } from "./routes/bot-presets.ts";
+import { createTelegramRoutes } from "./routes/telegram.ts";
+import { TelegramBindingStore } from "./messaging/store.ts";
+import { TelegramService, type TelegramPhase } from "./messaging/telegram-service.ts";
 import { createBotMemoryRoutes } from "./routes/bot-memory.ts";
 import { createDeciderRoutes } from "./routes/decider.ts";
 import { createDesktopViewer, desktopViewerUrl } from "./routes/desktop-viewer.ts";
@@ -11853,12 +11856,72 @@ const webhooks = new WebhookManager({
   },
 });
 
+// Telegram adapter: DMs reach a bot through the same guarded-send path the
+// external-messages route uses (see POST /api/bots/:id/messages/guarded), so
+// approval modes and admission apply unchanged. Replies leave from
+// TelegramService once the turn settles.
+const telegramBindings = new TelegramBindingStore(DATA_DIR);
+const telegram = new TelegramService({
+  store: telegramBindings,
+  log: (message) => console.error(message),
+  host: {
+    botName: (botId) => store.bot(botId)?.name,
+    createThread: (botId, title) => store.createTask(botId, title, false)?.threadId,
+    threadExists: (botId, threadId) => Boolean(store.taskByThread(botId, threadId)),
+    startTurn: async ({ botId, threadId, text, sendId, senderName, senderId }) => {
+      const bot = store.bot(botId);
+      if (!bot) return { ok: false, error: "This bot no longer exists." };
+      const sender = { name: senderName, id: senderId };
+      const trigger: UsageTrigger = { kind: "user", label: `Telegram · ${senderName}` };
+      const expectedLeaf = store.activeLeaf(threadId);
+      try {
+        await acceptDirectSend({ botId, threadId, text, sendId, sender, trigger, personPresent: false },
+          async (currentAtStart) => {
+            // Same preconditions as the guarded route: no await between these
+            // checks and startTurn's synchronous reservation.
+            const mode = approvalModeFor(currentAtStart);
+            if (mode === "ask" && (currentAtStart.autoApprove === true || currentAtStart.alwaysAllow?.length)) {
+              throw Object.assign(new Error("external messages need Ask mode without remembered permissions"), { status: 409, code: "guarded_permissions" });
+            }
+            if (store.activeLeaf(threadId) !== expectedLeaf) {
+              throw Object.assign(new Error("the conversation changed before this message could start"), { status: 409, code: "guarded_branch" });
+            }
+            const admission = admit("guarded", {}, {
+              botBusy: currentAtStart.busy,
+              threadBusy: threadBusy(botId, threadId),
+              atCapacity: botAtThreadCapacity(botId),
+              parksBehindCoordination: parksBehindCoordination(botId, threadId),
+              groupTurn: Boolean(activeGroupTurnForBot(botId)),
+            });
+            if (admission.action === "refuse") {
+              throw Object.assign(new Error("the bot is busy right now; try again in a moment"), { status: 409, code: "guarded_busy" });
+            }
+            const message = await startTurn(botId, text, { threadId, sendId, sender, trigger, relayed: true });
+            return { ok: true as const, threadId, message };
+          });
+        return { ok: true };
+      } catch (error) {
+        const detail = error instanceof DirectSendRefused ? error.message : error instanceof Error ? error.message : String(error);
+        return { ok: false, error: `Couldn't reach the bot: ${detail}` };
+      }
+    },
+    readRequest: (botId, threadId, sendId) => {
+      const phase = guardedRequestSnapshot(botId, threadId, sendId).phase as TelegramPhase;
+      const path = guardedRequestPath(store.messagesFor(threadId), store.activeLeaf(threadId), sendId);
+      const texts = path.filter((m) => m.role === "bot" && m.kind === "text");
+      const reply = (texts.findLast((m) => m.turnTerminal) ?? texts.at(-1))?.text;
+      return { phase, ...(reply ? { reply } : {}) };
+    },
+  },
+});
+
 let webhookIngress: WebhookIngress | null = null;
 let webhookIngressError: string | null = null;
 try {
   webhookIngress = await listenWebhookIngress(webhooks, {
     port: WEBHOOK_PORT, publicBaseUrl: WEBHOOK_PUBLIC_URL,
     claimRequest: () => workspaceMaintenance.request(),
+    telegram,
   });
   const advertised = WEBHOOK_PUBLIC_URL ? ` (advertised as ${webhookIngress.baseUrl})` : "";
   console.log(`openmausbot webhook receiver on http://${webhookIngress.host}:${webhookIngress.port}${advertised}`);
@@ -15379,6 +15442,7 @@ ROUTES.push(createHostedSlackRoutes({ bot: (id) => store.bot(id), hostedReady: (
 // its file, so New bot cannot disagree with it. No organization: none.
 const orgInstallStatuses = () => orgLibrary?.installStatuses() ?? new Map();
 ROUTES.push(createBotPresetRoutes({ presets: presetStore, orgStatuses: orgInstallStatuses }));
+ROUTES.push(createTelegramRoutes({ store: telegramBindings, botExists: (id) => Boolean(store.bot(id)), webhookBase: () => webhookIngressStatus().baseUrl }));
 // The bot-memory panel's routes (MEMORY.md, memory/ topics, journal); the
 // store lookups — the 404 precheck and journal thread titles — stay explicit.
 ROUTES.push(createBotMemoryRoutes({
@@ -25155,6 +25219,7 @@ const gracefulShutdown = createGracefulShutdown({
       calendarCalls?.stop();
       memoryUpkeep.stop();
       webhookIngress?.server.close();
+      telegram.stop();
       tunnelListener?.close();
     },
     async () => { await managedDesktop.close(); await registry.disposeAll(); },

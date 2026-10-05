@@ -184,6 +184,9 @@ steer messages from external interfaces. It also verifies bounded request
 lineage snapshots, Chief continuations and exact-execution Stop without
 interrupting a newer request.
 
+The [Telegram adapter checks](telegram.md) drive webhook inbound, pairing and replies
+against a fake Bot API in a disposable runtime.
+
 The [iOS thread checks](ios-threads.md) cover the native thread tree, folder
 search and draft isolation using disposable simulators and an offline fixture.
 
