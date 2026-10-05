@@ -1,7 +1,7 @@
 // App settings → Workspaces: the operator's view of the client workspaces on
 // this server, through the fleet agent (server/fleet-agent.ts). Create one,
-// add or remove a person, suspend, resume, delete, upgrade all. Enterprise
-// `admin` entitlement, and only where an agent exists.
+// add or remove a person, suspend, resume, delete, upgrade all. Shown only
+// where a fleet agent exists.
 import { useCallback, useEffect, useState } from "react";
 import { Loader2, Plus, RefreshCw } from "lucide-react";
 import { api, useStore, type ConfigStatus } from "@/state/store";
@@ -29,7 +29,7 @@ export interface FleetView {
 }
 
 export function workspacesAvailable(config: ConfigStatus | null | undefined): boolean {
-  return config?.edition?.features?.includes("admin") === true && config?.fleet?.available === true;
+  return config?.fleet?.available === true;
 }
 
 const fetchFleet = (): Promise<FleetView> => api("/api/fleet");

@@ -10,7 +10,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AppConfig } from "./config.ts";
-import { entitled } from "./enterprise.ts";
 import { readUsage, usageRowKey } from "./usage-ledger.ts";
 
 export interface SpendState {
@@ -92,15 +91,14 @@ export function resetSpendCacheForTests(): void {
 }
 
 /** The cap and where the month stands against it; null when there is no
- * enforceable cap (no entitlement, or none set). */
+ * enforceable cap (none set). */
 export function spendState(
   cfg: Pick<AppConfig, "budgets">,
   dataDir: string,
   now = new Date(),
-  isEntitled: (feature: string) => boolean = entitled,
 ): SpendState | null {
   const monthlyUsd = cfg.budgets?.monthlyUsd;
-  if (!isEntitled("budgets") || typeof monthlyUsd !== "number" || !Number.isFinite(monthlyUsd) || monthlyUsd <= 0) return null;
+  if (typeof monthlyUsd !== "number" || !Number.isFinite(monthlyUsd) || monthlyUsd <= 0) return null;
   const spentUsd = monthToDateSpend(dataDir, now);
   const warnAtPercent = cfg.budgets?.warnAtPercent ?? DEFAULT_WARN_AT_PERCENT;
   const percent = Math.min(999, Math.round((spentUsd / monthlyUsd) * 100));
@@ -125,9 +123,8 @@ export function assertWithinBudget(
   cfg: Pick<AppConfig, "budgets">,
   dataDir: string,
   now = new Date(),
-  isEntitled: (feature: string) => boolean = entitled,
 ): void {
-  const state = spendState(cfg, dataDir, now, isEntitled);
+  const state = spendState(cfg, dataDir, now);
   if (!state?.exceeded) return;
   throw Object.assign(
     new Error(`this workspace has reached its monthly spend limit of $${usd(state.monthlyUsd)} — an admin can raise it under Settings → Usage`),

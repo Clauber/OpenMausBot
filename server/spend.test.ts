@@ -7,8 +7,6 @@ import { assertWithinBudget, monthToDateSpend, noteSpend, resetSpendAlertsForTes
 import { removeTempDir } from "./testing/cleanup.ts";
 import { appendUsage, flushUsageLedger } from "./usage-ledger.ts";
 
-const yes = () => true;
-const no = () => false;
 
 describe("prices", () => {
   const prices: PriceList = {
@@ -67,18 +65,18 @@ describe("spend against a monthly cap", () => {
     const cfg = { budgets: { monthlyUsd: 1, warnAtPercent: 80 } };
     const start = new Date("2026-09-15T12:00:00Z");
     // the turn starts: its admission check fills the cache with an empty month
-    expect(spendState(cfg, dataDir, start, yes)).toMatchObject({ spentUsd: 0, exceeded: false });
+    expect(spendState(cfg, dataDir, start)).toMatchObject({ spentUsd: 0, exceeded: false });
     // it settles 60 s later, $1.20 against a $1 cap; the append is still in flight
     const end = new Date(start.getTime() + 60_000);
     const booked = row(end.toISOString(), 1.2);
     const written = appendUsage(dataDir, booked);
     noteSpend(dataDir, booked, written);
-    const crossed = spendState(cfg, dataDir, end, yes);
+    const crossed = spendState(cfg, dataDir, end);
     expect(crossed).toMatchObject({ spentUsd: 1.2, exceeded: true, warn: true });
     // so the turn that crossed the line raises the notice...
     expect(takeSpendAlert(dataDir, crossed)).toBe("cap");
     // ...and the next turn is refused, not let through on a stale read
-    expect(() => assertWithinBudget(cfg, dataDir, new Date(end.getTime() + 1_000), yes)).toThrow(expect.objectContaining({ code: "spend_cap" }));
+    expect(() => assertWithinBudget(cfg, dataDir, new Date(end.getTime() + 1_000))).toThrow(expect.objectContaining({ code: "spend_cap" }));
     // once the row lands it counts once: from the cached read, and from a fresh one
     expect(await written).toBe(true);
     await Promise.resolve();
@@ -107,25 +105,23 @@ describe("spend against a monthly cap", () => {
     appendUsage(dataDir, row("2026-09-02T00:00:00.000Z", 3));
     appendUsage(dataDir, { ...row("2026-09-03T00:00:00.000Z", 6), driverKind: "codex", model: "gpt-5.5", costSource: "estimated" });
     await flushUsageLedger(dataDir);
-    expect(spendState({ budgets: { monthlyUsd: 10 } }, dataDir, now, yes)).toMatchObject({ spentUsd: 9, percent: 90, warn: true, exceeded: false });
-    expect(() => assertWithinBudget({ budgets: { monthlyUsd: 9 } }, dataDir, now, yes)).toThrow(expect.objectContaining({ code: "spend_cap" }));
+    expect(spendState({ budgets: { monthlyUsd: 10 } }, dataDir, now)).toMatchObject({ spentUsd: 9, percent: 90, warn: true, exceeded: false });
+    expect(() => assertWithinBudget({ budgets: { monthlyUsd: 9 } }, dataDir, now)).toThrow(expect.objectContaining({ code: "spend_cap" }));
   });
 
-  it("is inert without the entitlement or a cap, warns at the threshold, and refuses at the cap", async () => {
+  it("is inert without a cap, warns at the threshold, and refuses at the cap", async () => {
     appendUsage(dataDir, row("2026-09-02T00:00:00.000Z", 8));
     await flushUsageLedger(dataDir);
-    expect(spendState({ budgets: { monthlyUsd: 10 } }, dataDir, now, no)).toBeNull();
-    expect(spendState({}, dataDir, now, yes)).toBeNull();
-    expect(spendState({ budgets: { monthlyUsd: 0 } }, dataDir, now, yes)).toBeNull();
-    expect(spendState({ budgets: { monthlyUsd: 10 } }, dataDir, now, yes)).toEqual({
+    expect(spendState({}, dataDir, now)).toBeNull();
+    expect(spendState({ budgets: { monthlyUsd: 0 } }, dataDir, now)).toBeNull();
+    expect(spendState({ budgets: { monthlyUsd: 10 } }, dataDir, now)).toEqual({
       month: "2026-09", monthlyUsd: 10, spentUsd: 8, percent: 80, warnAtPercent: 80, warn: true, exceeded: false,
     });
-    expect(spendState({ budgets: { monthlyUsd: 10, warnAtPercent: 90 } }, dataDir, now, yes)?.warn).toBe(false);
-    expect(() => assertWithinBudget({ budgets: { monthlyUsd: 10 } }, dataDir, now, yes)).not.toThrow();
-    expect(() => assertWithinBudget({ budgets: { monthlyUsd: 8 } }, dataDir, now, yes)).toThrow(
+    expect(spendState({ budgets: { monthlyUsd: 10, warnAtPercent: 90 } }, dataDir, now)?.warn).toBe(false);
+    expect(() => assertWithinBudget({ budgets: { monthlyUsd: 10 } }, dataDir, now)).not.toThrow();
+    expect(() => assertWithinBudget({ budgets: { monthlyUsd: 8 } }, dataDir, now)).toThrow(
       expect.objectContaining({ status: 409, code: "spend_cap", message: expect.stringContaining("$8.00") }),
     );
-    expect(() => assertWithinBudget({ budgets: { monthlyUsd: 8 } }, dataDir, now, no)).not.toThrow();
   });
 });
 

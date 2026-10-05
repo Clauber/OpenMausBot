@@ -1836,7 +1836,7 @@ function usageTriggerFor(auth: RequestAuth): UsageTrigger {
 
 /** The operator's price list, when the server may read it (`billing`). */
 function operatorPrices(): PriceList | null {
-  return entitled("billing") && cfg.billing?.prices && Object.keys(cfg.billing.prices).length ? cfg.billing.prices : null;
+  return cfg.billing?.prices && Object.keys(cfg.billing.prices).length ? cfg.billing.prices : null;
 }
 
 /** Write one settled turn to the ledger, estimating its cost when the
@@ -23234,11 +23234,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       return json(res, 202, { installing: true });
     }
     // ── the fleet: client workspaces on this server, through the root agent ──
-    // Admin scope by default plus the `admin` entitlement; the socket's own
+    // Admin scope by default; the socket's own
     // permissions decide whether this workspace may drive the agent at all.
     const fleetRoute = /^\/api\/fleet(?:\/(workspaces(?:\/([a-z0-9-]+)(?:\/(users|suspend|resume))?)?|upgrade))?$/.exec(path);
     if (fleetRoute) {
-      if (!entitled("admin")) return json(res, 403, { error: "Workspaces need an enterprise licence with the admin feature." });
       const socket = fleetSocketPath();
       if (!fleetAvailable(socket)) return json(res, 404, { error: "No fleet agent on this server. Run `openmausbot fleet init --domain … --operator <this user>` as root." });
       const [, resource, slug, sub] = fleetRoute;
