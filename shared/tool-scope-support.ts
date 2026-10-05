@@ -6,6 +6,7 @@ export const TOOL_SCOPE_SUPPORT = {
   "openai-compat": "native-and-mcp", mistral: "native-and-mcp", minimax: "native-and-mcp", cerebras: "native-and-mcp",
   claudeAgent: "mcp", codex: "mcp", geminiAgent: "mcp", kimiAgent: "mcp", droidAgent: "mcp",
   cursorAgent: "mcp", opencodeGo: "mcp", qwenAgent: "mcp", hermesAgent: "mcp", customAcp: "mcp", antigravityAgent: "mcp",
+  zcodeAgent: "mcp",
   boxAgent: "none",
 } as const;
 

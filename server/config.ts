@@ -1600,6 +1600,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     qwen: { driver: "qwenAgent" },
     hermes: { driver: "hermesAgent" },
     pi: { driver: "piAgent" },
+    zcode: { driver: "zcodeAgent" },
   };
   const CUSTOM_ONLY = {
     qwen: { driver: "qwenAgent" },
