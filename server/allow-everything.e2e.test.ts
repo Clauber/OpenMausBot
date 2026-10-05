@@ -113,4 +113,56 @@ posixOnly("allow everything from an approval card", () => {
     expect(modes).toContainEqual([sibling.threadId, "full"]);
     expect(modes).toContainEqual([bot.threadId, "full"]);
   }, 60_000);
+
+  type CardMessage = { id: string; kind: string; card: { requestId: string; answered?: string } };
+  const openCard = (bot: { messages?: CardMessage[] }): CardMessage | undefined =>
+    bot?.messages?.find((m) => m.kind === "options" && m.card?.requestId && !m.card.answered);
+
+  it("lands a level chosen mid-turn when the turn finishes", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    expect((await api("PATCH", `/api/bots/${bot.id}`, { name: "Later", modelSelection: { instanceId: "grok", model: "fake-model" } })).status).toBe(200);
+    expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "run it" })).status).toBe(202);
+    const card = await until(async () => openCard(await botById(bot.id)), "the approval card");
+
+    const path = `/api/bots/${bot.id}/approval-mode-when-busy`;
+    expect((await api("POST", path, { approvalMode: "auto", whenBusy: "next-turn" })).status).toBe(403);
+    expect((await api("POST", path, { approvalMode: "full", whenBusy: "next-turn" }, BASE)).status).toBe(400);
+    const scheduled = await api("POST", path, { approvalMode: "auto", whenBusy: "next-turn" }, BASE);
+    expect(scheduled.status).toBe(200);
+    expect(scheduled.body).toMatchObject({ pending: true, bot: { pendingApprovalMode: "auto" } });
+    expect(scheduled.body.bot.approvalMode ?? "ask").toBe("ask");
+
+    expect((await api("POST", `/api/threads/${bot.threadId}/respond`, { requestId: card.card.requestId, behavior: "allow" }, BASE)).status).toBe(200);
+    const after = await until(async () => {
+      const current = await botById(bot.id);
+      return !current.busy && current.approvalMode === "auto" && current;
+    }, "the pending level to land");
+    expect(after.pendingApprovalMode).toBeUndefined();
+    expect(after.tasks.find((task: { threadId: string }) => task.threadId === bot.threadId).approvalMode).toBe("auto");
+  }, 60_000);
+
+  it("stops the running turn, switches the level, and continues it", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    expect((await api("PATCH", `/api/bots/${bot.id}`, { name: "Restart", modelSelection: { instanceId: "grok", model: "fake-model" } })).status).toBe(200);
+    expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "run it" })).status).toBe(202);
+    const first = await until(async () => openCard(await botById(bot.id)), "the approval card");
+
+    const restarted = await api("POST", `/api/bots/${bot.id}/approval-mode-when-busy`,
+      { approvalMode: "full", whenBusy: "restart", confirmFullAccess: true, applyToAllThreads: true }, BASE);
+    expect(restarted.status).toBe(200);
+
+    // The continued turn runs under Full: its permission ask is answered by
+    // the harness, so it finishes without a new card.
+    const after = await until(async () => {
+      const current = await botById(bot.id);
+      return !current.busy && current.messages.some((m: { role: string; text?: string }) =>
+        m.role === "user" && m.text?.startsWith("Continue where you left off")) &&
+        current.messages.filter((m: { text?: string }) => m.text?.includes("handled the permission decision")).length >= 1 && current;
+    }, "the continued turn under Full");
+    expect(after.approvalMode).toBe("full");
+    expect(after.pendingApprovalMode).toBeUndefined();
+    expect(openCard(after)).toBeUndefined();
+    expect(after.messages.find((m: { id: string }) => m.id === first.id)?.card?.answered).toBeTruthy();
+  }, 60_000);
 });
+

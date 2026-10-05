@@ -239,6 +239,9 @@ export const CONNECTOR_TOOL_NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,127}$/;
  * (null when the bot has none). */
 export interface WireBot {
   waitingForTeammates?: boolean;
+  /** An approval level chosen while the bot was working; it lands when the
+   * bot goes idle. */
+  pendingApprovalMode?: ApprovalMode;
   id: string;
   /** The task selected in the UI; running turns keep their own thread id. */
   threadId: string;
