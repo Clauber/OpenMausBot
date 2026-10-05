@@ -296,6 +296,9 @@ export interface WireBot {
   /** Whether this bot may send voice notes. Absent/true = allowed; false
    * hides the tool and refuses the route even with a voice configured. */
   voiceNotes?: boolean;
+  /** Whether the voice on a Live call may delegate work to this bot's engine
+   * (ask_compute). Absent/true = allowed; false removes the tool. */
+  liveCompute?: boolean;
   /** Whether this bot uses native memory. Absent/true = enabled. */
   memoryEnabled?: boolean;
   /** Queue direct-chat messages behind outstanding delegated work. */
@@ -391,8 +394,10 @@ export interface WireMessage {
   roomRequest?: { id: string; phase: "request" | "result" };
   id: string;
   role: "bot" | "user";
-  kind: "text" | "options" | "activity" | "screen" | "connector" | "secret" | "routine.run" | "goal.run" | "digest" | "compaction";
+  kind: "text" | "options" | "activity" | "screen" | "connector" | "secret" | "routine.run" | "goal.run" | "digest" | "compaction" | "call_receipt";
   text?: string;
+  /** call_receipt messages: the finished Live call, updated in place by late transcript. */
+  callReceipt?: import("./call-receipt.ts").CallReceiptData;
   digest?: TurnDigest;
   compaction?: {
     summary: string;

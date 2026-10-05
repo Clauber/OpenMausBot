@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { CallReceiptData } from "../shared/call-receipt.ts";
 import type { LiveCallState } from "../shared/wire.ts";
 import {
-  ATTACH_TIMEOUT_MS, CLOSE_TIMEOUT_MS, CONSENT_SETTLE_MS, DELEGATION_SETTLE_MS, IDLE_CHECK_MS, PROGRESS_INTERVAL_MS,
+  ASK_COMPUTE_TIMEOUT_MS, ATTACH_TIMEOUT_MS, CLOSE_TIMEOUT_MS, LATE_TRANSCRIPT_MS, CONSENT_SETTLE_MS, DELEGATION_SETTLE_MS, IDLE_CHECK_MS, PROGRESS_INTERVAL_MS,
   LiveCallBusyError, LiveCallController, LiveCallSignedOutError, type LiveActivity, type LiveCallDeps, type LiveSocket,
 } from "./live-call-controller.ts";
 import { LIVE_COPY } from "../shared/live-approval.ts";
@@ -77,7 +78,7 @@ describe("LiveCallController lifecycle", () => {
   it("creates the session with the key and voice, attaches the sideband and goes live", async () => {
     const t = setup();
     const result = await t.controller.start({ auth: owner, ...BOT, client: "ios", sdp: "offer-sdp" });
-    expect(t.deps.createSession).toHaveBeenCalledWith({ key: "sk-test", sdp: "offer-sdp", botId: "bot1", threadId: "t1", voice: "sol" });
+    expect(t.deps.createSession).toHaveBeenCalledWith({ key: "sk-test", sdp: "offer-sdp", botId: "bot1", threadId: "t1", voice: "sol", compute: true });
     expect(result.sdp).toBe("answer-sdp");
     expect(result.call).toMatchObject({ botId: "bot1", threadId: "t1", client: "ios", voice: "sol", status: "connecting" });
     expect(t.socket().url).toBe("ws://fake/sess_1/attach");
@@ -1110,5 +1111,109 @@ describe("LiveCallController relay", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(t.socket().appends("instructions").at(-1)).toMatchObject({ content: expect.stringContaining("ls") });
     });
+  });
+});
+
+describe("ask_compute and receipts", () => {
+  const toolCall = (t: ReturnType<typeof setup>, id = "tc1", request = "check the build") =>
+    t.socket().receive({ type: "session.tool_call.created", tool_call: { id, name: "ask_compute", arguments: JSON.stringify({ request }) } });
+  const outputs = (t: ReturnType<typeof setup>) => t.socket().sent.filter((e) => e.type === "session.tool_call.output").map((e) => JSON.parse(String(e.output)) as Record<string, unknown>);
+  const approval = (extra: Partial<Message["card"]> = {}) => ({
+    id: "c1", kind: "options" as const,
+    card: { title: "Approval needed", subtitle: "ls", options: ["Allow", "Deny"], requestId: "r1", tool: "Bash", ...extra },
+  });
+  /** the compute turn's user line lands on the thread, as the store would write it */
+  const landed = async (t: ReturnType<typeof setup>) => {
+    await vi.advanceTimersByTimeAsync(0);
+    const sendId = ((t.deps.send as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0] as { sendId: string }).sendId;
+    t.message({ id: "u1", role: "user", kind: "text", text: "check the build", via: "call", sendId });
+    await vi.advanceTimersByTimeAsync(0);
+  };
+
+  it("times out after the default 90 s with an honest error", async () => {
+    const t = setup();
+    await t.start();
+    toolCall(t);
+    await landed(t);
+    await vi.advanceTimersByTimeAsync(ASK_COMPUTE_TIMEOUT_MS - 1_000);
+    expect(outputs(t)).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(outputs(t)).toEqual([{ ok: false, error: expect.stringContaining("90 seconds") }]);
+  });
+
+  it("pauses the timeout while an approval card is open and resumes it when it settles", async () => {
+    const t = setup({ computeTimeoutMs: () => 10_000 });
+    await t.start();
+    toolCall(t);
+    await landed(t);
+    await vi.advanceTimersByTimeAsync(6_000);
+    t.message(approval());
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(outputs(t)).toHaveLength(0);
+    t.patch({ ...approval({ answered: "allow" }) });
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(outputs(t)).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(outputs(t)).toEqual([{ ok: false, error: expect.stringContaining("did not finish") }]);
+  });
+
+  it("answers the tool call with the turn's answer and does not also speak it", async () => {
+    const t = setup();
+    await t.start();
+    toolCall(t);
+    await landed(t);
+    t.message({ id: "b1", kind: "text", text: "Build is green.", turnTerminal: true, requestMessageId: "u1" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(outputs(t)).toEqual([{ ok: true, answer: "Build is green." }]);
+    expect(t.socket().appends("commentary")).toHaveLength(0);
+  });
+
+  it("refuses a seventh turn without sending it", async () => {
+    const t = setup();
+    await t.start();
+    for (let n = 1; n <= 6; n += 1) {
+      toolCall(t, `tc${n}`);
+      await vi.advanceTimersByTimeAsync(0);
+      const compute = [...(t.controller as unknown as { call: { compute: Map<string, { messageId: string | null; toolCallId: string }> } }).call.compute.values()][0];
+      compute.messageId = `u${n}`;
+      t.message({ id: `b${n}`, kind: "text", text: `done ${n}`, turnTerminal: true, requestMessageId: `u${n}` });
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    expect(outputs(t)).toHaveLength(6);
+    toolCall(t, "tc7");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(t.deps.send).toHaveBeenCalledTimes(6);
+    expect(outputs(t).at(-1)).toMatchObject({ ok: false, error: expect.stringContaining("limited to 6") });
+  });
+
+  it("refuses while the bot's kill switch is off", async () => {
+    const t = setup({ computeEnabled: () => false });
+    await t.start();
+    toolCall(t);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(t.deps.send).not.toHaveBeenCalled();
+    expect(outputs(t)).toEqual([{ ok: false, error: expect.stringContaining("turned off") }]);
+  });
+
+  it("writes one receipt at the end and updates it in place for trailing transcript", async () => {
+    const append = vi.fn((_receipt: CallReceiptData) => "msg1");
+    const update = vi.fn((_id: string | null, _receipt: CallReceiptData) => undefined);
+    const t = setup({ receipts: { append, update } });
+    await t.start();
+    t.socket().receive({ type: "session.input_transcript.delta", delta: "hi there", start_ms: 0, end_ms: 500 });
+    t.socket().receive({ type: "session.closed", reason: "close_requested", usage: { seconds: 12 } });
+    expect(append).toHaveBeenCalledTimes(1);
+    expect(append.mock.calls[0][0]).toMatchObject({ botId: "bot1", threadId: "t1", durationSec: 12, outcome: "completed", lines: [{ side: "you", text: "hi there" }] });
+    expect(t.socket().readyState).toBe(1);
+
+    t.socket().receive({ type: "session.output_transcript.delta", delta: "hello", start_ms: 900, end_ms: 1_200 });
+    t.socket().receive({ type: "session.output_transcript.delta", delta: " again", start_ms: 1_200, end_ms: 1_400 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update.mock.calls[0]).toMatchObject(["msg1", { lines: [{ side: "you", text: "hi there" }, { side: "bot", text: "hello again" }] }]);
+    expect(append).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(LATE_TRANSCRIPT_MS);
+    expect(t.socket().readyState).toBe(3);
   });
 });

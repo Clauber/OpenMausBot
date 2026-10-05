@@ -78,7 +78,7 @@ export class LiveSessionError extends Error {
 /** Frontend instructions for the voice. Business rules stay with the bot;
  * this only says who is speaking and when to hand work over. Structure
  * follows the GPT-Live prompting guide's template. */
-export function liveInstructions(bot: LiveBot): string {
+export function liveInstructions(bot: LiveBot, options: { compute?: boolean } = {}): string {
   const name = oneLine(bot.name) || "the agent";
   const title = oneLine(bot.title ?? "");
   const description = oneLine(bot.description ?? "").slice(0, 400);
@@ -109,6 +109,9 @@ export function liveInstructions(bot: LiveBot): string {
     "While you work you get quiet status notes: how long you have worked, how many steps you took, and your last step. Answer questions about progress from the latest note in one short sentence. Only say you are stuck when the note shows no new step for several minutes.",
     "Never say that an action happened until the result reports it.",
     "When a permission question comes up, ask it clearly and wait for a clear yes or no. Never answer it yourself.",
+    ...(options.compute ? [
+      `Tool ${ASK_COMPUTE_TOOL}: when you need ${name}'s result back before you answer, call ${ASK_COMPUTE_TOOL} with the request and wait for its output. Then tell the user the outcome in one or two spoken sentences. If it reports a limit, a timeout or an error, say so plainly and point to the chat.`,
+    ] : []),
   ].join("\n");
 }
 
@@ -136,12 +139,28 @@ export function liveVoice(voice: string | undefined): string {
   return /^[a-z]{2,40}$/.test(name) ? name : DEFAULT_LIVE_VOICE;
 }
 
+/** The one tool the voice may call itself: it hands a request to the bot's
+ * own engine on this thread and returns what the turn said. */
+export const ASK_COMPUTE_TOOL = "ask_compute";
+export const ASK_COMPUTE_DEFINITION = {
+  type: "function",
+  name: ASK_COMPUTE_TOOL,
+  description: "Hand one request to the agent's own engine, files and tools, and get its answer back to summarize aloud.",
+  parameters: {
+    type: "object",
+    properties: { request: { type: "string", description: "What the agent should do or find out, in plain words." } },
+    required: ["request"],
+  },
+};
+
 export interface CreateLiveSessionInput {
   key: string;
   sdp: string;
   bot: LiveBot;
   history: LiveHistoryMessage[];
   voice?: string;
+  /** Offer the ask_compute tool (the bot's kill switch is on). */
+  compute?: boolean;
   fetchImpl?: typeof fetch;
   url?: string;
   timeoutMs?: number;
@@ -160,12 +179,13 @@ export async function createLiveSession(input: CreateLiveSessionInput): Promise<
   const body = {
     session: {
       model: LIVE_MODEL,
-      instructions: liveInstructions(input.bot),
+      instructions: liveInstructions(input.bot, { compute: input.compute }),
       // client delegation: every request comes back to the harness, which
       // runs it as a normal turn on the bot
       delegation: { type: "client" },
       audio: { output: { voice: liveVoice(input.voice) } },
       client: { data_channel: LIVE_DATA_CHANNEL },
+      ...(input.compute ? { tools: [ASK_COMPUTE_DEFINITION] } : {}),
       ...(initialInput.length ? { input: initialInput } : {}),
     },
     transport: { type: "webrtc", sdp: input.sdp },

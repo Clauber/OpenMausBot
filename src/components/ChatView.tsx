@@ -80,6 +80,7 @@ import { SecretRequestCard } from "./SecretRequestCard";
 import { hasRoutineExecutionTask, RoutineRunCard } from "./RoutineRunCard";
 import { AttachmentGallery, collectMessageFiles, splitMessageAttachments } from "./AttachmentGallery";
 import { ScreenFrame } from "./ScreenFrame";
+import { CallReceiptCard } from "./CallReceiptCard";
 import { CompactionChip, DigestChip } from "./DigestChip";
 import { RenameTitle } from "./RenameTitle";
 import { BotActivityPicker } from "./TaskPicker";
@@ -946,6 +947,8 @@ const MessagesList = memo(function MessagesList({
               return showToolCalls ? <DigestChip message={m} /> : null;
             case "compaction":
               return <CompactionChip message={m} />;
+            case "call_receipt":
+              return <CallReceiptCard message={m} />;
             case "screen":
               return <ScreenFrame threadId={threadId} message={m} />;
             default:

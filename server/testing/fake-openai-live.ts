@@ -25,6 +25,13 @@ export interface FakeOpenAiLive {
   waitForAttach(sessionId: string, timeoutMs?: number): Promise<void>;
   waitForCommand(sessionId: string, match: (command: Record<string, unknown>) => boolean, timeoutMs?: number): Promise<Record<string, unknown>>;
   dropSideband(sessionId: string): void;
+  /** After a session.close the fake answers session.closed, then keeps the
+   * socket open this long (default 0) so a test can send transcript that trails the end. */
+  setCloseLinger(ms: number): void;
+  /** The voice calls a tool (ask_compute): sends session.tool_call.created. */
+  callTool(sessionId: string, name: string, args: Record<string, unknown>, id?: string): string;
+  /** The harness's answer to a tool call, parsed from its output. */
+  waitForToolOutput(sessionId: string, toolCallId: string, timeoutMs?: number): Promise<Record<string, unknown>>;
   stop(): Promise<void>;
 }
 
@@ -137,6 +144,8 @@ export async function startFakeOpenAiLive(options: { port?: number; closeOnReque
   let nextAttachRefusal: number | null = null;
   let counter = 0;
   let eventCounter = 0;
+  let toolCounter = 0;
+  let closeLingerMs = 0;
 
   const send = (socket: Socket, event: Record<string, unknown>) => {
     if (!socket.destroyed) socket.write(frame(0x1, Buffer.from(JSON.stringify({ event_id: `evt_${++eventCounter}`, ...event }))));
@@ -193,7 +202,9 @@ export async function startFakeOpenAiLive(options: { port?: number; closeOnReque
         if (command.type === "session.close" && options.closeOnRequest !== false) {
           session.closed = true;
           send(socket, { type: "session.closed", reason: "close_requested", usage: { seconds: 42 }, session: { id: session.id } });
-          socket.end(frame(0x8, Buffer.from([0x03, 0xe8])));
+          const hangUp = () => socket.end(frame(0x8, Buffer.from([0x03, 0xe8])));
+          if (closeLingerMs > 0) setTimeout(hangUp, closeLingerMs).unref();
+          else hangUp();
         }
       }
     });
@@ -236,6 +247,21 @@ export async function startFakeOpenAiLive(options: { port?: number; closeOnReque
       return waitFor(() => sessions.find((s) => s.id === sessionId)?.commands.find(match), timeoutMs, `a command on ${sessionId}`);
     },
     dropSideband(sessionId) { sockets.get(sessionId)?.destroy(); },
+    setCloseLinger(ms) { closeLingerMs = ms; },
+    callTool(sessionId, name, args, id = `call_fake_${++toolCounter}`) {
+      const socket = sockets.get(sessionId);
+      if (!socket) throw new Error(`fake GPT-Live: ${sessionId} has no sideband`);
+      send(socket, { type: "session.tool_call.created", tool_call: { id, name, arguments: JSON.stringify(args) } });
+      return id;
+    },
+    async waitForToolOutput(sessionId, toolCallId, timeoutMs = 20_000) {
+      const command = await waitFor(
+        () => sessions.find((s) => s.id === sessionId)?.commands.find((c) => c.type === "session.tool_call.output" && c.tool_call_id === toolCallId),
+        timeoutMs,
+        `the output of ${toolCallId}`,
+      );
+      return JSON.parse(String(command.output)) as Record<string, unknown>;
+    },
     async stop() {
       for (const socket of sockets.values()) socket.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
