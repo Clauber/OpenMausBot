@@ -17,9 +17,10 @@ import { spokenConsent } from "../shared/call-consent.ts";
 import {
   LIVE_COPY, liveCardKind, liveStepLabel, spokenApprovalPrompt, spokenConnectorPrompt, spokenQuestionPrompt, spokenReviewPrompt, spokenSecretPrompt,
 } from "../shared/live-approval.ts";
+import { ReceiptTranscript, type CallReceiptData } from "../shared/call-receipt.ts";
 import { clampAppend, commentaryChunks, LiveTranscript } from "../shared/live-call.ts";
 import type { LiveCallState, LiveClient, LiveEndReason } from "../shared/wire.ts";
-import { liveCallSummaryLine, LiveSessionError, liveVoice } from "./live-call.ts";
+import { ASK_COMPUTE_TOOL, liveCallSummaryLine, LiveSessionError, liveVoice } from "./live-call.ts";
 import type { RequestAuth } from "./request-auth.ts";
 import type { Message, StoreChange } from "./store.ts";
 
@@ -31,6 +32,14 @@ export const CLOSE_TIMEOUT_MS = 5_000;
 export const IDLE_CHECK_MS = 15_000;
 /** How often the voice gets a quiet status note while the bot works. */
 export const STATUS_INTERVAL_MS = 30_000;
+/** ask_compute: the voice hands one piece of work to the bot's own engine on
+ * this thread and gets its answer back as the tool's output. */
+export const ASK_COMPUTE_MAX_TURNS = 6;
+export const ASK_COMPUTE_TIMEOUT_MS = 90_000;
+const ASK_COMPUTE_REQUEST_CHARS = 2_000;
+const ASK_COMPUTE_ANSWER_CHARS = 1_500;
+/** How long a finished call's sideband stays open for transcript that trails the end. */
+export const LATE_TRANSCRIPT_MS = 3_000;
 const SOCKET_OPEN = 1;
 const MAX_ERRORS = 5;
 /** Unpaired phones remembered, so a start already in flight when its phone
@@ -58,7 +67,7 @@ export type LiveRespondResult = { ok: true } | { ok: false; error: string };
 export interface LiveCallDeps {
   store: { onChange(listener: (change: StoreChange) => void): () => void };
   /** Throws LiveCallSignedOutError once the sign-in that started the call has ended. */
-  send(input: { auth: RequestAuth; botId: string; threadId: string; text: string }): Promise<LiveSendResult>;
+  send(input: { auth: RequestAuth; botId: string; threadId: string; text: string; sendId?: string }): Promise<LiveSendResult>;
   /** Throws LiveCallSignedOutError once the sign-in that started the call has ended. */
   respond(input: { auth: RequestAuth; threadId: string; requestId: string; behavior: "allow" | "deny" | "answer"; message?: string }): Promise<LiveRespondResult>;
   /** Whether a call request that send() queued still waits in the thread's
@@ -72,12 +81,22 @@ export interface LiveCallDeps {
   activity(botId: string, threadId: string): LiveActivity;
   broadcast(frame: { kind: "live.call"; botId: string; threadId: string; call: LiveCallState | null }): void;
   settings(): { key: string; voice: string; readTypedReplies: boolean; idleMinutes: number };
-  createSession(input: { key: string; sdp: string; botId: string; threadId: string; voice: string }): Promise<{ sessionId: string; sdp: string }>;
+  createSession(input: { key: string; sdp: string; botId: string; threadId: string; voice: string; compute?: boolean }): Promise<{ sessionId: string; sdp: string }>;
   openSocket(url: string, key: string): LiveSocket;
   attachUrl(sessionId: string): string;
   speakable(text: string): string[];
   log(line: string): void;
   now?(): number;
+  /** Whether the voice may use ask_compute on this bot (the per-bot kill switch). Omitted: yes. */
+  computeEnabled?(botId: string): boolean;
+  /** The per-delegation timeout, in ms. Omitted: ASK_COMPUTE_TIMEOUT_MS. */
+  computeTimeoutMs?(): number;
+  /** Where a finished call's receipt goes. `append` returns the id of the
+   * thread message (null when the thread cannot take one); `update` rewrites it. */
+  receipts?: {
+    append(receipt: CallReceiptData): string | null;
+    update(messageId: string | null, receipt: CallReceiptData): void;
+  };
 }
 
 export class LiveCallBusyError extends Error {
@@ -103,6 +122,22 @@ interface OpenCard {
   requestId: string;
   messageId: string;
   submitted: boolean;
+}
+
+/** One ask_compute delegation in flight. */
+interface Compute {
+  toolCallId: string;
+  /** marks the user line on the thread as this call's delegation */
+  sendId: string;
+  request: string;
+  /** the user line, once it is on the thread */
+  messageId: string | null;
+  /** the words were steered into a running turn: its next answer is ours */
+  steered: boolean;
+  remainingMs: number;
+  timerStartedAt: number;
+  timer: Timer | null;
+  done: boolean;
 }
 
 interface Call {
@@ -160,6 +195,17 @@ interface Call {
   idleTimer: ReturnType<typeof setInterval> | null;
   unsubscribe: (() => void) | null;
   closeWaiters: Array<() => void>;
+  /** every transcript line, both sides, for the receipt */
+  log: ReceiptTranscript;
+  compute: Map<string, Compute>;
+  computeCount: number;
+  computeLog: Array<{ request: string; ok: boolean }>;
+  /** the receipt's thread message; null until the call ends */
+  receiptMessageId: string | null;
+  receiptWritten: boolean;
+  receiptBase: CallReceiptData | null;
+  receiptDirty: boolean;
+  lateTimer: Timer | null;
   stats: { delegations: number; sentToBot: number; answers: number; approvals: number; notHeard: number; replies: number; seconds: number | null; errors: string[] };
 }
 
@@ -196,7 +242,7 @@ export class LiveCallController {
     this.call = call;
     let session: { sessionId: string; sdp: string };
     try {
-      session = await this.deps.createSession({ key, sdp: input.sdp, botId: input.botId, threadId: input.threadId, voice });
+      session = await this.deps.createSession({ key, sdp: input.sdp, botId: input.botId, threadId: input.threadId, voice, compute: this.computeEnabled(input.botId) });
     } catch (error) {
       if (this.call === call) this.call = null;
       this.deps.log(`[live] call failed bot=${input.botId} client=${input.client} status=${error instanceof LiveSessionError ? error.status : "error"}`);
@@ -307,6 +353,15 @@ export class LiveCallController {
       idleTimer: null,
       unsubscribe: null,
       closeWaiters: [],
+      log: new ReceiptTranscript(),
+      compute: new Map(),
+      computeCount: 0,
+      computeLog: [],
+      receiptMessageId: null,
+      receiptWritten: false,
+      receiptBase: null,
+      receiptDirty: false,
+      lateTimer: null,
       stats: { delegations: 0, sentToBot: 0, answers: 0, approvals: 0, notHeard: 0, replies: 0, seconds: null, errors: [] },
     };
   }
@@ -395,7 +450,12 @@ export class LiveCallController {
     call.unsubscribe = null;
     const socket = call.socket;
     call.socket = null;
-    if (socket) {
+    this.writeReceipt(call, reason);
+    // Transcript can trail the end: keep the sideband a moment for it, but
+    // only when it is still up and the receipt has a message to update.
+    const linger = socket !== null && socket.readyState === SOCKET_OPEN && call.receiptWritten && reason !== "sideband-lost" && reason !== "shutdown" && reason !== "deleted";
+    if (socket && linger) this.lingerForTranscript(call, socket);
+    else if (socket) {
       socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null;
       try { socket.close(1000, "call ended"); } catch { /* already closed */ }
     }
@@ -456,6 +516,7 @@ export class LiveCallController {
         return;
       case "session.input_transcript.delta":
         call.transcript.addInput(String(event.delta ?? ""), Number(event.start_ms), Number(event.end_ms));
+        call.log.add("you", String(event.delta ?? ""), Number(event.start_ms), Number(event.end_ms));
         call.heardThroughMs = Math.max(call.heardThroughMs, Number(event.end_ms) || 0);
         this.touch(call);
         if (call.approval && !call.approval.submitted) this.scheduleConsentCheck(call);
@@ -463,6 +524,7 @@ export class LiveCallController {
       case "session.output_transcript.delta":
         // its timing, when given, marks where the voice itself was talking
         call.transcript.addOutput(Number(event.start_ms), Number(event.end_ms));
+        call.log.add("bot", String(event.delta ?? ""), Number(event.start_ms), Number(event.end_ms));
         this.touch(call);
         return;
       case "session.delegation.created": {
@@ -473,6 +535,13 @@ export class LiveCallController {
         call.stats.delegations += 1;
         this.touch(call);
         this.later(call, () => this.delegate(call, id, offset), DELEGATION_SETTLE_MS);
+        return;
+      }
+      case "session.tool_call.created": {
+        const toolCall = event.tool_call as { id?: unknown; name?: unknown; arguments?: unknown } | undefined;
+        if (toolCall?.name !== ASK_COMPUTE_TOOL || typeof toolCall.id !== "string") return;
+        this.touch(call);
+        void this.askCompute(call, toolCall.id, toolCall.arguments);
         return;
       }
       case "session.usage.updated":
@@ -623,6 +692,11 @@ export class LiveCallController {
     if (was === "idle" || activity !== "idle") return;
     // A turn settled. If it carried a call request and said nothing, say so.
     this.forgetUnqueued(call);
+    if (!call.approval && !call.question) {
+      for (const compute of [...call.compute.values()]) {
+        if (compute.messageId) this.resolveCompute(call, compute, { ok: false, error: "The turn ended without an answer." });
+      }
+    }
     if (call.approval || call.question || call.queuedIds.size) return;
     if (!call.pendingCall.size && !call.claimNextTerminal) return;
     call.pendingCall.clear();
@@ -646,6 +720,12 @@ export class LiveCallController {
     if (message.role === "user") {
       if (type !== "message" || message.kind !== "text") return;
       if (message.via === "call") {
+        // an ask_compute line is the tool's, answered through its output
+        const compute = message.sendId ? call.compute.get(message.sendId) : undefined;
+        if (compute) {
+          compute.messageId = message.id;
+          return;
+        }
         if (message.queueId) call.queuedIds.delete(message.queueId);
         call.pendingCall.add(message.id);
       } else if (this.typedByCaller(call, message)) {
@@ -706,6 +786,13 @@ export class LiveCallController {
 
   private onAnswer(call: Call, message: Message): void {
     const request = message.requestMessageId;
+    const compute = this.computeAnswered(call, request);
+    if (compute) {
+      // the tool's output carries this answer; the voice does not also read it as commentary
+      call.spokenAnswers.add(message.id);
+      this.resolveCompute(call, compute, { ok: true, answer: (message.text ?? "").trim().slice(0, ASK_COMPUTE_ANSWER_CHARS) });
+      return;
+    }
     // A drained turn answers every line of its batch, not only the last one.
     const batch = request === undefined ? [] : call.batches.get(request) ?? [request];
     // A batch that holds a spoken line is the call's: answered aloud, even
@@ -767,6 +854,7 @@ export class LiveCallController {
       call.transcript.consumeAll();
       this.append(call, "instructions", spokenQuestionPrompt(card));
     }
+    this.syncComputeClock(call);
   }
 
   /** A connect-an-app or credential card: the bot waits on the person in
@@ -792,6 +880,7 @@ export class LiveCallController {
     if (!open.submitted) this.append(call, "thinking", LIVE_COPY.answeredInChat, null);
     const next = call.waitingCards.shift();
     if (next) this.onCard(call, next);
+    this.syncComputeClock(call);
   }
 
   // ── status notes ─────────────────────────────────────────────────────
@@ -825,6 +914,184 @@ export class LiveCallController {
    * the steps the bot takes for a typed message are about that exchange. */
   private mayNarrate(call: Call): boolean {
     return this.deps.settings().readTypedReplies || call.pendingCall.size > 0 || call.claimNextTerminal;
+  }
+
+  // ── ask_compute ──────────────────────────────────────────────────────
+
+  private computeEnabled(botId: string): boolean {
+    return this.deps.computeEnabled?.(botId) ?? true;
+  }
+
+  /** The voice's tool call: run one turn on the bot's own engine, on this
+   * thread, through the same send path a spoken request takes (so steering,
+   * the queue and the thread's approval mode all apply), and answer the tool
+   * call with what the turn said. */
+  private async askCompute(call: Call, toolCallId: string, rawArguments: unknown): Promise<void> {
+    const refuse = (error: string) => this.toolOutput(call, toolCallId, { ok: false, error });
+    if (!this.computeEnabled(call.state.botId)) return refuse(`ask_compute is turned off for ${call.botName}.`);
+    const request = computeRequestOf(rawArguments);
+    if (!request) return refuse("ask_compute needs a request.");
+    if (call.computeCount >= ASK_COMPUTE_MAX_TURNS) {
+      return refuse(`ask_compute is limited to ${ASK_COMPUTE_MAX_TURNS} turns per call and they are used up. Tell the user to continue in the chat.`);
+    }
+    if (call.compute.size) return refuse("An earlier ask_compute is still running. Wait for its result first.");
+    call.computeCount += 1;
+    const entry: Compute = {
+      toolCallId,
+      sendId: `ask_compute-${call.state.callId}-${call.computeCount}`,
+      request,
+      messageId: null,
+      steered: false,
+      remainingMs: this.deps.computeTimeoutMs?.() ?? ASK_COMPUTE_TIMEOUT_MS,
+      timerStartedAt: 0,
+      timer: null,
+      done: false,
+    };
+    call.compute.set(entry.sendId, entry);
+    this.syncComputeClock(call);
+    try {
+      const result = await this.deps.send({ auth: call.auth, botId: call.state.botId, threadId: call.state.threadId, text: request, sendId: entry.sendId });
+      if (result.kind === "steered") {
+        entry.steered = true;
+        entry.messageId ??= result.messageId;
+      } else if (result.kind === "started") entry.messageId ??= result.messageId;
+    } catch (error) {
+      if (error instanceof LiveCallSignedOutError) {
+        this.endSignedOut(call, null);
+        return;
+      }
+      this.recordError(call, "send-failed");
+      this.resolveCompute(call, entry, { ok: false, error: `The request could not be sent to ${call.botName}.` });
+    }
+  }
+
+  /** The delegation a settled turn's answer belongs to, if any. */
+  private computeAnswered(call: Call, request: string | undefined): Compute | undefined {
+    if (!call.compute.size) return undefined;
+    const batch = request === undefined ? [] : call.batches.get(request) ?? [request];
+    const entries = [...call.compute.values()];
+    return entries.find((entry) => entry.messageId !== null && batch.includes(entry.messageId))
+      ?? entries.find((entry) => entry.steered && entry.messageId !== null && !batch.includes(entry.messageId));
+  }
+
+  private resolveCompute(call: Call, entry: Compute, result: { ok: true; answer: string } | { ok: false; error: string }): void {
+    if (entry.done) return;
+    entry.done = true;
+    if (entry.timer) this.clear(call, entry.timer);
+    entry.timer = null;
+    call.compute.delete(entry.sendId);
+    call.computeLog.push({ request: entry.request, ok: result.ok });
+    this.toolOutput(call, entry.toolCallId, result);
+  }
+
+  /** The 90 s budget runs only while nothing waits on the person: an
+   * approval or question card pauses the delegation, and it resumes when the
+   * card settles. */
+  private syncComputeClock(call: Call): void {
+    const paused = Boolean(call.approval || call.question);
+    const now = this.now();
+    for (const entry of call.compute.values()) {
+      if (paused && entry.timer) {
+        this.clear(call, entry.timer);
+        entry.timer = null;
+        entry.remainingMs = Math.max(0, entry.remainingMs - (now - entry.timerStartedAt));
+      } else if (!paused && !entry.timer) {
+        entry.timerStartedAt = now;
+        entry.timer = this.later(call, () => {
+          entry.timer = null;
+          this.resolveCompute(call, entry, { ok: false, error: `${call.botName} did not finish within ${Math.round((this.deps.computeTimeoutMs?.() ?? ASK_COMPUTE_TIMEOUT_MS) / 1000)} seconds. The work may still finish in the chat.` });
+        }, entry.remainingMs);
+      }
+    }
+  }
+
+  private toolOutput(call: Call, toolCallId: string, result: Record<string, unknown>): void {
+    this.command(call, { type: "session.tool_call.output", tool_call_id: toolCallId, output: JSON.stringify(result) });
+  }
+
+  // ── receipt ──────────────────────────────────────────────────────────
+
+  private receiptData(call: Call, reason: LiveEndReason): CallReceiptData {
+    const endedAt = this.now();
+    const failed = Boolean(call.state.error) || reason === "sideband-lost" || reason === "error" || reason === "connection-lost";
+    const pending = [...call.compute.values()].map((entry) => ({ request: entry.request, ok: false }));
+    const compute = [...call.computeLog, ...pending];
+    return {
+      callId: call.state.callId,
+      botId: call.state.botId,
+      threadId: call.state.threadId,
+      startedAt: call.state.startedAt,
+      endedAt,
+      durationSec: Math.round(call.stats.seconds ?? Math.max(0, endedAt - call.state.startedAt) / 1000),
+      outcome: failed ? "failed" : "completed",
+      endReason: reason,
+      ...(call.state.error ? { error: call.state.error } : {}),
+      lines: call.log.snapshot(),
+      ...(compute.length ? { compute } : {}),
+    };
+  }
+
+  /** One receipt per call, appended once as the call ends. */
+  private writeReceipt(call: Call, reason: LiveEndReason): void {
+    const sink = this.deps.receipts;
+    if (!sink || call.receiptWritten) return;
+    try {
+      const data = this.receiptData(call, reason);
+      call.receiptMessageId = sink.append(data);
+      call.receiptBase = data;
+      call.receiptWritten = true;
+    } catch {
+      this.recordError(call, "receipt");
+    }
+  }
+
+  /** Keep the sideband briefly after the end: transcript that trails it
+   * updates the receipt in place instead of being lost or duplicated. */
+  private lingerForTranscript(call: Call, socket: LiveSocket): void {
+    const close = () => {
+      if (call.lateTimer) clearTimeout(call.lateTimer);
+      call.lateTimer = null;
+      socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null;
+      try { socket.close(1000, "call ended"); } catch { /* already closed */ }
+    };
+    socket.onopen = null;
+    socket.onerror = close;
+    socket.onclose = close;
+    socket.onmessage = (event) => {
+      try {
+        if (this.onLateEvent(call, event.data)) this.flushReceiptSoon(call);
+      } catch {
+        this.recordError(call, "internal");
+      }
+    };
+    call.lateTimer = setTimeout(close, LATE_TRANSCRIPT_MS);
+    call.lateTimer.unref?.();
+  }
+
+  private onLateEvent(call: Call, raw: unknown): boolean {
+    const text = typeof raw === "string" ? raw : Buffer.isBuffer(raw) ? raw.toString("utf8") : "";
+    if (!text.includes("_transcript.delta")) return false;
+    let event: Record<string, unknown>;
+    try {
+      event = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      return false;
+    }
+    const side = event.type === "session.input_transcript.delta" ? "you" : event.type === "session.output_transcript.delta" ? "bot" : null;
+    return side !== null && call.log.add(side, String(event.delta ?? ""), Number(event.start_ms), Number(event.end_ms));
+  }
+
+  private flushReceiptSoon(call: Call): void {
+    if (call.receiptDirty) return;
+    call.receiptDirty = true;
+    queueMicrotask(() => {
+      call.receiptDirty = false;
+      try {
+        if (call.receiptBase) this.deps.receipts?.update(call.receiptMessageId, { ...call.receiptBase, lines: call.log.snapshot() });
+      } catch {
+        this.recordError(call, "receipt");
+      }
+    });
   }
 
   // ── plumbing ─────────────────────────────────────────────────────────
@@ -920,4 +1187,14 @@ export class LiveCallController {
   private now(): number {
     return this.deps.now?.() ?? Date.now();
   }
+}
+
+/** The `request` of an ask_compute call: arguments arrive as a JSON string or an object. */
+function computeRequestOf(raw: unknown): string {
+  let args: unknown = raw;
+  if (typeof raw === "string") {
+    try { args = JSON.parse(raw); } catch { return ""; }
+  }
+  const request = (args as { request?: unknown } | null)?.request;
+  return typeof request === "string" ? request.replace(/\s+/g, " ").trim().slice(0, ASK_COMPUTE_REQUEST_CHARS) : "";
 }

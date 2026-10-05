@@ -25,6 +25,7 @@ export type BotUpdatePatch = Partial<
     | "speakReplies"
     | "voice"
     | "voiceNotes"
+    | "liveCompute"
     | "pinned"
     | "hidden"
     | "section"

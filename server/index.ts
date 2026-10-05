@@ -339,6 +339,8 @@ import { createDecider, deciderIncludedHere, deciderReady, deciderSavePatch, des
 import { decideRoomResponder, type RoomRoutingInput } from "./decider/room-routing.ts";
 import { createLiveSession, liveAttachUrl, LiveSessionError, type LiveBot, type LiveHistoryMessage } from "./live-call.ts";
 import { LiveCallController, LiveCallSignedOutError, type LiveSocket } from "./live-call-controller.ts";
+import { redactCallReceipt, saveCallReceipt } from "./call-receipts.ts";
+import { callReceiptText } from "../shared/call-receipt.ts";
 import { narrateTool, toUtterances } from "./tts/speech-text.ts";
 import { turnStartLogLine } from "./turn-log.ts";
 import { buildRecoveryText, buildTurnContext, engineIsFresh, NATIVELY_REPLAYING_DRIVER_KINDS, peerMessageText } from "./turn-context.ts";
@@ -15552,12 +15554,13 @@ function liveSignedIn(auth: RequestAuth): boolean {
 }
 const liveCalls = new LiveCallController({
   store,
-  send: async ({ auth, botId, threadId, text }) => {
+  send: async ({ auth, botId, threadId, text, sendId }) => {
     // the controller ends the call on this error
     if (!liveSignedIn(auth)) throw new LiveCallSignedOutError();
     const receipt = await acceptDirectSend({
       botId, threadId, text,
-      sendId: randomUUID().replaceAll("-", ""),
+      // ask_compute names its own sendId: it marks the line as that tool call's
+      sendId: sendId ?? randomUUID().replaceAll("-", ""),
       sender: messageSender(auth),
       trigger: usageTriggerFor(auth),
       via: "call",
@@ -15586,7 +15589,29 @@ const liveCalls = new LiveCallController({
   },
   broadcast: (frame) => broadcast(frame, { adminOnly: true }),
   settings: () => ({ key: cfg.live?.key ?? "", ...liveSettingsFor(cfg) }),
-  createSession: ({ key, sdp, botId, threadId, voice }) => createLiveSession({ key, sdp, voice, bot: liveBotFor(botId), history: liveHistoryFor(threadId) }),
+  createSession: ({ key, sdp, botId, threadId, voice, compute }) => createLiveSession({ key, sdp, voice, compute, bot: liveBotFor(botId), history: liveHistoryFor(threadId) }),
+  computeEnabled: (botId) => store.bot(botId)?.liveCompute !== false,
+  // only ever shortens the 90 s budget: a fixture's way to reach the timeout path quickly
+  computeTimeoutMs: () => {
+    const override = Number(process.env.OMB_ASK_COMPUTE_TIMEOUT_MS);
+    return Number.isInteger(override) && override >= 500 && override < 90_000 ? override : 90_000;
+  },
+  // A call leaves one call_receipt in the bot's thread; trailing transcript updates it.
+  receipts: {
+    append: (receipt) => {
+      const safe = redactCallReceipt(receipt);
+      saveCallReceipt(safe);
+      if (store.botByThread(safe.threadId)?.id !== safe.botId) return null;
+      return store.appendMessage(safe.threadId, {
+        role: "bot", kind: "call_receipt", text: callReceiptText(safe), callReceipt: safe,
+      }).id;
+    },
+    update: (messageId, receipt) => {
+      const safe = redactCallReceipt(receipt);
+      saveCallReceipt(safe);
+      if (messageId) store.patchMessage(safe.threadId, messageId, { text: callReceiptText(safe), callReceipt: safe });
+    },
+  },
   // Node's WebSocket (undici) accepts headers in its second argument.
   openSocket: (url, key) => new WebSocket(url, { headers: { authorization: `Bearer ${key}` } } as unknown as string[]) as unknown as LiveSocket,
   attachUrl: (sessionId) => liveAttachUrl(sessionId),
@@ -21057,6 +21082,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (body.voiceNotes !== undefined) {
         if (typeof body.voiceNotes !== "boolean") return json(res, 400, { error: "voiceNotes must be true or false" });
         patch.voiceNotes = body.voiceNotes;
+      }
+      // per-bot kill switch for ask_compute: whether the voice on a Live call
+      // may hand work to this bot's own engine. Same admin-gated surface.
+      if (body.liveCompute !== undefined) {
+        if (typeof body.liveCompute !== "boolean") return json(res, 400, { error: "liveCompute must be true or false" });
+        patch.liveCompute = body.liveCompute;
       }
       if (body.memoryEnabled !== undefined) {
         if (typeof body.memoryEnabled !== "boolean") return json(res, 400, { error: "memoryEnabled must be true or false" });

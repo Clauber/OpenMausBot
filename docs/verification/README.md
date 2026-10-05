@@ -44,6 +44,7 @@ Use only mapped, tested commands:
 
 - [Pages workspace](pages.md)
 - [Space isolation boundaries](spaces.md)
+- [Live call receipts and ask_compute](call-receipts.md)
 - [Chat turns](chat-turns.md)
 - [Conversation context compaction](context-compaction.md)
 - [Work summaries and engine hooks](digests.md)

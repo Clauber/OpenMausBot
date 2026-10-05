@@ -36,7 +36,7 @@ export function VoiceSettings({
   workspaceConfigurationLocked = false,
 }: {
   bot: Bot;
-  onPatch: (patch: Partial<Pick<Bot, "voice" | "speakReplies" | "voiceNotes">>) => void;
+  onPatch: (patch: Partial<Pick<Bot, "voice" | "speakReplies" | "voiceNotes" | "liveCompute">>) => void;
   workspaceConfigurationLocked?: boolean;
 }) {
   const { state, dispatch } = useStore();
@@ -483,6 +483,20 @@ export function VoiceSettings({
           checked={bot.voiceNotes !== false}
           aria-label="Let this bot send voice notes"
           onClick={() => onPatch({ voiceNotes: bot.voiceNotes === false })}
+        />
+      </div>
+
+      <div className="mt-4 flex items-center justify-between gap-4">
+        <div>
+          <div className="text-[13px] font-medium text-ink">Do work during calls</div>
+          <div className="mt-0.5 text-[11.5px] leading-relaxed text-ink-secondary">
+            Let the voice on a Live call hand work to this agent (up to 6 turns a call); on unless switched off here.
+          </div>
+        </div>
+        <Switch
+          checked={bot.liveCompute !== false}
+          aria-label="Let this bot do work during Live calls"
+          onClick={() => onPatch({ liveCompute: bot.liveCompute === false })}
         />
       </div>
 
