@@ -392,6 +392,10 @@ export function verificationServerEnvironment(parentEnv: NodeJS.ProcessEnv, data
   // loopback URL, so no bot token can ever be sent to the real Bot API.
   const telegramBase = parentEnv.TELEGRAM_API_BASE?.trim() ?? "";
   if (/^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(telegramBase)) childEnv.TELEGRAM_API_BASE = telegramBase;
+  // Web tools against a fake web server: one extra loopback address (never
+  // 127.0.0.1) that the SSRF guard admits, honored only in this sealed fixture.
+  const webFixtureHost = parentEnv.OMB_TEST_WEB_FIXTURE_HOST?.trim() ?? "";
+  if (/^127\.0\.0\.(?:[2-9]|[1-9]\d|1\d\d|2[0-4]\d|25[0-4])$/.test(webFixtureHost)) childEnv.OMB_TEST_WEB_FIXTURE_HOST = webFixtureHost;
   // Voice-note e2e fault injection: arms the one-shot audio-append failure
   // prelude inside the fixture server (see fail-audio-append-once.mjs).
   if (parentEnv.OMB_TEST_FAIL_AUDIO_APPEND_ONCE) {

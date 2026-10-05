@@ -409,6 +409,32 @@ const toolDefinitions = (externalRuntime: boolean) => [
     },
   },
   {
+    name: "web_fetch",
+    description:
+      "Fetch a public web page or text file by URL and get back its readable text (tags stripped, at most 30000 characters) and title. Only public http and https addresses work: private, local and internal hosts are refused. Results are cached for ten minutes. Use web_search first when you do not have the URL.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        url: { type: "string", description: "The full http or https URL to read." },
+      },
+      required: ["url"],
+    },
+  },
+  {
+    name: "web_search",
+    description:
+      "Search the web and get up to 8 results, each with a title, URL and snippet. Read a result with web_fetch.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        query: { type: "string", description: "What to search for." },
+      },
+      required: ["query"],
+    },
+  },
+  {
     name: "post_to_room",
     description:
       "Put one message into a shared room you belong to, for example when the user asks you to tell the team something. Get group_id from list_rooms. This posts and returns: no room member's turn starts, nobody replies, and nothing comes back except confirmation — so never use it to ask a question or hand out work (use ask_bot or delegate_bot for those). Post once, say it in full, and tell the user what you posted. Set attach_voice_note true to attach this turn's voice note. If a post is refused, do not retry it: say what you wanted to post in your reply instead.",

@@ -623,6 +623,8 @@ describe("agents-proxy MCP surface", () => {
       "start_thread",
       "vm_exec",
       "attach_file",
+      "web_fetch",
+      "web_search",
       "post_to_room",
       "create_bot",
       "list_team_setup",
@@ -711,6 +713,7 @@ describe("agents-proxy MCP surface", () => {
       "tool_result_read",
       "list_shared_computers",
       "list_bots", "list_rooms", "check_delegation", "wait_delegation", "list_threads",
+      "web_fetch", "web_search",
       "list_team_setup",
       "session_search", "session_read", "list_routines", "skills_list",
     ];

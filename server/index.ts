@@ -482,6 +482,9 @@ import { SpaceIsolationError, SpaceRegistry, assertSpace, guardRequest, scopeFro
 import { createSpacesRoutes } from "./routes/spaces.ts";
 import { TEACH_CAPTURE_PATH, createTeachCapture, createTeachRoutes } from "./routes/teach.ts";
 import { createApprovalRulesRoutes } from "./routes/approval-rules.ts";
+import { createWebToolsRoutes } from "./routes/web-tools.ts";
+import { createArtifactsRoutes } from "./routes/artifacts.ts";
+import { ArtifactsDb } from "./artifacts-db.ts";
 import { ProfileRequestService } from "./profile-requests.ts";
 import { ModelRequestService } from "./model-requests.ts";
 import { TighteningRequestService } from "./tightening-requests.ts";
@@ -15783,6 +15786,23 @@ ROUTES.push(createApprovalRulesRoutes({
   bot: (id) => store.bot(id),
   workspaceRules: () => cfg.approvalRules,
 }));
+let artifactsDbHandle: ArtifactsDb | undefined;
+const artifactsDb = () => (artifactsDbHandle ??= new ArtifactsDb(join(DATA_DIR, "artifacts.sqlite")));
+ROUTES.push(createWebToolsRoutes({
+  capability: (header) => {
+    const capability = authorizedInternalCapability(header);
+    if (!capability || capability.kind !== "agents" || capability.generation === EXTERNAL_RUNTIME_GENERATION) return null;
+    return store.bot(capability.botId) ? { botId: capability.botId, threadId: capability.threadId } : null;
+  },
+  toolScope: (botId) => toolScopeForTurn(botId),
+  searchConfig: () => cfg,
+  refused: ({ botId, threadId, host, url }) => appendDecision(DATA_DIR, {
+    threadId, botId, botName: store.bot(botId)?.name, tool: "web_fetch",
+    summary: `Refused to fetch ${url}: ${host} is not a public web address`,
+    decision: "auto-denied", source: "outbound", rule: "ssrf-private-host",
+  }),
+}));
+ROUTES.push(createArtifactsRoutes({ db: artifactsDb, threadExists: (id) => Boolean(threadOwner(id)) }));
 ROUTES.push(createTeachRoutes({
   teaching,
   projectBotForTask: (botId, threadId) => store.projectBotForTask(botId, threadId),
@@ -16920,6 +16940,15 @@ const handleRequestInScope = async (req: IncomingMessage, res: ServerResponse) =
             stillLive: () => internalCapabilityIsActive({ ...internalCapability, ...(vm ? { localVmTarget: vm } : {}) }) &&
               connectorThread(from.id, threadId) !== null,
             publish: (saved) => {
+              try {
+                artifactsDb().add({
+                  threadId, botId: from.id, path: requestedPath.trim(),
+                  name: saved.attachment.kind === "file" ? saved.attachment.name : (requestedName?.trim() || requestedPath.split(/[\\/]/).at(-1) || "image"),
+                  mime: saved.attachment.mime, size: saved.bytes, blob: saved.attachment.path,
+                });
+              } catch {
+                // Versioning is a record on top of the attachment; it must never fail the attach.
+              }
               store.appendMessage(threadId, {
                 role: "bot",
                 kind: "text",

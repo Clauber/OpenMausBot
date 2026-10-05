@@ -58,6 +58,8 @@ Use only mapped, tested commands:
 - [Full Access without duplicate approvals](full-access.md)
 - [Exact command allowlist UI and saved rules](command-allowlist.md)
 - [Approval rules, automatic review and effect replay protection](approval-rules.md)
+- [Web fetch and search tools](web-tools.md)
+- [Versioned thread artifacts](artifacts.md)
 - [Optional semantic memory provider](semantic-memory.md)
 - [Peer approval denial, expiry, and cancellation](peer-approvals.md)
 - [Waiting for an occupied desktop](computer-wait.md)
