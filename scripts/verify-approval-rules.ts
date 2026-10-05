@@ -37,7 +37,7 @@ export async function verifyApprovalRules() {
   });
   await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
   upstreamUrl = `http://127.0.0.1:${(upstream.address() as { port: number }).port}`;
-  const fixture = await launchVerificationServer({ FAKE_CLAUDE_MODE: "hang" }, undefined, undefined, undefined, undefined, [], undefined,
+  const fixture = await launchVerificationServer({ FAKE_CLAUDE_MODE: "hang" }, undefined, undefined, undefined, undefined, [], undefined, undefined,
     { judgeUrl: upstreamUrl, connectorUrl: upstreamUrl });
   const { url, logPath } = fixture.info;
   const sockets: Socket[] = [];

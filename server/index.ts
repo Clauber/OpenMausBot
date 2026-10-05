@@ -480,6 +480,7 @@ import { createPagesRoutes } from "./routes/pages.ts";
 import { SpaceIsolationError, SpaceRegistry, assertSpace, guardRequest, scopeFromHeaders, setActiveSpaces } from "./space-scope.ts";
 import { createSpacesRoutes } from "./routes/spaces.ts";
 import { TEACH_CAPTURE_PATH, createTeachCapture, createTeachRoutes } from "./routes/teach.ts";
+import { createApprovalRulesRoutes } from "./routes/approval-rules.ts";
 import { ProfileRequestService } from "./profile-requests.ts";
 import { ModelRequestService } from "./model-requests.ts";
 import { TighteningRequestService } from "./tightening-requests.ts";
@@ -15775,6 +15776,10 @@ ROUTES.push(createSpacesRoutes({
     : kind === "webhook" ? webhooks.list().some((hook) => hook.id === id)
     : Boolean(pagesDb.get(id)),
 }));
+ROUTES.push(createApprovalRulesRoutes({
+  bot: (id) => store.bot(id),
+  workspaceRules: () => cfg.approvalRules,
+}));
 ROUTES.push(createTeachRoutes({
   teaching,
   projectBotForTask: (botId, threadId) => store.projectBotForTask(botId, threadId),
@@ -23992,12 +23997,6 @@ const handleRequestInScope = async (req: IncomingMessage, res: ServerResponse) =
       });
     }
 
-    m = path.match(/^\/api\/bots\/([\w-]+)\/approval-rules$/);
-    if (m && method === "GET") {
-      const bot = store.bot(m[1]);
-      if (!bot) return json(res, 404, { error: "no such bot" });
-      return json(res, 200, { rules: bot.approvalRules ?? {}, workspace: cfg.approvalRules ?? {} });
-    }
     // ── a bot's outbound allowance: the policy, and how much of it is spent ──
     m = path.match(/^\/api\/bots\/([\w-]+)\/outbound$/);
     if (m && method === "GET") {
