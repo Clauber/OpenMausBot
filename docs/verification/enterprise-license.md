@@ -1,5 +1,7 @@
 # Enterprise layer loading and license expiry
 
+> **Note:** The enterprise layer no longer exists in this fork (removed in LEGION-1). This runbook is retained for history only; its commands and file references, including `enterprise/` and the license-expiry tests, no longer apply.
+
 ## Sub-features
 
 - Find the bundled enterprise layer in every shipped layout: a checkout

@@ -2,6 +2,8 @@
 
 # OpenMausBot
 
+Legion is a fork of [OpenMausBot](https://github.com/milind-soni/OpenMausBot) by Milind Soni, used and modified under the Apache-2.0 license.
+
 **The open-source Grok Bot alternative: your own team of AI bots, in a chat app.**
 
 [**openmausbot.com**](https://www.openmausbot.com) &nbsp;·&nbsp; [Download](https://www.openmausbot.com/download) &nbsp;·&nbsp; [Open source Grok Bot alternative, compared](https://www.openmausbot.com/blog/grok-bot-vs-openmausbot)

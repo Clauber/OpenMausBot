@@ -17,7 +17,7 @@ export class CoordinationWorld extends BaseWorld {
   private latestRuns = new Map<string, string>();
 
   override async boot(scenario: Scenario): Promise<void> {
-    this.session = await launchVerificationServer(process.env, undefined, undefined, undefined, undefined, { scripted: true });
+    this.session = await launchVerificationServer(process.env, undefined, undefined, undefined, { scripted: true });
     this.dataDir = this.session.info.dataDir;
     this.planPath = join(this.dataDir, "room-plan.json");
     await this.initBase(this.session.info.url, this.planPath + ".evidence.jsonl", join(this.dataDir, "eval-gates"));

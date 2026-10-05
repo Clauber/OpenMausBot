@@ -13,7 +13,7 @@ const model = process.env.OMB_VERIFY_CODEX_MODEL;
 if (!cli || !auth || !model) throw new Error("Supply OMB_VERIFY_CODEX_CLI, OMB_VERIFY_CODEX_AUTH and OMB_VERIFY_CODEX_MODEL explicitly. This test uses real model quota.");
 const browser = await ensureUiBrowser(process.env, console.error);
 const fixture = await launchVerificationServer({}, undefined, undefined,
-  { binaryPath: browser.binary, executablePath: browser.chrome ?? "" }, undefined, undefined, ["codex"]);
+  { binaryPath: browser.binary, executablePath: browser.chrome ?? "" }, undefined, ["codex"]);
 let preview: Awaited<ReturnType<typeof mountPreview>> | undefined;
 try {
   const codexHome = join(fixture.info.dataDir, ".codex");
