@@ -393,7 +393,7 @@ const threadsPatchSchema = threadsConfigSchema.extend({
   eventLogMaxBytes: threadsConfigSchema.shape.eventLogMaxBytes.nullable(),
   eventLogRetentionDays: threadsConfigSchema.shape.eventLogRetentionDays.nullable(),
 });
-const appConfigSchema = z.object({
+export const appConfigSchema = z.object({
   /** Verified by the dedicated domain endpoint, never a generic config patch. */
   customDomain: z.string().optional(),
   /** Who may sign in with an emailed code (server/account-signin.ts):
@@ -544,6 +544,18 @@ const appConfigSchema = z.object({
     /** Local hour (0-23) after which the nightly tidy-up runs. */
     tidyHour: z.number().int().min(0).max(23).optional(),
   }).strict().optional(),
+  /** Optional semantic-memory provider behind markdown recall (server/memory-provider.ts).
+   * Off unless `enabled`. `key` is write-only and lives in the 0600 config like
+   * every credential; the provider reads it only through `apiKeyRef`, the NAME
+   * of an OMB_MEMORY_* environment variable that syncCredentialEnv fills. */
+  memoryProvider: z.object({
+    kind: z.enum(["supermemory", "serenity", "generic-openai-embeddings"]).optional(),
+    url: z.string().trim().max(2048).refine((v) => !v || /^https?:\/\//i.test(v), "the memory provider address must start with http:// or https://").optional(),
+    apiKeyRef: z.string().trim().max(64).refine((v) => !v || /^OMB_MEMORY_[A-Z0-9_]{1,48}$/.test(v), "the key reference must be an OMB_MEMORY_* name").optional(),
+    key: optionalText,
+    model: z.string().trim().max(200).optional(),
+    enabled: z.boolean().optional(),
+  }).strict().optional(),
   threads: threadsConfigSchema.optional(),
   /** The authorization decision log (server/decision-log.ts): days of month
    * files kept, at least; OMB_DECISION_RETENTION_DAYS wins when set. */
@@ -616,6 +628,7 @@ export interface AppConfig {
   threads?: { maxConcurrentPerBot: number; eventLogMaxBytes?: number; eventLogRetentionDays?: number };
   context?: { rebuildBytes?: number; compactAt?: number; autoCompact?: boolean };
   memory?: { captureQuietMs?: number; tidyHour?: number };
+  memoryProvider?: { kind?: "supermemory" | "serenity" | "generic-openai-embeddings"; url?: string; apiKeyRef?: string; key?: string; model?: string; enabled?: boolean };
   /** Shared preserves the historical singleton. Per-bot gives every bot a
    * separate container, durable workspace, viewer and lease. Pool runs N
    * seats shared by all conversations, with per-thread affinity (#1654). */
@@ -915,6 +928,7 @@ export const FLEET_NEUTRAL_KEYS: ReadonlySet<string> = new Set([
   "automaticRecovery",
   "context",
   "memory",
+  "memoryProvider",
   "localVm",
   "features",
   "browserProfiles",
@@ -1045,6 +1059,8 @@ export function loadConfig(): AppConfig {
   if (process.env.OMB_FISH_AUDIO_API_KEY !== undefined) cfg.tts.fishKey = process.env.OMB_FISH_AUDIO_API_KEY;
   cfg.decider = { ...cfg.decider };
   if (process.env.OMB_JEV_API_KEY !== undefined) cfg.decider.key = process.env.OMB_JEV_API_KEY;
+  cfg.memoryProvider = { ...cfg.memoryProvider };
+  if (process.env.OMB_MEMORY_PROVIDER_KEY !== undefined) cfg.memoryProvider.key = process.env.OMB_MEMORY_PROVIDER_KEY;
   cfg.live = { ...cfg.live };
   if (process.env.OMB_OPENAI_LIVE_KEY !== undefined) cfg.live.key = process.env.OMB_OPENAI_LIVE_KEY;
   cfg.imageGen = { ...cfg.imageGen };
@@ -1109,6 +1125,7 @@ export function syncCredentialEnv(patch: Partial<Omit<AppConfig, "threads" | "ne
     [patch.tts?.key, "OMB_TTS_KEY"],
     [patch.tts?.fishKey, "OMB_FISH_AUDIO_API_KEY"],
     [patch.decider?.key, "OMB_JEV_API_KEY"],
+    [patch.memoryProvider?.key, "OMB_MEMORY_PROVIDER_KEY"],
     [patch.imageGen?.key, "OMB_OPENAI_IMAGE_KEY"],
     [patch.imageGen?.customApiKey, "OMB_CUSTOM_IMAGE_KEY"],
     [patch.live?.key, "OMB_OPENAI_LIVE_KEY"],
@@ -1158,6 +1175,7 @@ export const WORKSPACE_CREDENTIAL_ENV = [
   "OMB_OPENAI_IMAGE_KEY",
   "OMB_CUSTOM_IMAGE_KEY",
   "OMB_OPENAI_LIVE_KEY",
+  "OMB_MEMORY_PROVIDER_KEY",
   "COMPOSIO_API_KEY",
   "OMB_COMPOSIO_BROKER_TOKEN",
   // Cloud Pro's included Boat, voice and decision relay tokens
@@ -1256,7 +1274,7 @@ export function saveConfig(
   // back after we have successfully recognized the legacy list.
   const storedProfiles = storedBrowserProfilesSchema.safeParse(disk.browserProfiles);
   if (storedProfiles.success) disk.browserProfiles = storedProfiles.data;
-  for (const key of ["xai", "anthropic", "mistral", "cerebras", "openai", "openrouter", "openaiCompat", "composio", "box", "opencodeGo", "tts", "decider", "imageGen", "live", "profile", "rooms", "threads", "context", "memory", "localVm", "features", "budgets", "billing", "decisions", "onboarding", "browserEngine", "newBots"] as const) {
+  for (const key of ["xai", "anthropic", "mistral", "cerebras", "openai", "openrouter", "openaiCompat", "composio", "box", "opencodeGo", "tts", "decider", "imageGen", "live", "profile", "rooms", "threads", "context", "memory", "memoryProvider", "localVm", "features", "budgets", "billing", "decisions", "onboarding", "browserEngine", "newBots"] as const) {
     const section = checkedPatch[key];
     if (!section) continue;
     const current = jsonObjectSchema.safeParse(disk[key]);

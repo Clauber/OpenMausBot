@@ -58,6 +58,7 @@ Use only mapped, tested commands:
 - [Full Access without duplicate approvals](full-access.md)
 - [Exact command allowlist UI and saved rules](command-allowlist.md)
 - [Approval rules, automatic review and effect replay protection](approval-rules.md)
+- [Optional semantic memory provider](semantic-memory.md)
 - [Peer approval denial, expiry, and cancellation](peer-approvals.md)
 - [Waiting for an occupied desktop](computer-wait.md)
 - [Chat UI, driven headlessly](chat-ui.md)

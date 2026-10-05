@@ -13,6 +13,7 @@ import { recallMessages, recallTerms, type MemoryHit, type RecallHit } from "./m
 import { parseTopicHeader, readTopicHead, topicBody, topicWords } from "./memory-topics.ts";
 import { listMemoryTopics, memoryDate, readMemoryTopic, searchMemoryFiles, workspaceDir } from "./workspace.ts";
 import { withoutExpired } from "./memory-entries.ts";
+import { queryProvider, type MemoryProvider, type ProviderHit } from "./memory-provider.ts";
 import { join } from "node:path";
 
 /** Below this many characters a message is a nod, not a question. */
@@ -22,6 +23,9 @@ export const RECALL_QUERY_CHARS = 500;
 export const RECALL_MAX_CHARS = 6_000;
 const MEMORY_HITS = 4;
 const CONVERSATION_HITS = 4;
+/** A provider adds at most this many passages, and only into the room the
+ * markdown and conversation passages leave in RECALL_MAX_CHARS. */
+export const PROVIDER_HITS = 3;
 /** From this many content words on, a hit must match two of them: one
  * shared word with a long question is usually a coincidence. */
 export const MIN_TERMS_FOR_TWO = 5;
@@ -39,7 +43,7 @@ export const RECALL_OPEN =
 export const RECALL_CLOSE = "[end of recalled passages — the message follows]";
 
 export interface RecallPassage {
-  source: "memory" | "conversation";
+  source: "memory" | "conversation" | "provider";
   label: string;
   at?: number;
   snippet: string;
@@ -49,6 +53,8 @@ export interface RecallResult {
   text: string;
   notes: number;
   conversations: number;
+  /** Passages a semantic-memory provider contributed (0 unless one is enabled). */
+  provider: number;
 }
 
 export function recallQuery(text: string): string | null {
@@ -90,17 +96,19 @@ export function renderRecall(passages: readonly RecallPassage[], maxChars = RECA
   let length = lines.join("\n").length + RECALL_CLOSE.length + 1;
   let notes = 0;
   let conversations = 0;
+  let provider = 0;
   for (const passage of passages) {
-    const line = `[${notes + conversations + 1}] ${passage.label} (${day(passage.at)}): ${clean(passage.snippet)}`;
+    const line = `[${notes + conversations + provider + 1}] ${passage.label} (${day(passage.at)}): ${clean(passage.snippet)}`;
     if (length + line.length + 1 > maxChars) continue;
     lines.push(line);
     length += line.length + 1;
     if (passage.source === "memory") notes += 1;
+    else if (passage.source === "provider") provider += 1;
     else conversations += 1;
   }
-  if (!notes && !conversations) return null;
+  if (!notes && !conversations && !provider) return null;
   lines.push(RECALL_CLOSE);
-  return { text: lines.join("\n"), notes, conversations };
+  return { text: lines.join("\n"), notes, conversations, provider };
 }
 
 export interface RecallInput {
@@ -183,12 +191,46 @@ export function conversationPassages(input: RecallInput, query: string): RecallP
     }));
 }
 
+const fold = (text: string) => text.toLowerCase().replace(/\[([^[\]]+)\]/g, "$1").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+
+/** Provider hits as passages: badge in the label, anything already said by a
+ * markdown or conversation passage dropped, the rest capped at PROVIDER_HITS. */
+export function providerPassages(hits: readonly ProviderHit[], provider: Pick<MemoryProvider, "name">, existing: readonly RecallPassage[]): RecallPassage[] {
+  const seen = existing.map((passage) => fold(passage.snippet)).filter(Boolean);
+  const out: RecallPassage[] = [];
+  for (const hit of hits) {
+    const text = fold(hit.text);
+    if (!text) continue;
+    if (seen.some((known) => known === text || (Math.min(known.length, text.length) >= 24 && (known.includes(text) || text.includes(known))))) continue;
+    seen.push(text);
+    out.push({ source: "provider", label: `provider:${provider.name} · ${hit.source}`, snippet: hit.text });
+    if (out.length >= PROVIDER_HITS) break;
+  }
+  return out;
+}
+
 /** The recalled block for this turn, or null when nothing is worth saying. */
 export function buildRecall(input: RecallInput): RecallResult | null {
   const query = recallQuery(input.message);
   if (!query) return null;
+  return renderRecall(basePassages(input, query));
+}
+
+/** buildRecall with an optional semantic provider queried in parallel with the
+ * markdown lookups (a 2 s deadline; any failure is markdown-only). Provider
+ * passages go last, so the shared character budget fills with markdown first. */
+export async function buildRecallWith(input: RecallInput, provider: MemoryProvider | null): Promise<RecallResult | null> {
+  const query = recallQuery(input.message);
+  if (!query) return null;
+  const pending = provider ? queryProvider(provider, query, PROVIDER_HITS * 3) : null;
+  const base = basePassages(input, query);
+  const extra = provider && pending ? providerPassages(await pending, provider, base) : [];
+  return renderRecall([...base, ...extra]);
+}
+
+function basePassages(input: RecallInput, query: string): RecallPassage[] {
   const topics = topicPassages(input.botId, query);
   const named = new Set(topics.map((passage) => passage.label));
   const notes = [...topics, ...memoryPassages(input.botId, query).filter((passage) => !named.has(passage.label))].slice(0, MEMORY_HITS);
-  return renderRecall([...notes, ...conversationPassages(input, query)]);
+  return [...notes, ...conversationPassages(input, query)];
 }

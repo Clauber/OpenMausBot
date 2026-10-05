@@ -13,6 +13,7 @@ import { withTourReset } from "@/lib/guided-tour";
 import { completionPatch } from "@/lib/onboarding";
 import { AnthropicEveryClaudeBot, ApiKeyRow, OpenAiCompatUrl, VpsConnection } from "./ApiKeys";
 import { DecisionModelSettings } from "./DecisionModelSettings";
+import { MemoryProviderSettings } from "./MemoryProviderSettings";
 import { useUpdaterState } from "@/lib/updater";
 import { EnginesSettings } from "./EnginesSettings";
 import { LocalComputerSection } from "./LocalComputerSection";
@@ -922,6 +923,7 @@ export function SettingsModal() {
             <ThreadConcurrencySettings />
             {!remoteActive && <RoutinesInConversationRow />}
             <AutomaticRecoverySettings />
+            <MemoryProviderSettings />
             <ThreadCleanupSettings />
             <div>
               {!remoteActive && <ReplayTourRow />}

@@ -130,7 +130,8 @@ import {
 import * as composio from "./composio.ts";
 import { connectorCallFromFrame, connectorRefusalText, connectorUnrecognizedText, evaluateConnectorTools } from "./connector-verdict.ts";
 import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
-import { buildRecall } from "./recall.ts";
+import { buildRecallWith } from "./recall.ts";
+import { describeMemoryProvider, resolveMemoryProvider } from "./memory-provider.ts";
 import { createMemoryUpkeep, upkeepEnabled } from "./memory-upkeep.ts";
 import { appendAboutMe, commitLearned, planLearned } from "./profile-learned.ts";
 import { canAccessTeam, canReachPeer, coordinatorSupervises, livePeerRoster, livePeerRosterBlock, peerAllowed, peerName, peerRosterSystemPrompt, peerStatus, peerStatusWords, reachablePeers, resolveTeammate, roomPeerRosterSystemPrompt, roomRosterLine, PEER_ACCESS_HELP } from "./peer-roster.ts";
@@ -1583,7 +1584,7 @@ function recentWorkSources(bot: BotRecord) {
  * turn the person started — because a message from another bot, a webhook
  * or a room must not be able to pull a private chat into its reply. The
  * conversations are the ones session_search would search, minus this one. */
-function autoRecallPrompt(bot: BotRecord, threadId: string, message: string, opts: { conversations: boolean; userName: string }): string {
+async function autoRecallPrompt(bot: BotRecord, threadId: string, message: string, opts: { conversations: boolean; userName: string }): Promise<string> {
   if (bot.memoryEnabled === false || !autoRecallEnabled(cfg)) return "";
   const roomByThread = new Map<string, GroupRecord>();
   if (opts.conversations) {
@@ -1600,7 +1601,7 @@ function autoRecallPrompt(bot: BotRecord, threadId: string, message: string, opt
       .filter((id) => id !== threadId && (!CLOUD_HOME || cloudOwnerOnlyThread(id)))
     : [];
   try {
-    const recalled = buildRecall({
+    const recalled = await buildRecallWith({
       botId: bot.id,
       message,
       threadIds,
@@ -1612,8 +1613,8 @@ function autoRecallPrompt(bot: BotRecord, threadId: string, message: string, opt
         return id === bot.threadId ? "your main chat" : "an earlier chat";
       },
       author: (hit) => (hit.role === "user" ? hit.peer ?? opts.userName : hit.from ?? bot.name),
-    });
-    if (recalled) console.log(`auto-recall: ${bot.name} (${bot.id}) got ${recalled.notes} note and ${recalled.conversations} conversation passage(s) in ${threadId}`);
+    }, resolveMemoryProvider(cfg));
+    if (recalled) console.log(`auto-recall: ${bot.name} (${bot.id}) got ${recalled.notes} note and ${recalled.conversations} conversation passage(s)${recalled.provider ? ` and ${recalled.provider} provider passage(s)` : ""} in ${threadId}`);
     return recalled?.text ?? "";
   } catch (err) {
     console.warn(`auto-recall failed for ${bot.id}: ${(err as Error).message}`);
@@ -10555,7 +10556,7 @@ async function startTurn(
       // Automatic recall rides in front of THIS turn's message, never in the
       // system prompt: the volatile half is re-sent whole whenever any part of
       // it changes, and recall changes nearly every turn.
-      const recalled = autoRecallPrompt(bot, threadId, resolvedImages.text, {
+      const recalled = await autoRecallPrompt(bot, threadId, resolvedImages.text, {
         // a routine run starts fresh by design, and a webhook is untrusted:
         // neither pulls earlier conversations in
         conversations: commsDepth === 0 && !coordinationNode && !opts?.automationSource && !opts?.unattended,
@@ -13069,6 +13070,10 @@ async function runGroupMemberTurn(
     else markCancelledProviderHandshake(threadId, retirementOwner);
   };
   const timeoutMinutes = roomTurnTimeoutMinutes(cfg);
+  // notes only in a room: a private chat reaches a room through the
+  // explicit, disclosed session_search, never automatically. Settled before
+  // the dispatch below, which must stay synchronous with its latch swap.
+  const roomRecalled = cardContinuation ? "" : await autoRecallPrompt(bot, threadId, resolvedLatestImages.text, { conversations: false, userName });
   const outcome = await new Promise<GroupMemberTurnOutcome>((resolve) => {
     let done = false;
     let unsub = () => {};
@@ -13134,9 +13139,6 @@ async function runGroupMemberTurn(
     providerDispatched = true;
     turnPromptBytes.set(threadId, { stable: Buffer.byteLength(roomSystem.stable), volatile: Buffer.byteLength(roomSystem.volatile) });
     runningTurnEngines.set(threadId, instance);
-    // notes only in a room: a private chat reaches a room through the
-    // explicit, disclosed session_search, never automatically
-    const roomRecalled = cardContinuation ? "" : autoRecallPrompt(bot, threadId, resolvedLatestImages.text, { conversations: false, userName });
     guardTurnDispatch(instance.adapter.sendTurn({
         threadId,
         botId: readyBot.id,
@@ -15328,6 +15330,7 @@ function configStatus() {
     tts: tts.describeVoice(cfg),
     // the decision model: switches and configured-or-not, never the key
     decider: describeDecider(cfg),
+    memoryProvider: describeMemoryProvider(cfg),
     imageGen: avatarImageStatus(cfg),
     // Live calls: configured-or-not only; the voice name is a setting
     live: liveSettingsFor(cfg),
