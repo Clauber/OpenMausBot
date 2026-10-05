@@ -182,6 +182,8 @@
   "approval.action.alwaysAllowSession": "Always allow this session",
   "approval.action.alwaysAllowSessionHint": "The provider stops asking about this action until the session ends",
   "approval.action.alwaysAllowCommand": "Always allow this command",
+  "approval.action.allowEverything": "Always allow everything",
+  "approval.action.allowEverythingHint": "Give {name} Full access on every thread, and allow this and its other waiting requests",
   "approval.action.alwaysAllowCommandHint": "Remember this exact command for this bot and provider in {cwd}, including other threads using that folder",
   "commandAllowlist.title": "Command allowlist",
   "commandAllowlist.manage": "Manage command allowlist",

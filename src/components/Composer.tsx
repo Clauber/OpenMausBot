@@ -929,6 +929,7 @@ export function Composer({
               threadId={threadId}
               bot={approvalBot}
               onCancelTurn={interruptTurn}
+              operatorFullAccess={operatorFullAccessEnabled(state.config)}
             />
           </div>
         )}

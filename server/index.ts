@@ -22199,6 +22199,62 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       store.patchTask(bot.id, bot.threadId, { rewound: true });
       return json(res, 200, { activeLeafId: leaf });
     }
+    // "Always allow everything" from a waiting approval card: the operator's
+    // opt-in Full access grant, made while the bot is mid-turn. The bot PATCH
+    // refuses level changes on a busy bot because the provider session keeps
+    // its starting mode; here that does not matter, because every later
+    // request in the running turn is answered by the harness under Full (the
+    // level is read live at request.opened). The grant covers the bot default
+    // and every thread, then answers the bot's permission cards already open.
+    m = path.match(/^\/api\/bots\/([\w-]+)\/allow-everything$/);
+    if (m && method === "POST") {
+      const body = await readBody(req);
+      if (!OPERATOR_FULL_ACCESS) {
+        return json(res, 403, { error: "This approval-level change can only be made from the packaged desktop app" });
+      }
+      if (CLOUD_HOME && !cloudOwnerSession(auth)) {
+        return json(res, 403, { error: "On this Cloud only its owner can change how a bot asks for approval." });
+      }
+      // A bot curling the loopback API from a tool call must not grant itself
+      // Full access: only a paired browser or an owner/admin session may.
+      if (!canManageCommandAllowlist(auth) || auth.kind === "loopback" && !DESKTOP_MANAGED && !req.headers.origin) {
+        return json(res, 403, { error: "Only the owner or an admin can grant Full access from the app." });
+      }
+      if (body?.confirmFullAccess !== true) {
+        return json(res, 400, { error: "Confirm the Full access warning first (confirmFullAccess)" });
+      }
+      const target = store.bot(m[1]);
+      if (!target) return json(res, 404, { error: "no such bot" });
+      if (target.approvalGrant) return json(res, 409, { error: "the bot's approval mode is still being confirmed" });
+      if (approvalModeFor(target) === "custom") {
+        return json(res, 403, { error: "Leaving Custom approval requires the packaged desktop app" });
+      }
+      if (!supportsApprovalMode(target.modelSelection, "full")) {
+        return json(res, 400, { error: "This provider does not support Full access" });
+      }
+      store.patchBot(target.id, { approvalMode: "full", autoApprove: false });
+      store.setAllThreadApprovalMode(target.id, "full");
+      // The card's own thread may be a room's; the rest are the bot's own.
+      const threadIds = new Set((store.bot(target.id)?.tasks ?? []).map((task) => task.threadId));
+      if (typeof body.threadId === "string") threadIds.add(body.threadId);
+      let answered = 0;
+      for (const threadId of threadIds) {
+        const roomThread = !store.taskByThread(target.id, threadId);
+        for (const message of store.messagesFor(threadId)) {
+          const card = message.card;
+          if (!card?.requestId || !card.tool || card.answered || card.dismissed || card.expired) continue;
+          if (card.requestType === "question" || card.questionRequest) continue;
+          // Harness-owned proposals and peer grants keep their own answers.
+          if (card.allowKey || card.routineRequest || card.skillRequest || card.profileRequest || card.modelRequest ||
+            card.tighteningRequest || card.teamSetupRequest || card.teamMemoryRequest) continue;
+          if (roomThread && message.from?.botId !== target.id) continue;
+          const outcome = await answerRequest(threadId, target.modelSelection.instanceId, card.requestId, "allow", undefined, { id: target.id, name: target.name });
+          if (outcome !== "unavailable") answered += 1;
+        }
+      }
+      return json(res, 200, { ok: true, answered, bot: wireBot(store.bot(target.id)!) });
+    }
+
     m = path.match(/^\/api\/bots\/([\w-]+)\/respond$/);
     if (m && method === "POST") {
       const body = await readBody(req);
