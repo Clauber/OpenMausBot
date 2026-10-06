@@ -22355,8 +22355,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     // refuses level changes on a busy bot because the provider session keeps
     // its starting mode; here that does not matter, because every later
     // request in the running turn is answered by the harness under Full (the
-    // level is read live at request.opened). The grant covers the bot default
-    // and every thread, then answers the bot's permission cards already open.
+    // level is read at request.opened from the turn's record, which the grant
+    // updates). The grant covers the bot default and every thread, then
+    // answers the bot's permission cards already open.
     m = path.match(/^\/api\/bots\/([\w-]+)\/allow-everything$/);
     if (m && method === "POST") {
       const body = await readBody(req);
@@ -22387,6 +22388,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       store.setAllThreadApprovalMode(target.id, "full");
       // A level queued for the end of the turn must not land afterwards and undo this.
       pendingApprovalChanges.delete(target.id);
+      // A running 1:1 turn judges its later cards by the record it started
+      // with (directTurnBots), not the store, so carry the grant into it.
+      for (const live of directTurnBots.values()) {
+        if (live.id === target.id) { live.approvalMode = "full"; live.autoApprove = false; }
+      }
       // The card's own thread may be a room's; the rest are the bot's own.
       const threadIds = new Set((store.bot(target.id)?.tasks ?? []).map((task) => task.threadId));
       if (typeof body.threadId === "string") threadIds.add(body.threadId);
