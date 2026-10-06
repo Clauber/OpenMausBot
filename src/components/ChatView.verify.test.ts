@@ -46,7 +46,7 @@ vi.mock("@/lib/analytics", () => ({ track: vi.fn() }));
 // tests are about; the fixture stands in for the stored value.
 vi.mock("@/lib/run-card-preferences", () => ({ useShowRunCard: () => fixture.showRunCard }));
 // The thread controls read live model lists; they are not what this file tests.
-vi.mock("./ModelPicker", () => ({ ModelPicker: () => createElement("span", { "data-test-model-control": true }) }));
+vi.mock("./ModelPicker", () => ({ ModelPicker: () => createElement("span", { "data-test-model-control": true }), ThinkingPicker: () => null }));
 vi.mock("./ApprovalModeSelector", () => ({ ApprovalModeSelector: () => createElement("span", { "data-test-approval-control": true }) }));
 
 const { ChatView } = await import("./ChatView");

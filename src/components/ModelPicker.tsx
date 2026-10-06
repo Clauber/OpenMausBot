@@ -7,7 +7,7 @@
 // the person making it, so the chat header and the settings dialog render the
 // same row and write through the same action.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Check, ChevronDown, ChevronLeft, ChevronRight, KeyRound, Loader2, Plus, RefreshCw, Search } from "lucide-react";
+import { Brain, Check, ChevronDown, ChevronLeft, ChevronRight, KeyRound, Loader2, Plus, RefreshCw, Search } from "lucide-react";
 import { useStore, currentTaskBot, type Bot, type InstanceInfo, type ModelSelection } from "@/state/store";
 import type { EffortLevel } from "../../shared/wire";
 import type { ModelVariantOption } from "../../shared/runtime-events";
@@ -159,6 +159,84 @@ export function EffortRow({
           </button>
         ))}
       </div>
+    </div>
+  );
+}
+
+/** How hard the bot thinks, as its own chip beside the model. Same levels and
+ * the same `setModel` write as the picker's effort row; an engine with no
+ * levels, or one that picks reasoning through model variants, gets no chip. */
+export function ThinkingPicker({ bot, threadId, className }: { bot: Bot; threadId?: string; className?: string }) {
+  const { state, dispatch } = useStore();
+  const [open, setOpen] = useState(false);
+  const motion = useMenuMotion(open && !bot.busy);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const ownerOrAdmin = useOwnerOrAdmin();
+  const advanced = useAdvancedMode();
+  const selection = bot.modelSelection;
+  const instance = state.instances.find((candidate) => candidate.instanceId === selection.instanceId);
+  const levels = instance?.capabilities?.effortLevels;
+  // Guests keep their choice to their own Cloud conversation, as in the model picker.
+  const updatesBotDefault = Boolean(threadId) && (!state.config?.cloudHome || ownerOrAdmin === true);
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [open]);
+  if (!levels?.length || instance?.capabilities?.modelVariants) return null;
+  const label = (level: EffortLevel) => (advanced ? effortLabel(level) : friendlyEffort(level));
+  const pick = (level: EffortLevel | undefined) => {
+    setOpen(false);
+    dispatch({ type: "setModel", botId: bot.id, threadId, ...(updatesBotDefault ? { updateBotDefault: true } : {}),
+      selection: { ...selection, effort: level } });
+  };
+  return (
+    <div ref={rootRef} className={cn("relative", className)}>
+      <button
+        type="button"
+        data-thinking-picker
+        disabled={Boolean(bot.busy)}
+        aria-expanded={open && !bot.busy}
+        aria-haspopup="listbox"
+        aria-label="Reasoning effort"
+        title={bot.busy ? t(threadId ? "model.threadBusy" : "model.busy") : "Reasoning effort"}
+        onClick={() => setOpen((was) => !was)}
+        className="flex h-8 items-center gap-1 rounded-full px-2 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+      >
+        <Brain size={14} aria-hidden="true" />
+        <span>{selection.effort ? label(selection.effort) : "Default"}</span>
+        <ChevronDown size={13} className={cn("transition-transform", open && "rotate-180")} />
+      </button>
+      {motion.shown && (
+        <div
+          role="listbox"
+          aria-label="Reasoning effort"
+          {...motion.exitProps}
+          className={cn("absolute bottom-full right-0 z-30 mb-2 min-w-36 rounded-xl border border-hairline/50 bg-card p-1 shadow-2xl shadow-black/50", motion.className)}
+        >
+          {[undefined, ...levels].map((level) => (
+            <button
+              key={level ?? "default"}
+              type="button"
+              role="option"
+              aria-selected={selection.effort === level}
+              onClick={() => pick(level)}
+              className="flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-ink hover:bg-control/60"
+            >
+              {level === undefined ? "Default" : label(level)}
+              {selection.effort === level && <Check size={14} aria-hidden="true" />}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -469,10 +547,16 @@ export function ModelPicker({
   className,
   contained = false,
   label,
+  dropUp = false,
+  separateEffort = false,
 }: {
   bot: Bot;
   threadId?: string;
   className?: string;
+  /** Open the menu above the trigger (the composer sits at the window's foot). */
+  dropUp?: boolean;
+  /** Effort has its own control (ThinkingPicker), so this one leaves it out. */
+  separateEffort?: boolean;
   /** Expand the menu in-flow under the trigger so it cannot overflow a
    * narrow parent (the Agent profile sidebar). */
   contained?: boolean;
@@ -516,12 +600,12 @@ export function ModelPicker({
       if (!rect) return;
       const width = Math.min(popoverWidth, window.innerWidth - 32);
       setPlacement({ left: Math.max(16, Math.min(rect.right - width, window.innerWidth - width - 16)) - rect.left,
-        maxHeight: Math.max(0, Math.min(600, window.innerHeight - rect.bottom - 24)) });
+        maxHeight: Math.max(0, Math.min(600, (dropUp ? rect.top : window.innerHeight - rect.bottom) - 24)) });
     };
     place();
     window.addEventListener("resize", place);
     return () => window.removeEventListener("resize", place);
-  }, [open, contained, popoverWidth]);
+  }, [open, contained, popoverWidth, dropUp]);
 
   const selection = bot.modelSelection;
   const active = state.instances.find((instance) => instance.instanceId === selection.instanceId);
@@ -755,7 +839,7 @@ export function ModelPicker({
     lookForLocalIn(instance);
   };
   const activeLevels = active?.capabilities?.effortLevels ?? [];
-  const simpleEffort = activeLevels.length > 0 ? {
+  const simpleEffort = activeLevels.length > 0 && !separateEffort ? {
     levels: simpleEffortLevels(activeLevels, selection.effort),
     current: selection.effort,
     // Follow the same Cloud authority rule as a Simple model pick.
@@ -830,7 +914,7 @@ export function ModelPicker({
             hides the effort the header exists to surface */}
         {selectedVariantLabel !== undefined ? (
           <span data-model-variant className="max-w-[120px] truncate text-ink-secondary">· {selectedVariantLabel}</span>
-        ) : selection.effort && (
+        ) : selection.effort && !separateEffort && (
           <span data-model-effort className="shrink-0 text-ink-secondary">
             · {advanced ? effortLabel(selection.effort) : friendlyEffort(selection.effort)}
           </span>
@@ -869,7 +953,10 @@ export function ModelPicker({
             "flex overflow-hidden rounded-2xl border border-hairline/50 bg-card",
             contained
               ? "relative mt-3 w-full max-h-[min(420px,50dvh)]"
-              : "absolute right-0 top-full z-30 mt-2 max-w-[calc(100vw-2rem)] max-h-[min(600px,calc(100dvh-7rem))] shadow-2xl shadow-black/50",
+              : cn(
+                "absolute right-0 z-30 max-w-[calc(100vw-2rem)] max-h-[min(600px,calc(100dvh-7rem))] shadow-2xl shadow-black/50",
+                dropUp ? "bottom-full mb-2" : "top-full mt-2",
+              ),
             motion.className,
           )}
         >
@@ -1140,7 +1227,7 @@ export function ModelPicker({
                     the rail being browsed: effort applies to the model this bot
                     runs on now, and picking a model on another rail closes the
                     popover. */}
-                {!contained && (
+                {!contained && !separateEffort && (
                   <EffortRow
                     compact
                     bot={bot}
