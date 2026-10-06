@@ -12,11 +12,11 @@ import {
 import { createApprovalModeSupport } from "./harness-capabilities.ts";
 
 describe("approval modes", () => {
-  it("resets only grants that cannot safely carry to the selected provider", () => {
+  it("resets only grants the selected provider cannot run", () => {
     for (const driver of ["codex", "claudeAgent", "grokAgent", "antigravityAgent", "piAgent", "customAcp"]) {
       expect(modelSwitchNeedsAsk("ask", "codex", driver)).toBe(false);
       expect(modelSwitchNeedsAsk("auto", "codex", driver)).toBe(false);
-      expect(modelSwitchNeedsAsk("full", "codex", driver)).toBe(driver !== "codex");
+      expect(modelSwitchNeedsAsk("full", "codex", driver)).toBe(!supportsApprovalMode(driver, "full"));
       expect(modelSwitchNeedsAsk("custom", "codex", driver)).toBe(driver !== "codex");
     }
     expect(modelSwitchNeedsAsk("edits", "claudeAgent", "codex")).toBe(true);
