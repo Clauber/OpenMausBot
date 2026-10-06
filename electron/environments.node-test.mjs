@@ -148,3 +148,53 @@ test("native window identity distinguishes hosted HTML, companion data, and the 
   assert.equal(env.workspaceWindowTitle(state, { serverName: "Office", endpoint: "https://c-office.openmausbot.com" }), "OpenMausBot — Connected to: Office (c-office.openmausbot.com)");
   assert.equal(env.workspaceWindowTitle(env.withActive(state, "local")), "OpenMausBot");
 });
+
+test("a saved server can be renamed, trimmed and capped, and an unknown id changes nothing", () => {
+  const state = { environments: [{ id: "cloud", name: "Acme", origin: "https://acme.example" }], activeId: "cloud" };
+  assert.equal(env.withRenamedEnvironment(state, "cloud", "  Release   server  ").environments[0].name, "Release server");
+  assert.equal(env.withRenamedEnvironment(state, "cloud", "x".repeat(200)).environments[0].name.length, 60);
+  assert.equal(env.withRenamedEnvironment(state, "cloud", "   ").environments[0].name, "Acme");
+  assert.equal(env.withRenamedEnvironment(state, "local", "Mine"), state);
+  assert.equal(env.withRenamedEnvironment(state, "missing", "Mine"), state);
+});
+
+test("This computer can be removed from the lists only while a saved server exists, and comes back with the last forget", () => {
+  const alone = { environments: [], activeId: "local" };
+  assert.equal(Boolean(env.withLocalHidden(alone, true).localHidden), false);
+  const state = { environments: [{ id: "cloud", name: "Acme", origin: "https://acme.example" }], activeId: "cloud" };
+  const hidden = env.withLocalHidden(state, true);
+  assert.equal(hidden.localHidden, true);
+  assert.equal(env.parseEnvironments(env.serializeEnvironments(hidden)).localHidden, true);
+  assert.equal(Boolean(env.parseEnvironments(env.serializeEnvironments(state)).localHidden), false);
+  // A hand-edited file cannot hide Local with nothing else to open.
+  assert.equal(Boolean(env.parseEnvironments({ environments: [], activeId: "local", localHidden: true }).localHidden), false);
+  assert.equal(Boolean(env.withLocalHidden(hidden, false).localHidden), false);
+  assert.equal(Boolean(env.withoutEnvironment(hidden, "cloud").localHidden), false);
+  assert.equal(env.withActive(hidden, "cloud").localHidden, true);
+});
+
+test("the workspace menu drops This computer once removed, and offers rename and a way back", () => {
+  const state = { environments: [{ id: "cloud", name: "Acme", origin: "https://acme.example" }], activeId: "cloud" };
+  const calls = [];
+  const handlers = { onSwitch: () => {}, onConnect: () => {}, onForget: () => {}, onRename: (id) => calls.push(["rename", id]), onHideLocal: () => calls.push(["hide"]), onShowLocal: () => calls.push(["show"]) };
+  const before = env.workspaceMenuTemplate(state, handlers);
+  assert.ok(before.some((item) => item.id === "workspace-local"));
+  assert.equal(before.find((item) => item.id === "workspace-rename").label, "Rename “Acme”…");
+  before.find((item) => item.id === "workspace-rename").click();
+  before.find((item) => item.id === "workspace-hide-local").click();
+  assert.equal(before.some((item) => item.id === "workspace-show-local"), false);
+
+  const hidden = env.workspaceMenuTemplate(env.withLocalHidden(state, true), handlers);
+  assert.equal(hidden.some((item) => item.id === "workspace-local"), false);
+  assert.equal(hidden.some((item) => item.id === "workspace-hide-local"), false);
+  hidden.find((item) => item.id === "workspace-show-local").click();
+  assert.deepEqual(calls, [["rename", "cloud"], ["hide"], ["show"]]);
+
+  // Falling back to Local (a saved server is down) keeps it listed and checked.
+  const fallback = env.workspaceMenuTemplate(env.withActive(env.withLocalHidden(state, true), "local"), handlers);
+  assert.equal(fallback.find((item) => item.id === "workspace-local").checked, true);
+
+  // With no saved server there is nothing to remove it for.
+  const only = env.workspaceMenuTemplate({ environments: [], activeId: "local" }, handlers);
+  assert.equal(only.some((item) => item.id === "workspace-hide-local"), false);
+});

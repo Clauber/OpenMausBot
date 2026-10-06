@@ -291,6 +291,9 @@ const bridge = {
     switch: (id) => ipcRenderer.invoke("environments:switch", id),
     addFromLink: (link, name) => ipcRenderer.invoke("environments:add-from-link", link, name),
     forget: (id) => ipcRenderer.invoke("environments:forget", id),
+    rename: (id, name) => ipcRenderer.invoke("environments:rename", id, name),
+    hideLocal: () => ipcRenderer.invoke("environments:hide-local"),
+    showLocal: () => ipcRenderer.invoke("environments:show-local"),
     /** Settings → Servers, on a saved server's Computer access panel, or
      * ("copy") its Copy this computer here panel. */
     onOpenSettings: (cb) => {

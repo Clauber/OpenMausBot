@@ -101,17 +101,24 @@ function workspaceSenderAllowed(event, contents, state, localOrigin) {
 }
 
 /** Native menu choices, never renderer-supplied destinations or callbacks. */
-function workspaceMenuTemplate(state, { onSwitch, onConnect, onForget }) {
+function workspaceMenuTemplate(state, { onSwitch, onConnect, onForget, onRename, onHideLocal, onShowLocal }) {
   const active = activeEnvironment(state);
+  // A removed local entry stays listed only while it is what the app is on
+  // (the fallback when a saved server cannot be reached).
+  const showLocal = !state.localHidden || !active;
   return [
-    { id: "workspace-local", label: "This computer", type: "radio", checked: !active, click: () => onSwitch(LOCAL_ID) },
+    ...(showLocal ? [{ id: "workspace-local", label: "This computer", type: "radio", checked: !active, click: () => onSwitch(LOCAL_ID) }] : []),
     ...state.environments.map((entry) => ({
       id: `workspace-${entry.id}`, label: entry.name, sublabel: new URL(entry.origin).host,
       type: "radio", checked: entry.id === state.activeId, click: () => onSwitch(entry.id),
     })),
     { type: "separator" },
     { id: "workspace-connect", label: "Connect to a server…", click: onConnect },
+    ...(active ? [{ id: "workspace-rename", label: `Rename “${active.name}”…`, click: () => onRename?.(active.id) }] : []),
     ...(active ? [{ id: "workspace-forget", label: `Forget “${active.name}”…`, click: () => onForget(active.id) }] : []),
+    // Local can only be removed while another server exists to open instead.
+    ...(!state.localHidden && state.environments.length > 0 ? [{ id: "workspace-hide-local", label: "Remove “This computer”…", click: () => onHideLocal?.() }] : []),
+    ...(state.localHidden ? [{ id: "workspace-show-local", label: "Show “This computer”", click: () => onShowLocal?.() }] : []),
   ];
 }
 
@@ -149,11 +156,12 @@ function parseEnvironments(raw) {
     environments.push({ id, name: cleanName(entry?.name, nameFromOrigin(origin)), origin });
   }
   const activeId = typeof value?.activeId === "string" && environments.some((e) => e.id === value.activeId) ? value.activeId : LOCAL_ID;
-  return { environments, activeId };
+  // Without a saved server there is nothing else to open, so Local cannot be hidden.
+  return { environments, activeId, ...(value?.localHidden === true && environments.length > 0 ? { localHidden: true } : {}) };
 }
 
 function serializeEnvironments(state) {
-  return JSON.stringify({ version: 1, environments: state.environments, activeId: state.activeId }, null, 2) + "\n";
+  return JSON.stringify({ version: 1, environments: state.environments, activeId: state.activeId, ...(state.localHidden ? { localHidden: true } : {}) }, null, 2) + "\n";
 }
 
 /** Add or update by origin (re-pairing the same server keeps one entry). */
@@ -173,7 +181,22 @@ function withEnvironment(state, input, makeId) {
 
 function withoutEnvironment(state, id) {
   const environments = state.environments.filter((e) => e.id !== id);
-  return { environments, activeId: state.activeId === id ? LOCAL_ID : state.activeId };
+  // Forgetting the last server brings Local back: it is the only place left to go.
+  return { environments, activeId: state.activeId === id ? LOCAL_ID : state.activeId, ...(state.localHidden && environments.length > 0 ? { localHidden: true } : {}) };
+}
+
+function withRenamedEnvironment(state, id, name) {
+  const existing = state.environments.find((e) => e.id === id);
+  if (!existing) return state;
+  const next = cleanName(name, existing.name);
+  return { ...state, environments: state.environments.map((e) => (e === existing ? { ...e, name: next } : e)) };
+}
+
+/** Take This computer out of the server lists (or put it back). Only possible
+ * while a saved server exists; it stays the fallback if that server is down. */
+function withLocalHidden(state, hidden) {
+  const { localHidden: _was, ...rest } = state;
+  return hidden === true && state.environments.length > 0 ? { ...rest, localHidden: true } : rest;
 }
 
 function withActive(state, id) {
@@ -201,7 +224,9 @@ module.exports = {
   serializeEnvironments,
   withActive,
   withEnvironment,
+  withLocalHidden,
   withoutEnvironment,
+  withRenamedEnvironment,
   workspaceMenuTemplate,
   workspaceNavigationAllowed,
   workspaceSenderAllowed,
