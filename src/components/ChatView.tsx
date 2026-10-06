@@ -20,7 +20,6 @@ import {
   PinOff,
   RefreshCw,
   Search,
-  Square,
   Webhook,
   X,
 } from "lucide-react";
@@ -83,7 +82,6 @@ import { ScreenFrame } from "./ScreenFrame";
 import { CompactionChip, DigestChip } from "./DigestChip";
 import { RenameTitle } from "./RenameTitle";
 import { BotActivityPicker } from "./TaskPicker";
-import { ModelPicker } from "./ModelPicker";
 import { SidebarPopoverMenu, type SidebarMenuItem } from "./SidebarPopoverMenu";
 import { ShortcutHint } from "./ShortcutHint";
 import {
@@ -101,7 +99,6 @@ import { LiveCallChip } from "./LiveCallPill";
 import { effectivePlace, toolPlace, type EffectivePlace } from "@/lib/place";
 import { cn } from "@/lib/cn";
 import { activeLocale, t } from "@/lib/i18n";
-import { COMPACT_BUBBLE } from "@/lib/compact-chip";
 import { groupTranscript, isStatusActivity } from "@/lib/activity-runs";
 import { StatusActivityRow } from "@/components/StatusActivityRow";
 import { ActivityRun } from "./ActivityRun";
@@ -1304,20 +1301,6 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
           // buttons clear the 26px overlay while the rest of the layout stays.
           style={controlsShiftStyle}
         >
-          {(bot.busy || bot.waitingForTeammates) && (
-            <button
-              onClick={() => dispatch({ type: "interrupt", botId: bot.id, threadId: bot.threadId })}
-              className={cn(
-                "flex items-center gap-1.5 rounded-full border border-hairline/40 bg-raised/60 px-2.5 py-1 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink",
-                COMPACT_BUBBLE,
-              )}
-              title={t("chat.stopTurn")}
-            >
-              <Square size={12} className="fill-current" />
-              <span className="@max-4xl/chathead:hidden">{t("chat.stop")}</span>
-            </button>
-          )}
-          {!remoteClient && <ModelPicker key={bot.threadId} bot={bot} threadId={bot.threadId} />}
           {/* below md the sidebar (and its Live call pill) is hidden */}
           <LiveCallChip currentBotId={bot.id} onOpen={(botId, threadId) => openThread(dispatch, { botId, threadId }, state)} />
           <button
