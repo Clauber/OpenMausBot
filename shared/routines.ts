@@ -159,6 +159,16 @@ export interface RoutineInput {
   timeoutMinutes?: number | null;
   overlap?: "skip" | "queue";
   attachments?: RoutineContextAttachment[];
-  /** Omission preserves routing; null creates a new dedicated results task. */
+  /** Omission preserves routing; null creates a new dedicated results task;
+   * ROUTINE_OWN_RESULTS_THREAD opens (or keeps) one named after the routine;
+   * ROUTINE_DEFAULT_RESULTS_THREAD returns to the default destination. */
   resultsThreadId?: string | null;
 }
+
+/** Input-only `resultsThreadId`: open (or keep) a conversation named after
+ * the routine and post every run's result there, out of the main thread. */
+export const ROUTINE_OWN_RESULTS_THREAD = "own-thread";
+
+/** Input-only `resultsThreadId`: forget the chosen destination, so runs report
+ * where they did by default (the chat that set the routine up). */
+export const ROUTINE_DEFAULT_RESULTS_THREAD = "default";

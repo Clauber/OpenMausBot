@@ -15,7 +15,7 @@ import {
   type RoutineRequestStore,
   type RoutineToolDefinitionInput,
 } from "./routine-requests.ts";
-import { RoutineManager, type RoutineInput } from "./routines.ts";
+import { RoutineManager, type RoutineInput, type RoutineManagerOptions } from "./routines.ts";
 import type { JsonValue } from "./schema.ts";
 
 class MemoryStore implements RoutineRequestStore {
@@ -425,6 +425,22 @@ describe("RoutineRequestService", () => {
     expect(update.detail).toContain("Skip overlapping scheduled occurrences");
     service.resolve({ botId: "bot-a", threadId: "thread-a", requestId: update.requestId, behavior: "allow" });
     expect(routines.listRoutines()[0].overlap).toBeUndefined();
+  });
+
+  it("moves a routine's results into a conversation of its own and back", async () => {
+    const { service, routines } = harness();
+    const options = (routines as unknown as { options: RoutineManagerOptions }).options;
+    options.ownResultsThread = () => ({ threadId: "own-thread-1", created: true });
+    options.resolveResultsThread = () => "main-thread";
+    const created = await service.propose({ botId: "bot-a", threadId: "thread-a", proposal: createProposal({ results: "own" }) });
+    expect(created.detail).toContain("Results: Posted to a conversation of the routine's own");
+    service.resolve({ botId: "bot-a", threadId: "thread-a", requestId: created.requestId, behavior: "allow" });
+    const routine = routines.listRoutines()[0];
+    expect(routine.resultsThreadId).toBe("own-thread-1");
+    const update = await service.propose({ botId: "bot-a", threadId: "thread-a", proposal: { action: "update", routineId: routine.id, changes: { results: "main" } } });
+    expect(update.detail).toContain("Results: Posted where it reports by default");
+    service.resolve({ botId: "bot-a", threadId: "thread-a", requestId: update.requestId, behavior: "allow" });
+    expect(routines.listRoutines()[0].resultsThreadId).toBeUndefined();
   });
 
   it("canonicalizes receipt fingerprints and binds them to the card's conversation", async () => {

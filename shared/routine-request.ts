@@ -60,6 +60,9 @@ export interface RoutineRequestDefinition {
   continuity?: boolean;
   /** Skip by default, or keep at most one scheduled run waiting. */
   overlap?: "skip" | "queue";
+  /** Where run results are posted: the default destination, or a conversation
+   * of the routine's own. Omission keeps the current destination. */
+  results?: "main" | "own";
 }
 
 export type RoutineRequestChanges =

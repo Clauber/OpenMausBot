@@ -10,7 +10,7 @@ import { redactSecretsInText } from "./redact.ts";
 import type { GroupGoalRunStatus } from "../shared/group-goal-run.ts";
 import type { RoutineRequestOperation } from "../shared/routine-request.ts";
 import { normalizeCronSchedule, nextCronRuns, type RoutineCronSchedule } from "../shared/routine-schedule.ts";
-import { isRoutineProblemRun } from "../shared/routines.ts";
+import { isRoutineProblemRun, ROUTINE_DEFAULT_RESULTS_THREAD, ROUTINE_OWN_RESULTS_THREAD } from "../shared/routines.ts";
 import { ROUTINE_PARTS, type PartPair, type RoutinePart } from "./package-parts.ts";
 
 export interface RoutineIntervalWindow {
@@ -290,6 +290,9 @@ export interface RoutineManagerOptions {
   isResultsThread?: (botId: string, threadId: string) => boolean;
   /** Reuse routine.resultsThreadId, keep a trusted chat source, or allocate a new ID. */
   resolveResultsThread?: (routine: Routine, forceNew: boolean) => string | undefined;
+  /** A conversation of the routine's own, reusing `current` when it already
+   * is one. Returns the thread and whether it was just opened. */
+  ownResultsThread?: (routine: Routine, current: string | undefined) => { threadId: string; created: boolean } | undefined;
   /** Compensate an uncommitted allocation, only while still empty. */
   discardResultsThread?: (botId: string, threadId: string) => void;
   startTurn: (
@@ -1852,6 +1855,16 @@ export class RoutineManager {
       return;
     }
     if (value === undefined) return;
+    if (value === ROUTINE_DEFAULT_RESULTS_THREAD) {
+      delete routine.resultsThreadId;
+      return;
+    }
+    if (value === ROUTINE_OWN_RESULTS_THREAD) {
+      const own = this.options.ownResultsThread?.(routine, routine.resultsThreadId);
+      if (!own) throw new Error("Could not open a results thread for this routine");
+      routine.resultsThreadId = own.threadId;
+      return own.created ? () => this.options.discardResultsThread?.(routine.botId, own.threadId) : undefined;
+    }
     if (value === null) {
       const destination = this.options.resolveResultsThread?.(routine, true);
       if (!destination) throw new Error("Could not create a results thread for this routine");
