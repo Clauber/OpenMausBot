@@ -16,7 +16,6 @@ import { configuredModelInstances, isClaudeAccount, isCustomOnly, SIGN_IN_FAMILY
 import { InstanceProviderMark } from "./ProviderIcons";
 import { EngineSetup, EngineUpdateNotice, needsCli, needsSignIn } from "./EngineSetup";
 import { EngineGroupLabel } from "./EngineGroupLabel";
-import { ConfirmDialog } from "./ConfirmDialog";
 import { ChatGptPlanStatus } from "./ChatGptPlanStatus";
 import { approvalModeFor, modelSwitchNeedsAsk } from "../../shared/approval-mode";
 import { cn } from "@/lib/cn";
@@ -580,8 +579,6 @@ export function ModelPicker({
   // the shared bot's default. Keep choices thread-only until authority loads.
   const simpleUpdatesBotDefault = !state.config?.cloudHome || ownerOrAdmin === true;
   const [fullView, setFullView] = useState(false);
-  const [pendingSwitch, setPendingSwitch] = useState<{ botId: string; threadId: string;
-    selection: ModelSelection; updateBotDefault: boolean; name: string } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const [placement, setPlacement] = useState<{ left: number; maxHeight: number }>();
   const refreshingRef = useRef(false);
@@ -749,20 +746,17 @@ export function ModelPicker({
     const updateBotDefault = !threadId || (simpleView ? simpleUpdatesBotDefault : scope === "bot");
     const profile = state.bots.find((candidate) => candidate.id === bot.id) ?? bot;
     const targets = updateBotDefault ? [currentTaskBot(profile, threadId ?? bot.threadId), profile] : [bot];
-    if (targets.some((target) => modelSwitchNeedsAsk(approvalModeFor(target),
+    // A level the new engine can't run falls back to Ask with the switch.
+    const resetApprovalToAsk = targets.some((target) => modelSwitchNeedsAsk(approvalModeFor(target),
       state.instances.find((candidate) => candidate.instanceId === target.modelSelection.instanceId)?.driverKind,
-      instance.driverKind))) {
-      setPendingSwitch({ botId: bot.id, threadId: threadId ?? bot.threadId,
-        selection: nextSelection, updateBotDefault, name: modelLabel(instance, model) });
-      setOpen(false);
-      return;
-    }
+      instance.driverKind));
     dispatch({
       type: "setModel",
       botId: bot.id,
       threadId: threadId ?? bot.threadId,
       updateBotDefault,
       selection: nextSelection,
+      ...(resetApprovalToAsk ? { resetApprovalToAsk } : {}),
     });
     setOpen(false);
   };
@@ -1287,25 +1281,6 @@ export function ModelPicker({
           )}
         </div>
       )}
-      <ConfirmDialog
-        open={pendingSwitch !== null}
-        title={t("model.providerSwitch.title")}
-        body={t(pendingSwitch?.updateBotDefault ? "model.providerSwitch.botBody" : "model.providerSwitch.threadBody", {
-          model: pendingSwitch?.name ?? "",
-        })}
-        tone="neutral"
-        confirmLabel={t("model.providerSwitch.confirm")}
-        onCancel={() => setPendingSwitch(null)}
-        onConfirm={() => {
-          if (!pendingSwitch || bot.busy || pendingSwitch.botId !== bot.id || pendingSwitch.threadId !== (threadId ?? bot.threadId)) {
-            setPendingSwitch(null); return;
-          }
-          dispatch({ type: "setModel", botId: pendingSwitch.botId, threadId: pendingSwitch.threadId,
-            selection: pendingSwitch.selection, updateBotDefault: pendingSwitch.updateBotDefault,
-            resetApprovalToAsk: true });
-          setPendingSwitch(null);
-        }}
-      />
     </div>
   );
 }

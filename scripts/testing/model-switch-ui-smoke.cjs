@@ -1,4 +1,4 @@
-// Real model picker + private desktop confirmation, against the disposable
+// Real model picker + private desktop approval channel, against the disposable
 // approval fixture. Provider replies are synthetic; no account is contacted.
 const { BrowserWindow, ipcMain } = require("electron");
 const assert = require("node:assert/strict");
@@ -38,7 +38,6 @@ module.exports = async function verifyModelSwitch({ root, url, api, until, grant
     await click("Claude");
     await until(() => evaluate("[...document.querySelectorAll('[data-model-picker-content] button')].some(b => b.textContent.startsWith('Claude Sonnet 5'))"));
     await evaluate("[...document.querySelectorAll('[data-model-picker-content] button')].find(b => b.textContent.startsWith('Claude Sonnet 5')).click(); true");
-    await until(async () => (await text()).includes("Switch model with Ask permissions?"));
   };
   const evidence = join(root, ".omb-scratch/verify-evidence/model-switch");
   mkdirSync(evidence, { recursive: true });
@@ -85,20 +84,9 @@ module.exports = async function verifyModelSwitch({ root, url, api, until, grant
       writeFileSync(join(evidence, `model-picker-${width}x${height}.png`), (await window.webContents.capturePage()).toPNG());
     }
     window.setSize(1100, 850);
+    // Claude can't run Custom: the pick switches at once and drops to Ask,
+    // with no confirmation in between.
     await selectClaude();
-    assert.equal(await evaluate("document.activeElement.textContent.trim()"), "Cancel");
-    await click("Cancel");
-    assert.equal(calls.length, 0);
-    const cancelledTask = (await read()).tasks.find(task => task.threadId === selected.threadId);
-    assert.equal(cancelledTask.approvalMode, "custom");
-    assert.equal(cancelledTask.modelSelection.instanceId, "codex");
-    await openPicker();
-    await selectClaude();
-    window.setSize(390, 844);
-    await until(() => evaluate("innerWidth === 390"));
-    assert.equal(await evaluate("(() => { const r = document.querySelector('[role=alertdialog]').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth; })()"), true);
-    writeFileSync(join(evidence, "thread-confirmation.png"), (await window.webContents.capturePage()).toPNG());
-    await click("Switch with Ask");
     await until(async () => {
       const task = (await read()).tasks.find(task => task.threadId === selected.threadId);
       return task.modelSelection.instanceId === "claude" && task.approvalMode === "ask";
@@ -112,9 +100,7 @@ module.exports = async function verifyModelSwitch({ root, url, api, until, grant
     await openPicker();
     await click("Thread + bot default");
     await selectClaude();
-    assert.ok((await text()).includes("Groups and new threads use this default"));
-    writeFileSync(join(evidence, "default-confirmation.png"), (await window.webContents.capturePage()).toPNG());
-    await click("Switch with Ask");
+    assert.equal(await evaluate("!!document.querySelector('[role=alertdialog]')"), false);
     await until(async () => (await read()).modelSelection.instanceId === "claude");
     const after = await read();
     assert.equal(after.approvalMode, "ask");
@@ -145,7 +131,7 @@ module.exports = async function verifyModelSwitch({ root, url, api, until, grant
     await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
     await until(() => evaluate(`[...document.querySelectorAll('[data-model-picker-content] button')].some(button => button.textContent.includes(${JSON.stringify(localModel.label)}))`));
     writeFileSync(join(evidence, "reopened-local-model.png"), (await window.webContents.capturePage()).toPNG());
-    console.log(JSON.stringify({ modelSwitch: true, missingProviderHidden: true, signedOutAccountShowsSignIn: true, unconfiguredRetainedInCatalog: true, customHttpRefused: true, cancelPreservedSettings: true,
+    console.log(JSON.stringify({ modelSwitch: true, missingProviderHidden: true, signedOutAccountShowsSignIn: true, unconfiguredRetainedInCatalog: true, customHttpRefused: true, noConfirmation: true,
       scopedCustomSwitch: true, defaultMismatchHandled: true, siblingUnchanged: true, newThreadUsesDefault: true,
       sentAfterSwitch: true, narrowLayout: true, selectedLocalModelOnReopen: true, providerReplies: "offline fake CLI", evidence }));
   } finally {
