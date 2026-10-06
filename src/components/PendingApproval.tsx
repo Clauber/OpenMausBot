@@ -331,7 +331,10 @@ function AllowEverythingButton({ bot, threadId, className }: { bot: Bot; threadI
       method: "POST",
       body: JSON.stringify({ threadId, confirmFullAccess: true }),
     })
-      .catch((error) => dispatch({ type: "error", message: error instanceof Error ? error.message : String(error) }))
+      .catch((error) => {
+        dispatch({ type: "error", message: error instanceof Error ? error.message : String(error) });
+        setTimeout(() => dispatch({ type: "error", message: null }), 6000);
+      })
       .finally(() => setGranting(false));
   };
   return (

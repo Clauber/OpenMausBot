@@ -59,7 +59,10 @@ export function PermissionsSection({
     api(`/api/bots/${botId}/approval-mode-when-busy`, {
       method: "POST",
       body: JSON.stringify({ approvalMode: mode, whenBusy: timing, ...extra }),
-    }).catch((error) => dispatch({ type: "error", message: error instanceof Error ? error.message : String(error) }));
+    }).catch((error) => {
+      dispatch({ type: "error", message: error instanceof Error ? error.message : String(error) });
+      setTimeout(() => dispatch({ type: "error", message: null }), 6000);
+    });
   };
   const chooseApprovalMode = (mode: ApprovalMode, timing: "next-turn" | "restart" | null) => {
     setWhenBusy(timing);
