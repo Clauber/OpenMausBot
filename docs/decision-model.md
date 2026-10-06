@@ -35,6 +35,9 @@ New rooms start on Auto while the decider and its room job are on. Existing
 rooms keep their mode. With Jev off, an Auto room shows a one-line hint and
 answers like lead mode.
 
+**Whether a routine script's output needs the bot.** A routine approved to run
+as *Script + Jev* asks once per run; see [routine-execution.md](routine-execution.md).
+
 Browser clicks, tool selection and where work runs are listed as "Coming
 soon" and have no switch yet.
 

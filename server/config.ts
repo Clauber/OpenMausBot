@@ -505,7 +505,16 @@ export const appConfigSchema = z.object({
       .max(2048)
       .refine((value) => !value || /^https?:\/\//i.test(value), "the decision model address must start with http:// or https://")
       .optional(),
-    jobs: z.object({ roomRouting: z.boolean().optional(), autoReview: z.boolean().optional() }).optional(),
+    jobs: z.object({ roomRouting: z.boolean().optional(), autoReview: z.boolean().optional(), routineGate: z.boolean().optional() }).optional(),
+  }).optional(),
+  /** The reviewer that proposes how a routine runs (server/routine-execution.ts).
+   * Any OpenAI-compatible chat endpoint; missing fields fall back to
+   * `openaiCompat`, then to the routine bot's own engine. No Settings UI. */
+  routineReview: z.object({
+    enabled: z.boolean().optional(),
+    model: optionalText,
+    baseUrl: z.string().trim().max(2048).refine((value) => !value || /^https?:\/\//i.test(value), "the reviewer address must start with http:// or https://").optional(),
+    key: optionalText,
   }).optional(),
   /** Live calls: an OpenAI project key for GPT-Live, kept apart from every
    * other OpenAI credential so a Live call never bills an image or engine key
@@ -638,7 +647,8 @@ export interface AppConfig {
   tts?: { key?: string; fishKey?: string; voice?: string; provider?: "elevenlabs" | "fish" | "system" | "chatterbox" | "xai"; baseUrl?: string; model?: string; fishModel?: FishTtsModel };
   /** The decision model; see the schema above and server/decider. */
   approvalRules?: ApprovalRules;
-  decider?: { enabled?: boolean; provider?: "jev" | "off"; key?: string; baseUrl?: string; jobs?: { roomRouting?: boolean; autoReview?: boolean } };
+  decider?: { enabled?: boolean; provider?: "jev" | "off"; key?: string; baseUrl?: string; jobs?: { roomRouting?: boolean; autoReview?: boolean; routineGate?: boolean } };
+  routineReview?: { enabled?: boolean; model?: string; baseUrl?: string; key?: string };
   imageGen?: ImageGenerationConfig;
   live?: { key?: string; voice?: string; readTypedReplies?: boolean; idleMinutes?: number };
   profile?: { name?: string; email?: string; aboutMe?: string };
@@ -938,6 +948,7 @@ export const FLEET_NEUTRAL_KEYS: ReadonlySet<string> = new Set([
   "tts",
   // no engine reads it: the harness asks it before a turn starts
   "decider",
+  "routineReview",
   "approvalRules",
   "imageGen",
   "live",
