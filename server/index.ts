@@ -30,6 +30,7 @@ import { BOT_PROFILE_LIMITS } from "../shared/bot-profile.ts";
 import { CLOUD_COMPUTER_BUSY_ERROR } from "../shared/computer-contention.ts";
 import { failedTurnTool } from "../shared/failed-turn.ts";
 import { phonePairingLink } from "../shared/pairing-link.ts";
+import { ROUTINE_DEFAULT_RESULTS_THREAD, ROUTINE_OWN_RESULTS_THREAD } from "../shared/routines.ts";
 import { canWorkOnCloud, type CloudEngine } from "../shared/cloud-computer.ts";
 import {
   approvalModeFor,
@@ -329,6 +330,7 @@ import {
   roomResponders,
   sectionKey,
   Store,
+  threadTitleFrom,
   titleFromLlm,
   type BotRecord,
   type GroupDefaultResponder,
@@ -11020,6 +11022,21 @@ routines = new RoutineManager({
     if (threadId && CLOUD_HOME) threadStarters.set(threadId, routineOpener(routine.id));
     return threadId;
   },
+  ownResultsThread: (routine, current) => {
+    const bot = store.bot(routine.botId);
+    if (!bot || bot.hidden) return undefined;
+    // Asking again keeps the conversation it already has; any other chosen
+    // conversation is not its own.
+    const existing = current ? store.taskByThread(bot.id, current) : undefined;
+    const named = existing && (existing.title === routine.name || existing.title === threadTitleFrom(routine.name));
+    if (existing && named && !existing.routineRunId) {
+      return { threadId: existing.threadId, created: false };
+    }
+    const threadId = store.createTask(bot.id, routine.name, false)?.threadId;
+    if (!threadId) return undefined;
+    if (CLOUD_HOME) threadStarters.set(threadId, routineOpener(routine.id));
+    return { threadId, created: true };
+  },
   discardResultsThread: (botId, threadId) => {
     const task = store.taskByThread(botId, threadId);
     if (task && !task.busy && !task.routineRunId && store.messagesFor(threadId).length === 0) {
@@ -18690,6 +18707,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     // guest's into a conversation the guest started, never the owner's.
     const routineResultsRefusal = (body: unknown): string | null =>
       body && typeof body === "object" && typeof (body as { resultsThreadId?: unknown }).resultsThreadId === "string"
+        && (body as { resultsThreadId: string }).resultsThreadId !== ROUTINE_OWN_RESULTS_THREAD
+        && (body as { resultsThreadId: string }).resultsThreadId !== ROUTINE_DEFAULT_RESULTS_THREAD
         ? cloudThreadRefusal(auth, (body as { resultsThreadId: string }).resultsThreadId) : null;
     if (path === "/api/routines" && method === "POST") {
       const body = await readBody(req);

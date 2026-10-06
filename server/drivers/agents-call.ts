@@ -301,6 +301,9 @@ function routineFields(args: Json): { fields: Json; error?: string } {
   if (args.overlap !== undefined && args.overlap !== "skip" && args.overlap !== "queue") {
     return { fields, error: "overlap must be skip or queue." };
   }
+  if (args.results !== undefined && args.results !== "main_thread" && args.results !== "own_thread") {
+    return { fields, error: "results must be main_thread or own_thread." };
+  }
   if (args.clear_timeout != null && typeof args.clear_timeout !== "boolean") {
     return { fields, error: "clear_timeout must be true or false." };
   }
@@ -319,6 +322,7 @@ function routineFields(args: Json): { fields: Json; error?: string } {
   else if (timeoutMinutes != null) fields.timeoutMinutes = timeoutMinutes;
   if (typeof args.continuity === "boolean") fields.continuity = args.continuity;
   if (args.overlap !== undefined) fields.overlap = args.overlap;
+  if (args.results !== undefined) fields.results = args.results === "own_thread" ? "own" : "main";
   return { fields };
 }
 

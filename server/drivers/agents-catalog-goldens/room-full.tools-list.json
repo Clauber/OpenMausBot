@@ -1000,6 +1000,14 @@
             ],
             "description": "While this routine is still working, skip scheduled occurrences (default) or queue at most one run. Queue skips further occurrences until the pending run starts; it never builds an unlimited backlog. Manual and webhook requests are separate."
           },
+          "results": {
+            "type": "string",
+            "enum": [
+              "main_thread",
+              "own_thread"
+            ],
+            "description": "Where run results post. own_thread: a conversation named after the routine, for when the person wants its results out of this chat. main_thread: back to the default, the chat that set it up. Omit to keep the current one."
+          },
           "for_bot_id": {
             "type": "string",
             "description": "Only when the user asks to schedule this routine for ANOTHER bot in your section: that bot's id from list_bots. Omit to schedule it for yourself. The routine then belongs to that bot and each run uses its engine and permissions."
@@ -1173,6 +1181,14 @@
                   "queue"
                 ],
                 "description": "While this routine is still working, skip scheduled occurrences (default) or queue at most one run. Queue skips further occurrences until the pending run starts; it never builds an unlimited backlog. Manual and webhook requests are separate."
+              },
+              "results": {
+                "type": "string",
+                "enum": [
+                  "main_thread",
+                  "own_thread"
+                ],
+                "description": "Where run results post. own_thread: a conversation named after the routine, for when the person wants its results out of this chat. main_thread: back to the default, the chat that set it up. Omit to keep the current one."
               }
             },
             "description": "Fields to change when action is update. Omit for every other action."
