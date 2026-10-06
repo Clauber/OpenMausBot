@@ -22319,7 +22319,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (!supportsApprovalMode(target.modelSelection, mode)) {
         return json(res, 400, { error: "This provider does not support the selected approval level" });
       }
-      if (mode === "full") {
+      // Choosing the level the bot already has only withdraws a pending change;
+      // it grants nothing, so it needs no warning acknowledgement.
+      const withdraws = mode === current && body.applyToAllThreads !== true;
+      if (mode === "full" && !withdraws) {
         if (!OPERATOR_FULL_ACCESS) return json(res, 403, { error: "This approval-level change can only be made from the packaged desktop app" });
         if (body.confirmFullAccess !== true) return json(res, 400, { error: "Confirm the Full access warning first (confirmFullAccess)" });
       }
@@ -22327,8 +22330,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         return json(res, 400, { error: "Auto mode on this computer requires confirming the warning first (acknowledgeLocalAuto)" });
       }
       const busyThreads = store.tasks(target.id).map((task) => task.threadId).filter((threadId) => threadBusy(target.id, threadId));
-      if (mode === current && body.applyToAllThreads !== true) {
-        // Choosing the level the bot already has withdraws a pending change.
+      if (withdraws) {
         pendingApprovalChanges.delete(target.id);
       } else {
         pendingApprovalChanges.set(target.id, {
@@ -22383,6 +22385,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
       store.patchBot(target.id, { approvalMode: "full", autoApprove: false });
       store.setAllThreadApprovalMode(target.id, "full");
+      // A level queued for the end of the turn must not land afterwards and undo this.
+      pendingApprovalChanges.delete(target.id);
       // The card's own thread may be a room's; the rest are the bot's own.
       const threadIds = new Set((store.bot(target.id)?.tasks ?? []).map((task) => task.threadId));
       if (typeof body.threadId === "string") threadIds.add(body.threadId);
