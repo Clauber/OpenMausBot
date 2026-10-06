@@ -1687,7 +1687,7 @@ ipcMain.on("desktop:unread-count", (event, value) => {
 // The app switches by loading the chosen server's own UI (electron/menu.mjs).
 // Only {id, name, origin} is stored here; the session credential is the
 // HttpOnly cookie /pair set for that origin, kept by Chromium's cookie jar.
-const { LOCAL_ID, activeEnvironment, allowedOrigins, parseEnvironments, parseHostedWorkspaceLink, serializeEnvironments, withActive, withEnvironment, withoutEnvironment, workspaceMenuTemplate, workspaceNavigationAllowed, workspaceSenderAllowed, workspaceSummary, workspaceWindowTitle } = environmentsModule;
+const { LOCAL_ID, activeEnvironment, allowedOrigins, parseEnvironments, parseHostedWorkspaceLink, serializeEnvironments, withActive, withEnvironment, withLocalHidden, withoutEnvironment, withRenamedEnvironment, workspaceMenuTemplate, workspaceNavigationAllowed, workspaceSenderAllowed, workspaceSummary, workspaceWindowTitle } = environmentsModule;
 let environmentsState = { environments: [], activeId: LOCAL_ID };
 let computerSharing;
 const sharingPrompts = new Set();
@@ -1853,6 +1853,7 @@ function refreshApplicationMenu() {
     buildApplicationMenu({
       environments: environmentsState.environments,
       activeId: environmentsState.activeId,
+      localHidden: Boolean(environmentsState.localHidden),
       onSwitch: (id) => void workspaceMenuAction(() => switchEnvironment(id)),
       onAddFromClipboard: () => void addServerFromClipboard(),
       onConnect: () => void workspaceMenuAction(openWorkspaceSettings),
@@ -2076,6 +2077,34 @@ async function cloudHomeSignedIn(origin) {
   } catch {
     return false;
   }
+}
+
+function renameEnvironment(id, name) {
+  if (!environmentsState.environments.some((entry) => entry.id === id)) return;
+  persistEnvironments(withRenamedEnvironment(environmentsState, id, name));
+}
+
+/** Take This computer out of the server lists. The local server keeps running
+ * (it is the fallback if a saved server is down) and no local data is deleted. */
+async function hideLocalWorkspace() {
+  if (environmentsState.environments.length === 0 || environmentsState.localHidden) return;
+  const { response } = await dialog.showMessageBox({
+    type: "warning",
+    buttons: ["Remove", "Cancel"],
+    defaultId: 1,
+    cancelId: 1,
+    message: "Remove “This computer” from your servers?",
+    detail: "It disappears from the server list. Nothing is deleted: its bots and conversations stay on this computer, and you can bring it back from Settings → Servers.",
+  });
+  if (response !== 0) return;
+  const leaving = environmentsState.activeId === LOCAL_ID;
+  const next = withLocalHidden(leaving ? withActive(environmentsState, environmentsState.environments[0].id) : environmentsState, true);
+  persistEnvironments(next);
+  if (leaving) navigateMainWindow(activeOrigin());
+}
+
+function showLocalWorkspace() {
+  persistEnvironments(withLocalHidden(environmentsState, false));
 }
 
 async function forgetEnvironment(id) {
@@ -3123,7 +3152,14 @@ ipcMain.handle("environments:state", localWorkspaceOnly("environments:state", (e
   remote: !senderIsLocal(event),
   activeId: environmentsState.activeId,
   environments: environmentsState.environments,
+  localHidden: Boolean(environmentsState.localHidden),
 })));
+ipcMain.handle("environments:rename", localWorkspaceOnly("environments:rename", (_event, id, name) => {
+  if (typeof id !== "string" || typeof name !== "string") return;
+  renameEnvironment(id, name);
+}));
+ipcMain.handle("environments:hide-local", localWorkspaceOnly("environments:hide-local", () => hideLocalWorkspace()));
+ipcMain.handle("environments:show-local", localWorkspaceOnly("environments:show-local", () => showLocalWorkspace()));
 ipcMain.handle("environments:switch", localWorkspaceOnly("environments:switch", (_event, id) => switchEnvironment(typeof id === "string" ? id : LOCAL_ID)));
 ipcMain.handle("environments:add-from-link", localWorkspaceOnly("environments:add-from-link", (_event, link, name) => {
   return connectHostedWorkspace(link, typeof name === "string" ? name : undefined);
@@ -3142,6 +3178,10 @@ ipcMain.handle("workspaces:menu", workspaceOnly(async () => {
       onSwitch: (id) => void workspaceMenuAction(() => switchEnvironment(id)),
       onConnect: () => void workspaceMenuAction(openWorkspaceSettings),
       onForget: (id) => void workspaceMenuAction(() => forgetEnvironment(id)),
+      // Renaming happens on the Servers page, where there is a text field.
+      onRename: () => void workspaceMenuAction(openWorkspaceSettings),
+      onHideLocal: () => void workspaceMenuAction(hideLocalWorkspace),
+      onShowLocal: () => void workspaceMenuAction(showLocalWorkspace),
     }));
     await new Promise((resolve) => menu.popup({ window: mainWindow, callback: resolve }));
   } finally {

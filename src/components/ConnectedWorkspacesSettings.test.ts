@@ -98,3 +98,40 @@ it("a server's own Copy brings the person here, on that server's copy, to start 
   await mount();
   expect(render().html).toContain("from this computer to VPS");
 });
+
+const labelled = (label: string) => render().nodes.filter(node => node.type === "button" && node.props["aria-label"] === label);
+
+it("offers Rename for a saved server and Remove for This computer, never the reverse", async () => {
+  await mount();
+  expect(labelled("Rename VPS")).toHaveLength(1);
+  expect(labelled("Remove This computer")).toHaveLength(1);
+  expect(labelled("Rename This computer")).toHaveLength(0);
+  expect(render().html).toContain("This computer");
+});
+
+it("renaming a server and removing This computer go through the desktop bridge", async () => {
+  const rename = vi.fn().mockResolvedValue(undefined);
+  const hideLocal = vi.fn().mockResolvedValue(undefined);
+  stub({});
+  const bridge = (window as unknown as { ogb: { environments: Record<string, unknown> } }).ogb.environments;
+  bridge.rename = rename;
+  bridge.hideLocal = hideLocal;
+  await mount();
+  labelled("Remove This computer")[0]!.props.onClick!();
+  await mount();
+  expect(hideLocal).toHaveBeenCalledOnce();
+  labelled("Rename VPS")[0]!.props.onClick!();
+  await mount();
+  expect(render().html).toContain("New name for VPS");
+});
+
+it("lists This computer again only after it is shown, and offers the way back while it is removed", async () => {
+  vi.stubGlobal("window", {
+    ogb: { environments: { state: vi.fn().mockResolvedValue({ localOrigin: "http://127.0.0.1:1", remote: false, activeId: "vps", localHidden: true, environments: [VPS] }),
+      switch: vi.fn(), forget: vi.fn(), addFromLink: vi.fn(), showLocal: vi.fn(), onOpenSettings: () => () => {} }, cloudMove: move },
+    location: { search: "", href: "http://127.0.0.1:1/settings" }, history: { replaceState: () => {} },
+  });
+  await mount();
+  expect(labelled("Switch to This computer")).toHaveLength(0);
+  expect(render().html).toContain("Show “This computer” again");
+});

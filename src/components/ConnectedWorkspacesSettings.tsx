@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, Cloud, Laptop, Loader2, Trash2 } from "lucide-react";
+import { Check, Cloud, Laptop, Loader2, Pencil, Trash2 } from "lucide-react";
 import { Card } from "./SettingsPrimitives";
 import { ComputerSharingSettings } from "./ComputerSharingSettings";
 import { CloudMoveSettings } from "./CloudMove";
@@ -21,6 +21,7 @@ export function ConnectedWorkspacesSettings() {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
   const [computerId, setComputerId] = useState<string | null>(() => new URLSearchParams(window.location?.search ?? "").get("share-computer"));
   // Copy this computer here (docs/copy-workspace.md): this app's own window only.
   const copyOffered = Boolean(window.ogb?.cloudMove) && !window.ogb?.remoteClient?.active;
@@ -70,16 +71,32 @@ export function ConnectedWorkspacesSettings() {
     <Card title="Your servers" subtitle="Saved on this computer. Your hosted bots keep running when you switch away.">
       {!saved ? <p role="status" className="text-[13px] text-ink-secondary">{error ? "Saved servers could not be loaded." : "Loading servers…"}</p> :
         <ul className="divide-y divide-hairline/40">
-          {[{ id: "local", name: "This computer", origin: "" }, ...saved.environments].map((entry) => {
+          {[...(saved.localHidden && saved.activeId !== "local" ? [] : [{ id: "local", name: "This computer", origin: "" }]), ...saved.environments].map((entry) => {
             const active = entry.id === saved.activeId;
             const Icon = entry.id === "local" ? Laptop : Cloud;
+            const editing = renaming?.id === entry.id ? renaming : null;
             return <li key={entry.id} className="flex items-center gap-3 py-3">
               <Icon size={18} className="shrink-0 text-ink-secondary" />
-              <div className="min-w-0 flex-1"><div className="truncate text-[13px] font-medium text-ink">{entry.name}</div>
-                <div className="break-all text-[12px] text-ink-secondary">{entry.origin || "Local bots and conversations"}</div></div>
-              {active ? <span className="flex shrink-0 items-center gap-1 text-[12px] text-ink-secondary"><Check size={13} />Current</span> :
+              {editing ? <form className="flex min-w-0 flex-1 items-center gap-2" onSubmit={(event) => {
+                event.preventDefault();
+                const next = editing.value.trim();
+                setRenaming(null);
+                if (next && next !== entry.name) void perform(() => bridge.rename(entry.id, next));
+              }}>
+                <input autoFocus value={editing.value} maxLength={60} aria-label={`New name for ${entry.name}`} onChange={(event) => setRenaming({ id: entry.id, value: event.target.value })}
+                  onKeyDown={(event) => { if (event.key === "Escape") setRenaming(null); }}
+                  className="min-w-0 flex-1 rounded-lg border border-hairline/40 bg-inset px-2.5 py-1.5 text-[13px] text-ink outline-none focus:border-accent/50" />
+                <button type="submit" disabled={busy || !editing.value.trim()} className="rounded-md px-2 py-1.5 text-[12px] text-ink hover:bg-control disabled:opacity-50">Save</button>
+                <button type="button" onClick={() => setRenaming(null)} className="rounded-md px-2 py-1.5 text-[12px] text-ink-secondary hover:bg-control">Cancel</button>
+              </form> : <div className="min-w-0 flex-1"><div className="truncate text-[13px] font-medium text-ink">{entry.name}</div>
+                <div className="break-all text-[12px] text-ink-secondary">{entry.origin || "Local bots and conversations"}</div></div>}
+              {!editing && (active ? <span className="flex shrink-0 items-center gap-1 text-[12px] text-ink-secondary"><Check size={13} />Current</span> :
                 <button type="button" disabled={busy} aria-label={`Switch to ${entry.name}`} onClick={() => void perform(async () => { await bridge.switch(entry.id); return true; })}
-                  className="rounded-md px-2 py-1.5 text-[12px] text-ink hover:bg-control disabled:opacity-50">Switch</button>}
+                  className="rounded-md px-2 py-1.5 text-[12px] text-ink hover:bg-control disabled:opacity-50">Switch</button>)}
+              {!editing && entry.id !== "local" && <button type="button" disabled={busy} aria-label={`Rename ${entry.name}`} title={`Rename ${entry.name}`}
+                onClick={() => setRenaming({ id: entry.id, value: entry.name })} className="rounded-md p-1.5 text-ink-secondary hover:bg-control hover:text-ink disabled:opacity-50"><Pencil size={14} /></button>}
+              {!editing && entry.id === "local" && saved.environments.length > 0 && <button type="button" disabled={busy} aria-label="Remove This computer" title="Remove This computer from your servers"
+                onClick={() => void perform(async () => { await bridge.hideLocal(); return active; })} className="rounded-md p-1.5 text-ink-secondary hover:bg-control hover:text-danger disabled:opacity-50"><Trash2 size={14} /></button>}
               {entry.id !== "local" && copyOffered && <button type="button" disabled={busy} aria-label={`${t("cloudMove.here")}: ${entry.name}`} onClick={() => setCopyId(entry.id)} className="rounded-md px-2 py-1.5 text-[12px] text-ink hover:bg-control">{t("cloudMove.here")}</button>}
               {entry.id !== "local" && sharingOffered && <button type="button" disabled={busy} aria-label={`Computer access for ${entry.name}`} onClick={() => setComputerId(entry.id)} className="rounded-md px-2 py-1.5 text-[12px] text-ink hover:bg-control">Computer access</button>}
               {entry.id !== "local" && <button type="button" disabled={busy} aria-label={`Forget ${entry.name}`} title={`Forget ${entry.name}`}
@@ -87,6 +104,8 @@ export function ConnectedWorkspacesSettings() {
             </li>;
           })}
         </ul>}
+      {saved?.localHidden && <button type="button" disabled={busy} onClick={() => void perform(() => bridge.showLocal())}
+        className="mt-2 w-fit rounded-md px-2 py-1.5 text-[12px] text-accent hover:bg-control disabled:opacity-50">Show “This computer” again</button>}
     </Card>
     {copyOffered && copyId && saved?.environments.some(entry => entry.id === copyId) && <CloudMoveSettings key={copyId} destination={copyId} onClose={() => setCopyId(null)} />}
     {sharingOffered && computerWorkspace && <ComputerSharingSettings key={computerWorkspace.id} workspace={computerWorkspace} onClose={() => setComputerId(null)} />}

@@ -55,6 +55,12 @@ posixOnly("allow everything from an approval card", () => {
           environment: { FAKE_ACP_MODE: "permission" },
           config: { cli: FAKE_CLI, fullAuto: false },
         },
+        // The same fake agent, asking twice in one turn.
+        grokTwice: {
+          driver: "grokAgent",
+          environment: { FAKE_ACP_MODE: "permission", FAKE_ACP_PERMISSION_ROUNDS: "2" },
+          config: { cli: FAKE_CLI, fullAuto: false },
+        },
       },
     }));
     child = spawn(process.execPath, [join(SERVER_DIR, "index.ts")], {
@@ -139,6 +145,48 @@ posixOnly("allow everything from an approval card", () => {
     }, "the pending level to land");
     expect(after.pendingApprovalMode).toBeUndefined();
     expect(after.tasks.find((task: { threadId: string }) => task.threadId === bot.threadId).approvalMode).toBe("auto");
+  }, 60_000);
+
+  it("answers the turn's later asks under Full after the grant", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    expect((await api("PATCH", `/api/bots/${bot.id}`, { name: "Twice", modelSelection: { instanceId: "grokTwice", model: "fake-model" } })).status).toBe(200);
+    expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "run it" })).status).toBe(202);
+    await until(async () => openCard(await botById(bot.id)), "the first approval card");
+
+    const granted = await api("POST", `/api/bots/${bot.id}/allow-everything`, { threadId: bot.threadId, confirmFullAccess: true }, BASE);
+    expect(granted.status).toBe(200);
+
+    // The second ask in the same running turn is approved without a card.
+    const after = await until(async () => {
+      const current = await botById(bot.id);
+      return !current.busy && current.messages.some((m: { text?: string }) => m.text?.includes("handled the permission decision")) && current;
+    }, "the turn to finish without a second card");
+    expect(openCard(after)).toBeUndefined();
+    expect(after.messages.filter((m: { kind: string }) => m.kind === "options")).toHaveLength(1);
+  }, 60_000);
+
+  it("keeps Full when a level was queued first, and keeping the current level needs no warning", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    expect((await api("PATCH", `/api/bots/${bot.id}`, { name: "Queued", modelSelection: { instanceId: "grok", model: "fake-model" } })).status).toBe(200);
+    expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "run it" })).status).toBe(202);
+    await until(async () => openCard(await botById(bot.id)), "the approval card");
+
+    const path = `/api/bots/${bot.id}/approval-mode-when-busy`;
+    expect((await api("POST", path, { approvalMode: "auto", whenBusy: "next-turn" }, BASE)).body).toMatchObject({ pending: true });
+    const granted = await api("POST", `/api/bots/${bot.id}/allow-everything`, { threadId: bot.threadId, confirmFullAccess: true }, BASE);
+    expect(granted.status).toBe(200);
+    expect(granted.body.bot.pendingApprovalMode).toBeUndefined();
+
+    // Already Full: choosing Full again withdraws nothing and grants nothing.
+    const keep = await api("POST", path, { approvalMode: "full", whenBusy: "next-turn" }, BASE);
+    expect(keep.status).toBe(200);
+    expect(keep.body).toMatchObject({ pending: false });
+
+    const after = await until(async () => {
+      const current = await botById(bot.id);
+      return !current.busy && current;
+    }, "the turn to finish");
+    expect(after.approvalMode).toBe("full");
   }, 60_000);
 
   it("stops the running turn, switches the level, and continues it", async () => {

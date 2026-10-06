@@ -33,6 +33,7 @@ import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import { PlaceChip } from "./PlaceChip";
 import { FullAccessWarning } from "./FullAccessWarning";
 import { ApprovalModeSelector } from "./ApprovalModeSelector";
+import { ModelPicker, ThinkingPicker } from "./ModelPicker";
 import { CommandAllowlistDialog } from "./CommandAllowlistDialog";
 import { approvalModeFor, type ApprovalMode } from "../../shared/approval-mode";
 import {
@@ -1181,6 +1182,14 @@ export function Composer({
             className="block max-h-[9rem] min-h-6 w-full resize-none overflow-y-auto bg-transparent px-1 py-1 text-[15px] leading-6 placeholder:text-ink-secondary focus:outline-none"
           />
           <div data-composer-actions className="flex items-center gap-1 @max-[30rem]/composer:ml-auto">
+          {/* The model and how hard it thinks live with the send controls,
+              not in the chat header. Rooms have no single model to show. */}
+          {modeBot && !remoteClient && !locked && (
+            <>
+              <ModelPicker key={modeBot.threadId} bot={modeBot} threadId={modeBot.threadId} dropUp separateEffort />
+              <ThinkingPicker key={`thinking:${modeBot.threadId}`} bot={modeBot} threadId={modeBot.threadId} />
+            </>
+          )}
           {/* Stop stays a stop. Stop-then-steer is named beside the queued
               message above, where its effect is visible before activation. */}
           {busy && !locked && (

@@ -1137,28 +1137,35 @@ function handle(msg: any) {
         // ask the client to approve a tool, then — like a real agent once its
         // card is answered — close the turn with a visible reply instead of
         // ending bare (a bare end_turn is the lost-turn failure, not a success)
-        pendingPermissionId = 9001;
-        onPermissionAnswered = () => {
-          out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: "handled the permission decision" } } } });
-          complete();
+        // FAKE_ACP_PERMISSION_ROUNDS=N asks N times in the one turn, each
+        // after the previous answer, like an agent running several tools.
+        let roundsLeft = Math.max(1, Number(process.env.FAKE_ACP_PERMISSION_ROUNDS) || 1);
+        const ask = () => {
+          pendingPermissionId = 9001 + roundsLeft;
+          onPermissionAnswered = () => {
+            if (--roundsLeft > 0) return ask();
+            out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: "handled the permission decision" } } } });
+            complete();
+          };
+          out({
+            jsonrpc: "2.0",
+            id: pendingPermissionId,
+            method: "session/request_permission",
+            params: {
+              toolCall: process.env.FAKE_ACP_PERMISSION_TOOL_CALL
+                ? JSON.parse(process.env.FAKE_ACP_PERMISSION_TOOL_CALL)
+                : { kind: "execute", rawInput: { command: "echo hi" }, title: "echo hi" },
+              options: process.env.FAKE_ACP_PERMISSION_OPTIONS ? JSON.parse(process.env.FAKE_ACP_PERMISSION_OPTIONS) : [
+                { optionId: "allow-once", kind: "allow_once" },
+                // Grok offers a session-wide allow on some requests and omits
+                // it on others; the driver must cope with both.
+                ...(process.env.FAKE_ACP_ALLOW_ALWAYS ? [{ optionId: "allow-always", kind: "allow_always" }] : []),
+                { optionId: "reject", kind: "reject_once" },
+              ],
+            },
+          });
         };
-        out({
-          jsonrpc: "2.0",
-          id: pendingPermissionId,
-          method: "session/request_permission",
-          params: {
-            toolCall: process.env.FAKE_ACP_PERMISSION_TOOL_CALL
-              ? JSON.parse(process.env.FAKE_ACP_PERMISSION_TOOL_CALL)
-              : { kind: "execute", rawInput: { command: "echo hi" }, title: "echo hi" },
-            options: process.env.FAKE_ACP_PERMISSION_OPTIONS ? JSON.parse(process.env.FAKE_ACP_PERMISSION_OPTIONS) : [
-              { optionId: "allow-once", kind: "allow_once" },
-              // Grok offers a session-wide allow on some requests and omits
-              // it on others; the driver must cope with both.
-              ...(process.env.FAKE_ACP_ALLOW_ALWAYS ? [{ optionId: "allow-always", kind: "allow_always" }] : []),
-              { optionId: "reject", kind: "reject_once" },
-            ],
-          },
-        });
+        ask();
         return;
       }
       if (mode === "lend-question" && agentsMcp) {

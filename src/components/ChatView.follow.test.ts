@@ -31,7 +31,7 @@ vi.mock("./DesktopCapabilities", async (importOriginal) => ({
 }));
 vi.mock("@/lib/analytics", () => ({ track: vi.fn() }));
 vi.mock("@/lib/cloud-guest", () => ({ useCanWriteIn: () => true }));
-vi.mock("./ModelPicker", () => ({ ModelPicker: () => null }));
+vi.mock("./ModelPicker", () => ({ ModelPicker: () => null, ThinkingPicker: () => null }));
 
 const { ChatView } = await import("./ChatView");
 afterAll(() => vi.unstubAllGlobals());
