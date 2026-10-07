@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Archive, CircleUser, Coins, FlaskConical, KeyRound, Monitor, Palette, ScrollText, Search, Sparkles, TabletSmartphone, Terminal, User, Users, X, Building2, Zap, BookOpen } from "lucide-react";
 import { api, useStore, type AppSettingsSection, type ConfigStatus } from "@/state/store";
+import { analyticsEnabled, setAnalyticsEnabled } from "@/lib/analytics";
 import { browserAvailable, browserUnavailableReason, builtInBrowserEnabled, routinesInConversationEnabled, showToolCallsEnabled, skillAuthoringEnabled, skillsLibraryEnabled } from "@/lib/feature-flags";
 import { localeChoices, type LocaleKey } from "@/locales";
 import { t } from "@/lib/i18n";
@@ -266,6 +267,10 @@ function UpdatesRow() {
   );
 }
 
+/** Usage analytics, on by default and switchable here. Naming what is sent
+ * matters more than the switch: people who cannot see the scope assume the
+ * worst, and the worst — conversation text — is exactly what this never
+ * sends (autocapture is off; see lib/analytics.ts). */
 /** The effort every new bot starts with. The server skips a level the new
  * bot's engine does not offer, and a bot's own choice always wins. */
 function NewBotEffortRow() {
@@ -311,6 +316,23 @@ function NewBotEffortRow() {
           </option>
         ))}
       </select>
+    </SettingRow>
+  );
+}
+
+function AnalyticsRow() {
+  const [on, setOn] = useState(analyticsEnabled);
+  return (
+    <SettingRow title={t("settings.analytics.title")} subtitle={t("settings.analytics.subtitle")}>
+      <Switch
+        checked={on}
+        aria-label={t("settings.analytics.aria")}
+        onClick={() => {
+          const next = !on;
+          setAnalyticsEnabled(next);
+          setOn(next);
+        }}
+      />
     </SettingRow>
   );
 }
@@ -891,6 +913,7 @@ export function SettingsModal() {
             <div>
               <LanguageRow />
               <NewBotEffortRow />
+              <AnalyticsRow />
               <DefaultBotSettings />
             </div>
             <Card title={t("settings.roomTurns.title")} subtitle={t("settings.roomTurns.subtitle")}>

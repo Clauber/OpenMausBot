@@ -1301,7 +1301,6 @@ export class Store {
     } | null,
     fallbackDetail = "OpenMausBot restarted before this goal finished.",
     fallbackFinishedAt = Date.now(),
-    preserve?: (runId: string, threadId: string) => boolean,
   ): number {
     const ownedThreadIds = new Set<string>();
     for (const group of this.groups) {
@@ -1313,7 +1312,6 @@ export class Store {
     let recovered = 0;
     for (const hit of mdb.workingGoalRunMessages()) {
       if (!ownedThreadIds.has(hit.threadId) || !hit.message.goalRun) continue;
-      if (preserve?.(hit.message.goalRun.runId, hit.threadId)) continue;
       const resolution = resolve?.(hit.message.goalRun.runId, hit.threadId) ?? {
         status: "failed" as const,
         detail: fallbackDetail,

@@ -16,7 +16,6 @@ import { managedConnectorUnavailableReason } from "../../shared/connector-availa
 import { connectorServiceAccess, isConnectorToolGrantShape } from "@/lib/connector-grants";
 import { BotAvatar } from "./Avatar";
 import { McpServersPanel } from "./McpServersPanel";
-import { PluginMarketplacePanel } from "./PluginMarketplacePanel";
 
 export interface ToolkitCard {
   slug: string;
@@ -289,7 +288,7 @@ export interface CatalogPagination {
 /** The Apps pop-up's chips: every app, only the connected ones, or only
  * your own MCP servers. "mcp" is the store's `pluginsSurface`, so a bot's
  * Tools page can still send someone straight to their servers. */
-export type AppsFilter = "all" | "connected" | "mcp" | "plugins";
+export type AppsFilter = "all" | "connected" | "mcp";
 
 /** Without a search, the "All" grid shows this many tiles before a
  * "Show all" button. */
@@ -610,7 +609,7 @@ export function PluginsPanel() {
     (c) => !search || `${c.label} ${c.slug} ${c.blurb}`.toLowerCase().includes(search.toLowerCase()),
   );
   const isConnected = (slug: string) => Boolean(status[slug]?.connected || status[slug]?.accounts?.length);
-  const filter: AppsFilter = surface === "mcp" ? "mcp" : surface === "plugins" ? "plugins" : tab === "connected" ? "connected" : "all";
+  const filter: AppsFilter = surface === "mcp" ? "mcp" : tab === "connected" ? "connected" : "all";
   // Connected apps lead the grid, so the ones you use are never a scroll away.
   const visible = (filter === "connected" ? matching.filter((card) => isConnected(card.slug)) : matching)
     .map((card, index) => ({ card, index }))
@@ -629,8 +628,8 @@ export function PluginsPanel() {
     ? botsMissingConnectedApps(state.bots, state.instances)
     : [];
   const chooseFilter = (next: AppsFilter) => {
-    if (next === "mcp" || next === "plugins") {
-      dispatch({ type: "togglePlugins", open: true, surface: next });
+    if (next === "mcp") {
+      dispatch({ type: "togglePlugins", open: true, surface: "mcp" });
       return;
     }
     setTab(next === "connected" ? "connected" : "marketplace");
@@ -640,7 +639,6 @@ export function PluginsPanel() {
     { id: "all", label: t("apps.filter.all") },
     { id: "connected", label: `${t("apps.filter.connected")}${connectedCount > 0 ? ` ${connectedCount}` : ""}` },
     { id: "mcp", label: t("apps.filter.mcp") },
-    { id: "plugins", label: t("apps.filter.plugins") },
   ];
 
   return (
@@ -738,7 +736,7 @@ export function PluginsPanel() {
             </div>
           )}
           {/* Not set up yet is not an outage: see connectorSetupNotice. */}
-          {setupNotice && filter !== "mcp" && filter !== "plugins" && (
+          {setupNotice && filter !== "mcp" && (
             <div
               className={cn(
                 "mb-2 rounded-xl px-4 py-3 text-[13px]",
@@ -796,9 +794,7 @@ export function PluginsPanel() {
           )}
           {error && <div role="alert" className="mb-2 mt-1 rounded-lg bg-danger/10 px-3 py-2 text-[12px] text-danger">{typeof error === "string" ? error : t(error.key)}</div>}
 
-          {filter === "plugins" && <PluginMarketplacePanel search={search} />}
-
-          {filter !== "mcp" && filter !== "plugins" && (
+          {filter !== "mcp" && (
             <section data-apps-grid aria-labelledby="apps-grid-title" className="@container pt-3">
               {/* @container: the tile columns follow the pop-up's width, not the window's (3, then 2, then 1) */}
               <div id="apps-grid-title" className="mb-3 text-[12px] font-medium text-ink-secondary">
@@ -866,7 +862,7 @@ export function PluginsPanel() {
             </section>
           )}
 
-          {filter !== "connected" && filter !== "plugins" && (
+          {filter !== "connected" && (
             <div className={cn(filter === "all" && "mt-8 border-t border-hairline/30 pt-6", filter === "mcp" && "pt-3")}>
               <McpServersPanel embedded />
             </div>

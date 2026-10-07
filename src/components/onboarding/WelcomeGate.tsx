@@ -90,6 +90,7 @@ export function WelcomeGate({ viewer }: { viewer: WelcomeViewer | null }) {
   return (
     <WelcomeFlow
       bot={bot}
+      replay={replay}
       hosted={viewer.hosted}
       initialBeat={resumeAt}
       onOpenOrganisation={() => {

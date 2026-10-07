@@ -317,8 +317,6 @@ export interface RoutineManagerOptions {
     threadId: string,
     outcome?: { status: "stopped" | "limit-reached"; detail: string },
   ) => Promise<void>;
-  /** A journaled dispatch can resume the same run after a service restart. */
-  recoverRunning?: (run: RoutineRun) => boolean;
   /** Projects every durable transition into the source conversation. */
   onRunChanged?: (run: RoutineRun) => void;
   onRunFailed?: (run: RoutineRun) => void;
@@ -882,7 +880,6 @@ export class RoutineManager {
     const recovered: RoutineRun[] = [];
     for (const run of this.runs) {
       if (run.status === "running" || run.status === "waiting") {
-        if (this.options.recoverRunning?.(run)) continue;
         run.status = "failed";
         if (run.target === "room-goal") run.goalStatus = "failed";
         run.error = "OpenMausBot restarted while this routine was running";

@@ -6,7 +6,6 @@
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { ChatGoals, chatGoalInstructions } from "./chat-goals.ts";
-import { TurnRecovery } from "./turn-recovery.ts";
 import { chatGoalCommand, type ChatGoal } from "../shared/chat-goal.ts";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, rmSync, mkdirSync } from "node:fs";
@@ -256,7 +255,7 @@ import type { GroupGoalRunCardData, GroupGoalRunStatus } from "../shared/group-g
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { openCodeProviderKeysAllowed, setOpenCodeOwnProviderKeys, setOpenCodeProviderKeyPolicy } from "./drivers/acp/opencode-go.ts";
 import { getOrCreateChannel, mirrorActivity, mirrorExchange, mirrorReply, type CommsBus } from "./comms-visibility.ts";
-import { type RunningTurn, readMessageText, recallMessages, recentMessages, searchMessagesAsync, closeMessageSearch, closeMessageDb, chatFollowups, cancelledChatFollowup, settleChatFollowups, threadsReferencing } from "./message-db.ts";
+import { readMessageText, recallMessages, recentMessages, searchMessagesAsync, closeMessageSearch, closeMessageDb, chatFollowups, cancelledChatFollowup, settleChatFollowups, threadsReferencing } from "./message-db.ts";
 import { briefCrossingLabel, claimRecallCrossings, recallCrossingLabel } from "./recall-disclosure.ts";
 import { parseSince, parseUntil, recentWork, recentWorkPrompt, turnOutcomeLine } from "./recent-work.ts";
 import { chiefForBot, INCIDENTS_THREAD_TITLE, IncidentLedger, incidentChip, incidentText, type Incident, type IncidentKind } from "./incidents.ts";
@@ -347,6 +346,8 @@ import { createDecider, deciderIncludedHere, deciderReady, deciderSavePatch, des
 import { decideRoomResponder, type RoomRoutingInput } from "./decider/room-routing.ts";
 import { createLiveSession, liveAttachUrl, LiveSessionError, type LiveBot, type LiveHistoryMessage } from "./live-call.ts";
 import { LiveCallController, LiveCallSignedOutError, type LiveSocket } from "./live-call-controller.ts";
+import { decideToolPick } from "./decider/tool-pick.ts";
+import { decideWorkPlace, type WorkPlace } from "./decider/work-place.ts";
 import { narrateTool, toUtterances } from "./tts/speech-text.ts";
 import { turnStartLogLine } from "./turn-log.ts";
 import { buildRecoveryText, buildTurnContext, engineIsFresh, NATIVELY_REPLAYING_DRIVER_KINDS, peerMessageText } from "./turn-context.ts";
@@ -510,20 +511,6 @@ import {
 } from "./skill-library.ts";
 import type { SkillsLibrarySkillWire } from "../shared/wire.ts";
 import { runSkillsLibraryBootSweep } from "./skills-library-migration.ts";
-import {
-  addMarketplace,
-  forgetBotPluginAccess,
-  harnessMarketplaces,
-  installPlugin,
-  listMarketplaces,
-  listPlugins,
-  marketplaceCatalog,
-  pluginMcpServersForBot,
-  refreshMarketplace,
-  removeMarketplace,
-  setPluginAccess,
-  uninstallPlugin,
-} from "./plugin-marketplace.ts";
 import { installedPlaybookInstructions } from "./installed-playbooks.ts";
 import { createBotPackageExport, createLibraryPackageExport, createTeamPackageExport, picture as sharedPicture, TeamExportError, type ExportablePackageSkill, type TeamExportSkip } from "./package-export.ts";
 import { importPackageDocument, importTeamManifest, PackageImportError, type PackageImportDeps, type PackageImportResult } from "./package-import.ts";
@@ -2586,7 +2573,6 @@ function settleDirectFollowup(generation: string | undefined, outcome: DirectTur
   // Failure/Stop can precede the adapter's terminal event. Quarantine only
   // this generation's bound ids, including after the watchdog frees its slot.
   for (const turnId of directFollowupTurns.deleteGeneration(pending.threadId, generation)) retireProviderTurn(turnId);
-  if (followupsReady) turnRecovery.finish(pending.threadId, generation);
   const goalText = chatGoalTurnText.get(generation);
   pending.settle?.(goalText ? { ...outcome, text: goalText.join("\n") || outcome.text } : outcome);
   // The main event fold publishes the sanitized final reply after this
@@ -2818,7 +2804,6 @@ function requestedTaskBot(botId: string, rawThreadId: unknown): BotRecord {
 }
 
 async function interruptDirectThread(botId: string, threadId: string, options?: { preserveComputerResume?: boolean; preserveCoordination?: boolean; preserveGoal?: boolean }): Promise<void> {
-  if (followupsReady) turnRecovery.cancel(threadId);
   if (!options?.preserveGoal && store.taskByThread(botId, threadId)?.goal?.status === "active") chatGoals.control(botId, threadId, "pause");
   // A parked turn has settled its provider but still owns a future resume.
   // Stop cancels that work too. The parking teardown itself preserves it.
@@ -2985,6 +2970,8 @@ function cancelDirectTurnDispatch(botId: string, expectedThreadId?: string): Dir
 /** The bot's browser for this turn: agent-browser, one isolated session per
  * browser profile or per bot (docs/plans/browser-engine.md). Null, with the
  * reason logged once, when the engine is not on this machine. */
+// Click by description is offered per tools/list, so a Settings change to the
+// decider applies from the next turn.
 const browserRuntime = new BrowserRuntime({
   // The bot's restart_browser tool. An open Browser panel watched the old
   // browser; drop its stream the way the panel's own Restart button does.
@@ -2993,6 +2980,7 @@ const browserRuntime = new BrowserRuntime({
     if (closed) browserLive.closeForSession(session);
     return closed;
   },
+  clickByDescription: { decider, ready: () => deciderReady(cfg, "browserClick") },
 });
 const browserLive = new BrowserLive({ runtime: browserRuntime });
 // Temporary profiles last for this server run, but are never saved to disk.
@@ -3572,53 +3560,6 @@ const store = new Store(
 );
 const teamComputers = new TeamComputers(join(DATA_DIR, "team-computers.json"), ENVIRONMENT_ID);
 let followupsReady = false;
-const turnRecovery = new TurnRecovery();
-function drainRestartRecovery(): void {
-  if (!followupsReady) return;
-  turnRecovery.drain(turn => {
-    if (!followupsReady) return false;
-    const source = store.activePath(turn.threadId).find(message => message.id === turn.sourceMessageId);
-    const routine = turn.routineRunId ? routines?.runForThread(turn.threadId) : undefined;
-    if (!source || (turn.routineRunId && (routine?.id !== turn.routineRunId || !["running", "waiting"].includes(routine.status)))) {
-      turnRecovery.cancel(turn.threadId);
-      return true;
-    }
-    if (turn.kind === "bot") {
-      const bot = store.bot(turn.ownerId), task = store.taskByThread(turn.ownerId, turn.threadId);
-      if (!bot || bot.hidden || !task || task.archivedAt || task.closedBy ||
-          (turn.chatGoalId && (task.goal?.id !== turn.chatGoalId || task.goal.status !== "active"))) {
-        turnRecovery.cancel(turn.threadId);
-        return true;
-      }
-      // Persistent goals own their own next dispatch and consume the same
-      // recovery nudge there; a second runner would duplicate their work.
-      if (task.goal?.status === "active") { chatGoals.drain(); return false; }
-      if (!canAdmitDirectTurn(bot.id, turn.threadId) || hasQueuedSteeredMessages(bot.id, turn.threadId) || parksBehindCoordination(bot.id, turn.threadId)) return false;
-      return startTurn(bot.id, "Continue the interrupted work from the saved conversation. Check what already completed before taking further action.", {
-        threadId: turn.threadId, cardContinuation: true, userMessage: source,
-        requestMessageId: source.role === "user" ? source.id : undefined, unattended: turn.unattended, commsDepth: turn.commsDepth,
-      }).then(() => true);
-    }
-    const group = store.group(turn.ownerId), task = store.groupTaskByThread(turn.ownerId, turn.threadId);
-    if (!group || (!group.dm && !task)) {
-      turnRecovery.cancel(turn.threadId);
-      return true;
-    }
-    if (groupIsWorking(group) || group.memberIds.some(id => store.bot(id)?.busy)) return false;
-    startGroupTurn(group.id, source.text ?? "Continue the interrupted work", undefined, undefined, turn.channelMode, undefined, {
-      threadId: turn.threadId, recoveryMessage: source, recoveryResponderIds: turn.responderBotIds,
-      goalCoordinatorBotId: turn.goalCoordinatorBotId, goalRunId: turn.goalRunId,
-    });
-    // A removed responder cannot leave an endless restart attempt.
-    if (turnRecovery.pending.has(turn.threadId)) turnRecovery.cancel(turn.threadId);
-    return true;
-  }, (turn, error) => {
-    const detail = error instanceof Error ? error.message : String(error);
-    store.appendMessage(turn.threadId, { role: "bot", kind: "activity",
-      tool: { name: `Restart recovery could not start: ${detail}. Send a message after resolving this to continue.`, ok: false } });
-    if (turn.routineRunId) routines?.failThread(turn.threadId, detail);
-  });
-}
 const sendSequencer = new SendSequencer();
 const chatGoals = new ChatGoals({
   suspended: () => !followupsReady,
@@ -4466,7 +4407,6 @@ const publicBotQueuedMessages = () => queuedSteerSnapshot((botId, threadId) => B
 
 type GroupTurnOperation = {
   id: string;
-  serviceRecovery?: string;
   threadId: string;
   botIds: Set<string>;
   cancelled: boolean;
@@ -4979,9 +4919,8 @@ function beginGroupTurnOperation(
   groupId: string,
   threadId: string,
   botIds: Iterable<string> = [],
-  recovery: Partial<Pick<RunningTurn, "sourceMessageId" | "channelMode" | "goalCoordinatorBotId" | "goalRunId" | "responderBotIds">> = {},
 ): GroupTurnOperation {
-  const operation: GroupTurnOperation = {
+  const operation = {
     id: randomUUID(),
     threadId,
     botIds: new Set(botIds),
@@ -4989,10 +4928,6 @@ function beginGroupTurnOperation(
     cancellation: new AbortController(),
     providerHandshakePending: false,
   };
-  const source = store.activePath(threadId).findLast(message => message.kind === "text");
-  if (source) operation.serviceRecovery = turnRecovery.admit({ kind: "group", ownerId: groupId, threadId,
-    generation: operation.id, sourceMessageId: source.id, startedAt: Date.now(),
-    routineRunId: activeRoutineRunForThread(threadId)?.id, responderBotIds: [...operation.botIds], ...recovery });
   const operations = groupTurnOperations.get(groupId) ?? new Set<GroupTurnOperation>();
   operations.add(operation);
   groupTurnOperations.set(groupId, operations);
@@ -5002,7 +4937,6 @@ function beginGroupTurnOperation(
 }
 
 function finishGroupTurnOperation(groupId: string, operation: GroupTurnOperation) {
-  if (followupsReady) turnRecovery.finish(operation.threadId, operation.id);
   if (operation.goalRun && !operation.goalRun.finished) {
     finishGroupGoalRun(groupId, operation, "failed", "The team run ended before the lead reported an outcome.");
   }
@@ -5032,7 +4966,7 @@ function finishGroupGoalRun(
   detail: string,
 ): void {
   const run = operation.goalRun;
-  if (!followupsReady || !run || run.finished) return;
+  if (!run || run.finished) return;
   run.finished = true;
   const finishedAt = Date.now();
   const safeDetail = redactSecretsInText(detail.trim()).slice(0, 500);
@@ -5292,7 +5226,6 @@ function cancelGroupTurnOperations(
 ) {
   pendingComputerResumes.delete(threadId);
   cancelTeamSetupResumesForThread(threadId);
-  if (followupsReady) turnRecovery.cancel(threadId);
   roomHandoffs.cancelRoom(groupId, threadId);
   for (const operation of groupTurnOperations.get(groupId) ?? []) {
     if (operation.threadId !== threadId) continue;
@@ -6965,6 +6898,64 @@ function turnSurfacePlan(bot: BotRecord, runOn?: RoutineRunOn, threadId?: string
   });
 }
 
+/** The places an Auto turn could reach without creating or starting
+ * anything, for the decision model's work-place question. Mirrors the Auto
+ * branches of startTurn's dispatch; whether a place really attaches is still
+ * decided there, and one that does not falls through to the rest of the
+ * usual order. Synchronous and local: no status probe, no network. */
+function autoWorkPlaces(bot: BotRecord, instance: NonNullable<ReturnType<typeof registry.get>>, threadId: string): WorkPlace[] {
+  const caps = instance.adapter.capabilities;
+  const places: WorkPlace[] = [];
+  // On Auto the VPS mounts only for engines that can work on it, and a Boat
+  // attaches only to a remote-agent engine (the Computer engine).
+  const cloud = bot.cloudBackend === "vps"
+    ? managedPolicy.computerAllowed("vps") && canWorkOnCloud(cloudEngine(instance), "vps") && !computerPlaceRefusal("vps")
+    : caps.remoteAgent === true && boat.boatConfigured(cfg) && !computerPlaceRefusal("box");
+  if (cloud) places.push("cloud_computer");
+  if (caps.computerMcp === true && caps.remoteAgent !== true && !computerPlaceRefusal("localVm")) {
+    // The same seat attachLocalVm's Auto path would look at, without
+    // recording any pool affinity.
+    const target = localVmMode(cfg) === "pool"
+      ? poolLocalVmTarget(localVmSeatPool.candidate(threadId, localVmPoolSeatHolder))
+      : localVmTargetForBot(bot.id);
+    if (localVmSeen.has(target.key)) places.push("local_vm");
+  }
+  if (!computerPlaceRefusal("thisComputer") && shouldMountLocalComputer({ requested: undefined, hostPlatform: process.platform,
+    providerSupportsLocal: caps.localComputerMcp === true }) && readCuaConnection()) places.push("this_computer");
+  return places;
+}
+
+const WORK_PLACE_SURFACE: Record<WorkPlace, Surface> = { this_computer: "local", local_vm: "vm", cloud_computer: "cloud" };
+
+/** The place the decision model says an Auto turn should try first
+ * (server/decider/work-place.ts), or null for today's order. Only for a
+ * person's own message on an unpinned Auto turn with two or more places to
+ * choose between; never for a pin, an explicit Works on, a team computer or
+ * an automation. Resolves, never rejects. */
+function workPlaceFirst(
+  bot: BotRecord,
+  instance: NonNullable<ReturnType<typeof registry.get>>,
+  plan: ReturnType<typeof turnSurfacePlan>,
+  threadId: string,
+  message: string,
+): Promise<Surface | null> | null {
+  if (!deciderReady(cfg, "workPlace") || plan.computer !== undefined || plan.pinned || inheritedTeamComputer(bot)) return null;
+  const places = autoWorkPlaces(bot, instance, threadId);
+  if (places.length < 2) return null;
+  return decideWorkPlace(decider, { message, bot: { name: bot.name, description: bot.description }, places })
+    .then((choice) => choice.kind === "place" ? WORK_PLACE_SURFACE[choice.place] : null, () => null);
+}
+
+/** The tool-pick callback a turn hands its driver (SendTurnInput.pickTools),
+ * or nothing while the job is off. */
+function toolPickFor(message: string): SendTurnInput["pickTools"] {
+  if (!deciderReady(cfg, "toolPick") || !message.trim()) return undefined;
+  return async (tools, signal) => {
+    const pick = await decideToolPick(decider, { message, tools }, { signal });
+    return pick.kind === "keep" ? pick.names : null;
+  };
+}
+
 function turnProvider(bot: BotRecord, runOn?: RoutineRunOn, threadId?: string): RemoteComputerProvider | null {
   if (runOn === "cloud" || inheritedTeamComputer(bot)) return "box";
   const wants = turnSurfacePlan(bot, runOn, threadId).computer;
@@ -7401,7 +7392,7 @@ bus.subscribe((event: RuntimeEvent) => {
     const publicEvent = event.type === "request.opened" ? { ...event, command: undefined } : event;
     broadcast({ kind: "runtime", event: publicEvent });
   }
-  const routineRun = privateImageEvent || !followupsReady ? null : (routines?.handleRuntimeEvent(event) ?? null);
+  const routineRun = privateImageEvent ? null : (routines?.handleRuntimeEvent(event) ?? null);
   const ownerBot = store.botByThread(event.threadId);
   const bot = ownerBot ? botForThread(ownerBot.id, event.threadId) ?? undefined : undefined;
   const group = bot ? undefined : store.groupByThread(event.threadId);
@@ -8803,7 +8794,6 @@ function drainQueuedSends() {
   // reaches this point, so the aside lane drains on all of them — not
   // just turn.completed.
   drainAsideLane();
-  drainRestartRecovery();
   chatGoals.drain();
 }
 
@@ -9471,12 +9461,6 @@ async function startTurn(
       },
     };
   }
-  // Provider disposal during shutdown is an interruption, not a routine
-  // failure. Leave its durable run available for the next process.
-  if (opts?.onDispatchError) {
-    const onDispatchError = opts.onDispatchError;
-    opts = { ...opts, onDispatchError: message => { if (followupsReady) onDispatchError(message); } };
-  }
   const bot = store.projectBotForTask(botId, threadId);
   if (!bot) throw Object.assign(new Error("no such task"), { status: 404 });
   // Routines and legacy peer delivery already have their own completion
@@ -9648,12 +9632,6 @@ async function startTurn(
   // in the background — boat provisioning can take ~90s and must never
   // hang the HTTP request
   const dispatchClaimId = randomUUID();
-  const serviceRecovery = turnRecovery.admit({ kind: "bot", ownerId: bot.id, threadId,
-    generation: dispatchClaimId, sourceMessageId: store.activePath(threadId).findLast(message => message.role === "user" && message.kind === "text")?.id ?? store.activePath(threadId).findLast(message => message.kind === "text")?.id ?? userMessage.id,
-    startedAt: Date.now(), routineRunId: activeRoutineRunForThread(threadId)?.id,
-    unattended: opts?.unattended, commsDepth: opts?.commsDepth, chatGoalId: opts?.chatGoal?.id });
-  if (serviceRecovery) store.appendMessage(threadId, { role: "bot", kind: "activity",
-    tool: { name: "LEGION restarted. Continuing interrupted work from the saved conversation.", ok: true } });
   if (opts?.chatGoal) chatGoalTurnText.set(dispatchClaimId, []);
   // Guest-driven for as long as it runs, wherever it runs (cloudGuestDriven).
   if (guestConfined) guestDrivenTurns.set(threadId, dispatchClaimId);
@@ -9705,6 +9683,15 @@ async function startTurn(
   if (commsDepth === 0) store.patchTask(bot.id, threadId, { unread: false });
   turnUsage.delete(threadId);
   turnContext.delete(threadId);
+
+  // The decision model's turn-start question (server/decider): where an Auto
+  // turn looks first. It starts now, side by side with the setup below, and
+  // is awaited only where its answer is used, so it adds at most one short
+  // budget. Null while its job is off.
+  const personAsked = commsDepth === 0 && !userMessage.peerAsk && !opts?.automationSource && !opts?.unattended;
+  const continuation = Boolean(opts?.cardContinuation || opts?.computerSelectionContinuation || opts?.compactOnly);
+  const placeFirst = personAsked && !continuation && !opts?.coordination && opts?.runOn !== "cloud"
+    ? workPlaceFirst(bot, instance, plan, threadId, resolvedImages.text) : null;
 
   void (async () => {
     try {
@@ -10246,6 +10233,48 @@ async function startTurn(
           return false;
         }
       };
+      // An unattended run on a bot with a VPS configured never lands on the
+      // host's own desktop instead: a scheduled job clicking on someone's
+      // laptop is worse than a scheduled job that fails and says why.
+      const unattendedVps = cloudBackend === "vps" && Boolean(opts?.automationSource);
+      // Auto-only host fallback. Electron owns cua-driver/TCC attribution;
+      // the harness only reads its already-running connection descriptor.
+      const mountAutoHost = () => {
+        if (
+          integrations.computer ||
+          integrations.localComputer ||
+          wants !== undefined ||
+          unattendedVps ||
+          computerPlaceRefusal("thisComputer") ||
+          !shouldMountLocalComputer({
+            requested: undefined,
+            hostPlatform: process.platform,
+            providerSupportsLocal: mountsLocalComputer,
+          })
+        ) return;
+        const cua = readCuaConnection();
+        if (!cua) return;
+        // Lazy host claim (issue #1650): the gated integration mounts
+        // now, but the exclusive computer:host seat is taken only by the
+        // first screen tools/call, through the computer-control gate —
+        // the same seam as the Local VM (#1361) and the VPS. An Auto
+        // turn that never touches the screen holds no desktop seat and
+        // records no pin; a claim that finds the seat held waits behind
+        // the holder like every other seat instead of failing on the
+        // spot.
+        autoVmClaims.set(threadId, {
+          owner: resourceOwner,
+          lazy: true,
+          label: "this computer",
+          onRejected: surfaceLazyClaimRejection("this computer"),
+          claim: async () => {
+            await bindTurnComputer(resourceOwner, "computer:host", true);
+            pinAutoSurface("local");
+          },
+        });
+        integrations.localComputer = gatedLocalComputer(cua, controlIntegration(bot.id, threadId, dispatchClaimId, "this computer"));
+        computerKind = "local";
+      };
       // An explicit place that cannot be attached fails the turn with its
       // cause and the next action; it never quietly moves the work elsewhere.
       try {
@@ -10256,11 +10285,20 @@ async function startTurn(
           computerKind = "local";
         }
 
+        // The decision model may have named the place this message fits best
+        // among those Auto can reach (workPlaceFirst). It is tried first,
+        // through its usual Auto mount; a place that does not attach leaves
+        // today's order to run as always. Cloud is already tried first.
+        const preferred = wants === undefined && placeFirst ? await placeFirst : null;
+        if (preferred === "vm" && !computerPlaceRefusal("localVm") && await attachLocalVm(false)) computerKind = "vm";
+        else if (preferred === "local") mountAutoHost();
+        const autoPlaced = computerKind !== null;
+
         // A VPS is a local-agent computer mount, never a remote agent runner.
         // Explicit Cloud may prepare/start it. Auto remains read-only unless
         // the person explicitly opted this bot into remote lifecycle actions.
         // On Auto an engine that cannot use a computer simply skips it.
-        if ((wants === "cloud" || (wants === undefined && managedPolicy.computerAllowed("vps"))) && cloudBackend === "vps" &&
+        if ((wants === "cloud" || (wants === undefined && !autoPlaced && managedPolicy.computerAllowed("vps"))) && cloudBackend === "vps" &&
             canWorkOnCloud(cloudEngine(instance), "vps")) {
           // The VPS "computer" is the desktop inside this bot's managed
           // container, and only screen work needs that desktop to itself.
@@ -10320,7 +10358,7 @@ async function startTurn(
         // never records a place nobody chose.
         const remoteAgent = instance.adapter.capabilities.remoteAgent === true;
         if (!teamComputer && cloudBackend === "box" && boat.boatConfigured(cfg) &&
-            (wants === "cloud" || (wants === undefined && remoteAgent && !computerPlaceRefusal("box")))) {
+            (wants === "cloud" || (wants === undefined && !autoPlaced && remoteAgent && !computerPlaceRefusal("box")))) {
           const attached = await attachBotBoat(bot, resourceOwner, { explicitCloud: wants === "cloud", remoteAgent });
           if (attached) {
             previewCapture = attached.capture;
@@ -10341,52 +10379,11 @@ async function startTurn(
         throw asPlaceFailure(error, namedPlace, placeSource);
       }
 
-      // Auto-only host fallback. Electron owns cua-driver/TCC attribution;
-      // the harness only reads its already-running connection descriptor.
       // Auto reaches a Local VM this bot already has before it ever touches the
       // host's own desktop: on a headless server that VM is the only desktop
       // there is, and a person who prepared one meant it to be used.
       if (wants === undefined && !integrations.computer && !integrations.localComputer && !computerPlaceRefusal("localVm") && await attachLocalVm(false)) computerKind = "vm";
-      // An unattended run on a bot with a VPS configured never lands on the
-      // host's own desktop instead: a scheduled job clicking on someone's
-      // laptop is worse than a scheduled job that fails and says why.
-      const unattendedVps = cloudBackend === "vps" && Boolean(opts?.automationSource);
-      if (
-        !integrations.computer &&
-        !integrations.localComputer &&
-        wants === undefined &&
-        !unattendedVps &&
-        !computerPlaceRefusal("thisComputer") &&
-        shouldMountLocalComputer({
-          requested: undefined,
-          hostPlatform: process.platform,
-          providerSupportsLocal: mountsLocalComputer,
-        })
-      ) {
-        const cua = readCuaConnection();
-        if (cua) {
-          // Lazy host claim (issue #1650): the gated integration mounts
-          // now, but the exclusive computer:host seat is taken only by the
-          // first screen tools/call, through the computer-control gate —
-          // the same seam as the Local VM (#1361) and the VPS. An Auto
-          // turn that never touches the screen holds no desktop seat and
-          // records no pin; a claim that finds the seat held waits behind
-          // the holder like every other seat instead of failing on the
-          // spot.
-          autoVmClaims.set(threadId, {
-            owner: resourceOwner,
-            lazy: true,
-            label: "this computer",
-            onRejected: surfaceLazyClaimRejection("this computer"),
-            claim: async () => {
-              await bindTurnComputer(resourceOwner, "computer:host", true);
-              pinAutoSurface("local");
-            },
-          });
-          integrations.localComputer = gatedLocalComputer(cua, controlIntegration(bot.id, threadId, dispatchClaimId, "this computer"));
-          computerKind = "local";
-        }
-      }
+      mountAutoHost();
       if (
         wants === undefined &&
         cloudBackend === "vps" &&
@@ -10560,7 +10557,6 @@ async function startTurn(
         throw new DirectTurnSetupCancelled("Coordination access changed before dispatch");
       }
       const prompt = buildSystemPrompt(persona, liveBot?.soul ?? bot.soul ?? "", [
-        { id: "service-recovery", label: "Service restart", text: serviceRecovery },
         { id: "chat-goal", label: "Conversation goal", text: opts?.chatGoal ? chatGoalInstructions(opts.chatGoal) : "" },
         { id: "user-profile", label: "About the user", text: userProfileSystemPrompt(cfg.profile) },
         // first after the soul: the block names agent tools, so it only goes
@@ -10630,6 +10626,7 @@ async function startTurn(
       // the one the person watches.
       const dispatchedConfig = sessionConfig(liveBot?.soul ?? bot.soul);
       if (strictResume && !(opts?.cardContinuation && continuingRoutine) && dispatchedConfig !== plannedConfig) dispatchContext = decideContext(dispatchedConfig);
+      const pickTools = opts?.cardContinuation ? undefined : toolPickFor(resolvedImages.text);
       // Before sendTurn: an adapter may emit the whole turn before it resolves.
       handoffs.dispatching(threadId, dispatchClaimId, dispatchContext.handoff);
       const dispatch = await guardTurnDispatch(instance.adapter.sendTurn({
@@ -10645,6 +10642,7 @@ async function startTurn(
         model,
         effort,
         variant,
+        ...(pickTools ? { pickTools } : {}),
         // a rewound thread never resumes the abandoned branch's session
         // the active task's own session — another task's cursor would
         // resume the wrong conversation and defeat the context bubble
@@ -11110,7 +11108,6 @@ _loadPending();
 
 routines = new RoutineManager({
   emit: broadcast,
-  recoverRunning: run => Boolean(run.threadId && turnRecovery.pending.get(run.threadId)?.routineRunId === run.id),
   hasPendingDelegations: (threadId) => pendingThreads().includes(threadId) ||
     [...delegationWatch.values()].some((watch) => watch.sourceThreadId === threadId) ||
     pendingDelegationWakes.has(threadId),
@@ -11200,7 +11197,6 @@ routines = new RoutineManager({
     });
   },
   interruptTurn: async (botId, threadId) => {
-    if (followupsReady) turnRecovery.cancel(threadId);
     const bot = botForThread(botId, threadId);
     pendingDelegationWakes.delete(threadId);
     discardDelegations(commsBus, threadId);
@@ -11332,7 +11328,7 @@ store.reconcileInterruptedGroupGoals((runId, threadId) => {
         : "OpenMausBot restarted before this scheduled team goal finished."
   );
   return { status, detail, finishedAt: run.finishedAt ?? groupGoalRecoveryAt };
-}, undefined, groupGoalRecoveryAt, (runId, threadId) => turnRecovery.pending.get(threadId)?.goalRunId === runId);
+});
 calendarCalls = new CalendarCallManager({
   botExists: (botId) => Boolean(store.bot(botId)),
   onDue: deliverCalendarCall,
@@ -11599,7 +11595,6 @@ async function deleteBotWithLifecycle(botId: string, revalidate: () => void = ()
           routines!.disableForBot(bot.id);
           webhooks.disableForBot(bot.id);
           calendarCalls!.removeBot(bot.id);
-          forgetBotPluginAccess(bot.id);
           browserLive.closeForBot(bot.id);
           await forgetTemporaryBrowser(bot.id);
         } catch (error) {
@@ -12851,7 +12846,6 @@ async function runGroupMemberTurn(
     }
   }
   const roomSystem = buildSystemPrompt(system, store.bot(bot.id)?.soul ?? bot.soul ?? "", [
-    { id: "service-recovery", label: "Service restart", text: operation?.serviceRecovery ?? "" },
     { id: "user-profile", label: "About the user", text: userProfileSystemPrompt(cfg.profile) },
     { id: "files", label: "File locations", text: workspace ? workspaceLocationsPrompt(bot.id, cwd, readyBot.cwd) : "" },
     { id: "mcp", label: "MCP servers", text: customMcpPrompt(Object.keys(integrations.custom ?? {})) },
@@ -12984,6 +12978,7 @@ async function runGroupMemberTurn(
     // notes only in a room: a private chat reaches a room through the
     // explicit, disclosed session_search, never automatically
     const roomRecalled = cardContinuation ? "" : autoRecallPrompt(bot, threadId, resolvedLatestImages.text, { conversations: false, userName });
+    const roomPickTools = cardContinuation ? undefined : toolPickFor(resolvedLatestImages.text);
     guardTurnDispatch(instance.adapter.sendTurn({
         threadId,
         botId: readyBot.id,
@@ -12998,6 +12993,7 @@ async function runGroupMemberTurn(
         cwd,
         integrations,
         mcpFromUserConfig: claudeUserMcpEnabled(cfg) && !managedPolicy.restrictsMcp(),
+        ...(roomPickTools ? { pickTools: roomPickTools } : {}),
         ...(instance.instanceId === readyBot.modelSelection.instanceId
           ? memberTurnSelection(readyBot.modelSelection)
           : { model: instance.models.default }),
@@ -13615,9 +13611,6 @@ async function runGroupGoalOperation(args: {
 }
 
 type StartGroupTurnOptions = {
-  /** Restart continues the existing request without appending it again. */
-  recoveryMessage?: Message;
-  recoveryResponderIds?: string[];
   /** Run against an existing background room task instead of the active UI task. */
   threadId?: string;
   /** Internal routine goals choose their lead explicitly rather than by @mention/default. */
@@ -13673,7 +13666,7 @@ function startGroupTurn(
   }
   // An Auto room may ask the decision model who answers. It reads the room
   // as it stood before this message, which is appended just below.
-  const autoCandidate = !options.recoveryResponderIds?.length && !group.dm && channelMode === "chat" && group.defaultResponder.kind === "auto" &&
+  const autoCandidate = !group.dm && channelMode === "chat" && group.defaultResponder.kind === "auto" &&
     deciderReady(cfg, "roomRouting");
   const historyBeforeSend = autoCandidate
     ? store.messagesFor(threadId).filter((m) => m.kind === "text" && m.text).slice(-GROUP_CONTEXT_MESSAGES)
@@ -13682,7 +13675,7 @@ function startGroupTurn(
   // chips and sendId receipts stay per-item); the LAST line is the turn's
   // user message, exactly like the 1:1 drain's userMessage.
   const queuedGroup = options.queuedGroup;
-  const message = options.recoveryMessage ?? (queuedGroup && queuedGroup.length > 0
+  const message = queuedGroup && queuedGroup.length > 0
     ? (() => {
         for (const item of queuedGroup.slice(0, -1)) {
           store.appendMessage(threadId, {
@@ -13720,7 +13713,7 @@ function startGroupTurn(
         queueId,
         via: options.via,
         sender: options.sender,
-      }));
+      });
   // Admitted (see startTurn): the room's speakers are booked to this sender.
   if (options.trigger) turnTriggers.set(threadId, options.trigger);
   const titled = group.dm ? null : store.titleGroupTaskFromFirstMessage(group.id, text, threadId);
@@ -13738,9 +13731,7 @@ function startGroupTurn(
       },
     });
   }
-  let responders = options.recoveryResponderIds?.length
-    ? availableMembers.filter(member => options.recoveryResponderIds!.includes(member.id))
-    : roomResponders(text, members, group.defaultResponder);
+  let responders = roomResponders(text, members, group.defaultResponder);
   const explicitlyMentionedLead = roomResponders(text, availableMembers, { kind: "mentions" })[0];
   const goalCoordinator = channelMode === "goal"
     ? requestedGoalCoordinator ?? explicitlyMentionedLead ?? selectGroupGoalCoordinator(availableMembers, group.defaultResponder)
@@ -13799,13 +13790,10 @@ function startGroupTurn(
   // An Auto round titles with whoever the decision picks, once it has.
   if (!autoRoute) startTitle(goalCoordinator ?? responders[0]!);
 
-  const goalRunId = goalCoordinator ? options.goalRunId?.trim() || `goal-${Date.now().toString(36)}-${randomUUID()}` : undefined;
   const operation = beginGroupTurnOperation(
     groupId,
     threadId,
     goalCoordinator || autoRoute ? [] : responders.map((responder) => responder.id),
-    { sourceMessageId: message.id, channelMode, goalCoordinatorBotId: goalCoordinator?.id,
-      goalRunId, responderBotIds: responders.map(bot => bot.id) },
   );
   // Asked now, in parallel with any earlier room work still queued: the
   // answer is waited for only when this round's turn comes up. It never
@@ -13821,11 +13809,10 @@ function startGroupTurn(
     operation.queuedQueueIds = queuedGroup.map((item) => item.id);
   }
   if (goalCoordinator) {
-    const runId = goalRunId!;
+    const runId = options.goalRunId?.trim() || `goal-${Date.now().toString(36)}-${randomUUID()}`;
     const startedAt = Date.now();
     const detail = `${goalCoordinator.name} is coordinating this goal.`;
-    const previousCard = options.recoveryMessage ? store.messagesFor(threadId).findLast(row => row.goalRun?.runId === runId) : undefined;
-    const card = previousCard ?? store.appendMessage(threadId, {
+    const card = store.appendMessage(threadId, {
       role: "bot",
       kind: "goal.run",
       text: `Goal in progress: ${detail}`,
@@ -13848,14 +13835,12 @@ function startGroupTurn(
       goal: text,
       coordinatorBotId: goalCoordinator.id,
       coordinatorName: goalCoordinator.name,
-      turnCount: previousCard?.goalRun?.turnCount ?? 0,
-      maxTurns: previousCard?.goalRun?.maxTurns ?? GROUP_GOAL_MAX_TURNS,
-      startedAt: previousCard?.goalRun?.startedAt ?? startedAt,
+      turnCount: 0,
+      maxTurns: GROUP_GOAL_MAX_TURNS,
+      startedAt,
       finished: false,
     };
   }
-  if (operation.serviceRecovery) store.appendMessage(threadId, { role: "bot", kind: "activity",
-    tool: { name: "LEGION restarted. Continuing interrupted room work from the saved conversation.", ok: true } });
   const prev = groupQueues.get(groupId) ?? Promise.resolve();
   const next = prev.then(async () => {
     if (operation.cancelled) return;
@@ -15300,14 +15285,7 @@ function mcpServerBody(body: unknown): Record<string, unknown> {
 /** Configured MCP servers that may reach this bot's engine. While enrolled,
  * the organisation's allow-list filters them; config.json is never changed. */
 function engineMcpServers(bot: BotRecord) {
-  // Plugins granted to this bot add their servers after the person's own,
-  // which keep their names; the org allow-list then filters both alike.
-  const withPlugins = {
-    ...cfg,
-    mcpServers: { ...pluginMcpServersForBot(bot.id, Object.keys(cfg.mcpServers ?? {})), ...cfg.mcpServers },
-  };
-  const only = bot.mcpServers ? [...bot.mcpServers, ...Object.keys(withPlugins.mcpServers).filter((name) => !(name in (cfg.mcpServers ?? {})))] : undefined;
-  return withoutPendingSignIn(managedPolicy.filterMcp(customMcpServers(withPlugins, only)), mcpOAuth);
+  return withoutPendingSignIn(managedPolicy.filterMcp(customMcpServers(cfg, bot.mcpServers)), mcpOAuth);
 }
 
 function persistMcpServers(next: Record<string, unknown>): void {
@@ -24057,58 +24035,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         providerInstancesChanging.delete(instanceId);
         providerConfigBusy = false;
       }
-    }
-
-    // ── plugin marketplaces (server/plugin-marketplace.ts) ────────────────
-    if (path === "/api/plugins" && method === "GET") {
-      return json(res, 200, {
-        plugins: listPlugins(),
-        marketplaces: listMarketplaces(),
-        suggestedMarketplaces: harnessMarketplaces(),
-      });
-    }
-    if (path === "/api/plugins/marketplaces" && method === "POST") {
-      const parsed = z.object({ source: z.string().min(1).max(2000) }).safeParse(await readBody(req));
-      if (!parsed.success) return json(res, 400, { error: "source is required" });
-      const added = await addMarketplace(parsed.data.source);
-      return "error" in added ? json(res, 422, added) : json(res, 201, { marketplace: added });
-    }
-    m = path.match(/^\/api\/plugins\/marketplaces\/([a-z0-9][a-z0-9._-]{0,63})(\/catalog|\/refresh)?$/);
-    if (m && method === "GET" && m[2] === "/catalog") {
-      const catalog = marketplaceCatalog(m[1]!);
-      return "error" in catalog ? json(res, 404, catalog) : json(res, 200, { plugins: catalog });
-    }
-    if (m && method === "POST" && m[2] === "/refresh") {
-      const refreshed = await refreshMarketplace(m[1]!);
-      return "error" in refreshed ? json(res, 422, refreshed) : json(res, 200, { marketplace: refreshed });
-    }
-    if (m && method === "DELETE" && !m[2]) {
-      const removed = removeMarketplace(m[1]!);
-      return "error" in removed ? json(res, 409, removed) : json(res, 200, removed);
-    }
-    if (path === "/api/plugins/install" && method === "POST") {
-      const parsed = z.object({ marketplace: z.string().min(1).max(64), name: z.string().min(1).max(128) }).safeParse(await readBody(req));
-      if (!parsed.success) return json(res, 400, { error: "marketplace and name are required" });
-      const installed = await installPlugin(parsed.data.marketplace, parsed.data.name);
-      return "error" in installed ? json(res, 422, installed) : json(res, 201, { plugin: installed });
-    }
-    if (path === "/api/plugins/access" && method === "PUT") {
-      const parsed = z.object({
-        key: z.string().min(1).max(300),
-        access: z.union([z.literal("off"), z.literal("all"), z.array(z.string().min(1).max(100)).max(500)]),
-      }).safeParse(await readBody(req));
-      if (!parsed.success) return json(res, 400, { error: "access must be \"off\", \"all\" or a list of bot ids" });
-      if (Array.isArray(parsed.data.access) && parsed.data.access.some((id) => !store.bot(id))) {
-        return json(res, 400, { error: "unknown bot" });
-      }
-      const updated = setPluginAccess(parsed.data.key, parsed.data.access);
-      return "error" in updated ? json(res, 404, updated) : json(res, 200, { plugin: updated });
-    }
-    if (path === "/api/plugins/uninstall" && method === "POST") {
-      const parsed = z.object({ key: z.string().min(1).max(300) }).safeParse(await readBody(req));
-      if (!parsed.success) return json(res, 400, { error: "key is required" });
-      const removed = uninstallPlugin(parsed.data.key);
-      return "error" in removed ? json(res, 404, removed) : json(res, 200, removed);
     }
 
     // ── custom MCP servers (a local command or a URL; secrets write-only) ──

@@ -52,7 +52,6 @@ import { DATA_DIR } from "./config.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { LEARN_SOURCE_PREFIX } from "./skill-learn.ts";
 import { librarySkillFilePath, listLibrarySkills, type LibrarySkillListing } from "./skill-library.ts";
-import { pluginSkillsForBot } from "./plugin-marketplace.ts";
 import { workspaceDir } from "./workspace.ts";
 import { isSkillName, parseSkillMd, scanSkillText, SKILL_FILE_MAX_BYTES, type ParsedSkill } from "../shared/skill-md.ts";
 
@@ -1387,21 +1386,13 @@ function composeSkillsSystemPrompt(botId: string, assignedLibrary: readonly stri
   // Reconcile links on every turn. If the workspace copy changed since its
   // review, integrity filtering below removes it from native discovery too.
   syncSkillLinks(botId);
-  const root = workspaceDir(botId);
-  const manifest = readManifest(botId);
-  const enabled = [
-    ...resolveBotSkills(botId, assignedLibrary).filter((skill) => skill.enabled).map((skill) => {
-      const entry = manifest[skill.name];
-      const file = entry ? join(skillTarget(root, skill.name, entry), "SKILL.md") : librarySkillFilePath(skill.name);
-      return { name: skill.name, description: skill.description, file };
-    }),
-    // Plugins granted to this bot (server/plugin-marketplace.ts), read in place.
-    ...pluginSkillsForBot(botId),
-  ];
+  const enabled = resolveBotSkills(botId, assignedLibrary).filter((skill) => skill.enabled);
   if (!enabled.length) {
     loggedIndexOmissions.delete(botId);
     return "";
   }
+  const root = workspaceDir(botId);
+  const manifest = readManifest(botId);
   const lines: string[] = [];
   const intro = "\n\nImported skills:\n";
   const guidance = "Before starting a task one of these covers, read its exact SKILL.md path above with your file tools and follow it. " +
@@ -1413,7 +1404,9 @@ function composeSkillsSystemPrompt(botId: string, assignedLibrary: readonly stri
     intro + (entries.length ? `${entries.join("\n")}\n${guidance}` : "") +
     (omitted ? `${entries.length ? "\n" : ""}${notice(omitted, entries.length)}` : "");
   for (const skill of enabled.slice(0, INDEX_MAX_SKILLS)) {
-    const line = `- ${skill.name}: ${skill.description} Read ${JSON.stringify(skill.file)}.`;
+    const entry = manifest[skill.name];
+    const file = entry ? join(skillTarget(root, skill.name, entry), "SKILL.md") : librarySkillFilePath(skill.name);
+    const line = `- ${skill.name}: ${skill.description} Read ${JSON.stringify(file)}.`;
     if (Buffer.byteLength(block([...lines, line], enabled.length - lines.length - 1), "utf8") > INDEX_MAX_BYTES) break;
     lines.push(line);
   }

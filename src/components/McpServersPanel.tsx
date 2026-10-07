@@ -163,41 +163,10 @@ export function parseMcpOAuthClient(
 
 function probeToolsLabel(tools: ProbeResult["tools"]): string {
   if (!tools?.length) return t("mcp.probe.noTools");
-  return tools.length === 1 ? t("mcp.probe.toolsOne") : t("mcp.probe.toolsMany", { count: tools.length });
-}
-
-/** Every tool a tested server advertises, one per line with its own
- * description. Long gateways get a filter so the list stays usable. */
-function McpToolList({ server, tools }: { server: string; tools: NonNullable<ProbeResult["tools"]> }) {
-  const [query, setQuery] = useState("");
-  const needle = query.trim().toLowerCase();
-  const shown = needle
-    ? tools.filter((tool) => tool.name.toLowerCase().includes(needle) || tool.description?.toLowerCase().includes(needle))
-    : tools;
-  return (
-    <div data-mcp-tools={server} className="mt-2 rounded-lg border border-hairline/50">
-      {tools.length > 8 && (
-        <div className="border-b border-hairline/50 p-2">
-          <input
-            type="search"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder={t("mcp.probe.filter")}
-            aria-label={t("mcp.probe.filter")}
-            className="w-full rounded-md bg-control px-2.5 py-1.5 text-[12px] text-ink placeholder:text-ink-secondary focus:outline-none"
-          />
-        </div>
-      )}
-      <ul className="max-h-72 divide-y divide-hairline/40 overflow-y-auto">
-        {shown.map((tool) => (
-          <li key={tool.name} className="px-3 py-2">
-            <div className="break-all font-mono text-[12px] text-ink">{tool.name}</div>
-            {tool.description && <div title={tool.description} className="mt-0.5 line-clamp-2 text-[11.5px] leading-relaxed text-ink-secondary">{tool.description}</div>}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
+  const names = tools.map((tool) => tool.name).join(", ");
+  return tools.length === 1
+    ? t("mcp.probe.toolsOne", { names })
+    : t("mcp.probe.toolsMany", { count: tools.length, names });
 }
 
 function draftFor(server: McpServerListing): McpDraft {
@@ -882,7 +851,6 @@ export function McpServersPanel({ embedded = false }: { embedded?: boolean } = {
                       ) : result.error}
                     </div>
                   )}
-                  {result?.ok && result.tools?.length && signingIn !== server.name ? <McpToolList server={server.name} tools={result.tools} /> : null}
                 </div>
               );
             })}

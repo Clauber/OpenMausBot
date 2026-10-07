@@ -35,8 +35,74 @@ New rooms start on Auto while the decider and its room job are on. Existing
 rooms keep their mode. With Jev off, an Auto room shows a one-line hint and
 answers like lead mode.
 
-Browser clicks, tool selection and where work runs are listed as "Coming
-soon" and have no switch yet.
+The three jobs below (click by description, fewer connected-app tools,
+where work runs) change what a bot sees or does, so each starts off
+until someone switches it on in **Settings → Decision model**. With the
+switch off they cost nothing: no request is built.
+
+**Fewer connected-app tools.** On the API engines that list their own tools
+(Grok, Mistral, MiniMax and OpenAI-compatible), a turn whose connected-app
+and custom MCP tools number more than 20 asks Jev, once per tool, whether
+the message might need it. Each tool is described as "name: description"
+(about 200 characters) beside the message (about 1,500).
+
+- A tool is kept at a probability of at least 0.2, and the 5 most likely
+  are always kept. The rest are not offered this turn, and a call to one is
+  refused like any unknown tool.
+- OpenMausBot's own tools (teammates, the computer, the browser, questions
+  to you) and Composio's search, execute and connection tools are never
+  asked about and never withheld.
+- Past 120 tools (the most one request may carry), the first 120 are asked
+  about and the rest are kept.
+- Engines that run their own CLI (Claude, Codex, ACP, Pi) are not trimmed: they reach connected
+  apps through Composio's search-and-execute tools rather than one tool per
+  action, and listing the per-app tools there would cost a network round
+  trip before every turn.
+
+The question waits for the tool list, so it runs when the engine has
+started its tool servers, within 1.5 seconds. Any failure keeps every tool.
+
+**Where work runs.** For a bot whose Works on is Auto, in a conversation
+that is not pinned to a place, a message you send asks Jev which place
+fits it, choosing only among the places Auto could reach right now: this
+computer, a Local VM this bot already has, and the cloud computer (a VPS that
+is set up, or a Boat for the Computer engine). It is asked only when at least two of them are
+there. The state is the message (about 1,500 characters) and the bot's
+name and description (about 400).
+
+- At a probability of at least 0.7, that place is tried first this turn,
+  through the same Auto mount as always, so its first screen use pins the
+  conversation just as an Auto turn does today. A place that does not
+  attach leaves the usual order to run.
+- Anything less sure keeps the usual Auto order.
+- A pin (yours or an earlier Auto turn's), a bot's own Works on, a team
+  computer, rooms, routines, webhooks and messages from other bots never
+  ask.
+
+The question starts with the turn and is awaited just before the computer
+is mounted, within 1.2 seconds.
+
+**Click by description.** With **Click by description** switched on (it
+starts off), bots using the built-in browser get one more tool,
+`agent_browser_click_text`. A bot names what to click in words ("the blue
+Sign in button", "the Remember me checkbox") instead of reading a snapshot
+and picking a ref. The tool takes a snapshot of the page, offers Jev up to
+255 of its clickable elements (buttons, links, fields, checkboxes and so on,
+each described by its role, label and the section it sits in), and sends
+only the words and the page's address and title as the state.
+
+Jev is also offered "none of these": a target that matches nothing on
+the page, or is too vague to tell ("the thing"), clicks nothing however sure
+Jev is, and the bot gets the likeliest candidates instead.
+
+- If one element comes back with a probability of at least 0.6, it is
+  clicked, and the bot is told what: *Clicked button "Sign in" (Jev 92%)*.
+- Anything less sure, and any failure at all, clicks nothing. The bot gets a
+  short list of the closest elements with their refs and clicks one itself,
+  as it would without Jev.
+
+With the switch off, or no key, the tool is not offered at all. A person
+taking over the browser while Jev decides stops the click.
 
 ## It fails open
 
@@ -74,8 +140,8 @@ The log stays on this machine: workspace backups leave it out.
 - **Cloud Pro:** decisions are included, with no key to paste. With no key of
   the person's own, the Cloud home uses its relay token
   (`OMB_CLOUD_DECIDER_TOKEN`), sent only to the Admin's relay, never to Jev
-  or `baseUrl`, and only for room routing and the key check (other jobs need
-  a key of the person's own). Settings says **Included with your Cloud plan**, and
+  or `baseUrl`, and only for requests that match a job's fixed contract
+  (room routing, the key check, and each job in `server/decider/jobs.ts`). Settings says **Included with your Cloud plan**, and
   the master switch is on until someone switches it off. A key saved here
   always wins; clearing it falls back to the included decisions. See
   [cloud-pro.md](cloud-pro.md), "Included Boat computers, voice and
