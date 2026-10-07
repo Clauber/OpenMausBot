@@ -5,6 +5,8 @@
 // secrets off the launcher's pipe (cloud-secrets-boot.ts).
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { ChatGoals, chatGoalInstructions } from "./chat-goals.ts";
+import { chatGoalCommand, type ChatGoal } from "../shared/chat-goal.ts";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, rmSync, mkdirSync } from "node:fs";
 import { writeFileAtomic } from "./atomic.ts";
@@ -2550,7 +2552,8 @@ const directRequestOwners = new Map<string, {
 // exact provider-turn owner until that completion or explicit failure cleanup.
 type DirectTurnOutcome = { ok: boolean; text: string };
 const directFollowupTurns = new ProviderTurnGenerationRegistry<DirectTurnOutcome>();
-const directFollowupSettlers = new Map<string, { threadId: string; settle?: () => void }>();
+const directFollowupSettlers = new Map<string, { threadId: string; settle?: (outcome: DirectTurnOutcome) => void }>();
+const chatGoalTurnText = new Map<string, string[]>();
 const directCoordinationSettlers = new Map<string, (outcome: DirectTurnOutcome) => void>();
 function settleDirectCoordination(generation: string | undefined, outcome: DirectTurnOutcome) {
   if (!generation) return;
@@ -2568,7 +2571,11 @@ function settleDirectFollowup(generation: string | undefined, outcome: DirectTur
   // Failure/Stop can precede the adapter's terminal event. Quarantine only
   // this generation's bound ids, including after the watchdog frees its slot.
   for (const turnId of directFollowupTurns.deleteGeneration(pending.threadId, generation)) retireProviderTurn(turnId);
-  pending.settle?.();
+  const goalText = chatGoalTurnText.get(generation);
+  pending.settle?.(goalText ? { ...outcome, text: goalText.join("\n") || outcome.text } : outcome);
+  // The main event fold publishes the sanitized final reply after this
+  // subscriber settles the exact provider turn.
+  queueMicrotask(() => chatGoalTurnText.delete(generation));
 }
 // Keep the exact provider/profile settings that own a running conversation.
 // Selecting another thread or changing a default must not retarget its tools.
@@ -2794,7 +2801,8 @@ function requestedTaskBot(botId: string, rawThreadId: unknown): BotRecord {
   return task;
 }
 
-async function interruptDirectThread(botId: string, threadId: string, options?: { preserveComputerResume?: boolean }): Promise<void> {
+async function interruptDirectThread(botId: string, threadId: string, options?: { preserveComputerResume?: boolean; preserveCoordination?: boolean; preserveGoal?: boolean }): Promise<void> {
+  if (!options?.preserveGoal && store.taskByThread(botId, threadId)?.goal?.status === "active") chatGoals.control(botId, threadId, "pause");
   // A parked turn has settled its provider but still owns a future resume.
   // Stop cancels that work too. The parking teardown itself preserves it.
   if (!options?.preserveComputerResume && pendingComputerResumes.delete(threadId)
@@ -2811,7 +2819,7 @@ async function interruptDirectThread(botId: string, threadId: string, options?: 
   // into a stopped chat; assignments that never started are dropped. A
   // teammate already mid-turn keeps its own provider process, finishes, and
   // its result is still recorded here.
-  noteTeammatesLeftRunning(botId, threadId, roomHandoffs.stopAwaitingDirect(threadId));
+  if (!options?.preserveCoordination) noteTeammatesLeftRunning(botId, threadId, roomHandoffs.stopAwaitingDirect(threadId));
   const owner = botForThread(botId, threadId);
   const generation = directTurnGenerationByThread.get(threadId);
   cancelDirectTurnDispatch(botId, threadId);
@@ -3315,16 +3323,16 @@ function checkedModelSelection(
 }
 
 function checkedTaskModelSwitch(current: BotRecord, raw: unknown, updateBotDefault: boolean,
-  resetApprovalToAsk: boolean, requireAvailableModel = false, trusted = false) {
+  resetApprovalToAsk: boolean, requireAvailableModel = false, trusted = false, nextRun = false) {
   if (current.approvalGrant) return { ok: false as const, status: 409, error: "Wait for the approval change to finish before switching models" };
   const checked = checkedModelSelection(raw, {
-    selection: current.modelSelection, busy: threadBusy(current.id, current.threadId),
+    selection: current.modelSelection, busy: !nextRun && threadBusy(current.id, current.threadId),
   }, requireAvailableModel);
   if (!checked.ok) return checked;
   const profile = store.bot(current.id)!;
   if (updateBotDefault) {
     const defaults = checkedModelSelection(checked.selection, {
-      selection: profile.modelSelection, busy: Boolean(activeGroupTurnForBot(current.id)),
+      selection: profile.modelSelection, busy: !nextRun && Boolean(activeGroupTurnForBot(current.id)),
     });
     if (!defaults.ok) return defaults;
   }
@@ -3548,6 +3556,25 @@ const store = new Store(
 const teamComputers = new TeamComputers(join(DATA_DIR, "team-computers.json"), ENVIRONMENT_ID);
 let followupsReady = false;
 const sendSequencer = new SendSequencer();
+const chatGoals = new ChatGoals({
+  suspended: () => !followupsReady,
+  targets: () => store.bots.flatMap(bot => store.tasks(bot.id).flatMap(task => task.goal ? [{ botId: bot.id, threadId: task.threadId, goal: task.goal }] : [])),
+  read: (botId, threadId) => store.taskByThread(botId, threadId)?.goal,
+  save: (botId, threadId, goal) => { store.patchTask(botId, threadId, { goal }); },
+  canRun: (botId, threadId) => followupsReady && Boolean(store.taskByThread(botId, threadId)) &&
+    !store.taskByThread(botId, threadId)?.archivedAt && !threadBusy(botId, threadId) &&
+    !botAtThreadCapacity(botId) && !activeGroupTurnForBot(botId) && !parksBehindCoordination(botId, threadId) &&
+    !hasQueuedSteeredMessages(botId, threadId),
+  run: ({ botId, threadId, goal }) => new Promise((resolve, reject) => {
+    const source = store.activePath(threadId).find(message => message.id === goal.sourceMessageId);
+    if (!source) { reject(new Error("The goal's source message no longer exists.")); return; }
+    void startTurn(botId, `Continue the goal: ${goal.objective}`, { threadId, userMessage: source,
+      cardContinuation: true, chatGoal: goal, onTurnSettled: resolve }).catch(reject);
+  }),
+  changed: ({ threadId, goal }) => {
+    store.appendMessage(threadId, { role: "bot", kind: "text", text: `Goal ${goal.status}: ${goal.detail ?? goal.objective}` });
+  },
+});
 bootSelection = await defaultSelection();
 store.seedIfEmpty();
 hostedModels?.reconcile(store);
@@ -3665,6 +3692,7 @@ function applyPendingApprovalChanges(): void {
 // pending level also lands the moment the store reports that bot idle.
 // Deferred: applying writes the store, which must not re-enter its emit.
 store.onChange((change) => {
+  if (change.type === "bot") chatGoals.drain();
   if (change.type !== "bot" || !pendingApprovalChanges.has(change.botId) || store.bot(change.botId)?.busy) return;
   queueMicrotask(applyPendingApprovalChanges);
 });
@@ -6028,7 +6056,7 @@ bus.subscribe((event: RuntimeEvent) => {
       const owner = directFollowupTurns.complete(event.threadId, event.turnId, outcome);
       if (owner) {
         settleDirectCoordination(owner.generation, outcome);
-        settleDirectFollowup(owner.generation);
+        settleDirectFollowup(owner.generation, outcome);
       }
     }
   } else if (event.type !== "session.exited") watchdog.touch(event.threadId);
@@ -7238,6 +7266,12 @@ bus.subscribe((event: RuntimeEvent) => {
   const coordinatorTurnsForThread = groupGoalCoordinatorTurns.get(event.threadId);
   const ambiguousCoordinatorText = !event.turnId && (coordinatorTurnsForThread?.size ?? 0) > 1;
   const goalCoordinatorTurn = groupGoalCoordinatorTurnForEvent(event);
+  const directGoalText = chatGoalTurnText.get(directTurnGenerationByThread.get(event.threadId) ?? "");
+  if (directGoalText && event.type === "item.completed" && event.itemType === "assistant_text") {
+    directGoalText.push(event.text);
+    return;
+  }
+  if (directGoalText && event.type === "content.delta" && event.streamKind === "assistant_text") return;
   const completedTurnId = event.type === "turn.completed"
     ? groupGoalCompletionTurnId(event.turnId, goalCoordinatorTurn?.turnId)
     : event.turnId;
@@ -7268,7 +7302,9 @@ bus.subscribe((event: RuntimeEvent) => {
     event.streamKind === "assistant_text" &&
     (goalCoordinatorTurn || ambiguousCoordinatorText)
   ) return;
-  const coordinatorVisibleText = goalCoordinatorTurn && !goalCoordinatorTurn.discard && event.type === "turn.completed"
+  const coordinatorVisibleText = directGoalText && event.type === "turn.completed"
+    ? parseGroupGoalDecision(directGoalText.join("\n")).visibleText
+    : goalCoordinatorTurn && !goalCoordinatorTurn.discard && event.type === "turn.completed"
     ? parseGroupGoalDecision(goalCoordinatorTurn.assistantItems.join("\n")).visibleText
     : "";
   if (goalCoordinatorTurn && event.type === "turn.completed") {
@@ -8669,7 +8705,7 @@ function drainQueuedSends() {
     new Promise<void>((resolve, reject) => {
       // The drained turn is booked to whoever sent the first waiting line.
       void startTurn(botId, prompt, {
-        threadId, userMessage, excludeMessageIds: excludeIds, unattended, onTurnSettled: resolve,
+        threadId, userMessage, excludeMessageIds: excludeIds, unattended, onTurnSettled: () => resolve(),
         trigger: queuedTurnTrigger(head),
         besideGroupTurn: sendNowBesideRoom.has(threadId),
       }).catch((err) => {
@@ -8695,6 +8731,7 @@ function drainQueuedSends() {
   // reaches this point, so the aside lane drains on all of them — not
   // just turn.completed.
   drainAsideLane();
+  chatGoals.drain();
 }
 
 /** The aside lane's boundary pass. Invoked at the end of drainQueuedSends, i.e. AFTER the steer drain on purpose:
@@ -8729,7 +8766,7 @@ function drainAsideLane() {
             name: head.aside.fromBotName,
             ...(head.aside.unattended ? { unattended: true } : {}),
           },
-          onTurnSettled: resolve,
+          onTurnSettled: () => resolve(),
         }).catch((err) => {
           store.appendMessage(threadId, {
             role: "bot", kind: "activity",
@@ -8866,6 +8903,24 @@ async function acceptDirectSend(
       }
 
       if (guardedStart) return guardedStart(currentAtStart);
+
+      // Configuration is durable immediately, but the live turn keeps its
+      // captured settings. A person's steer is the boundary that applies a
+      // pending model/effort choice now, even across provider instances.
+      const running = directTurnBots.get(threadId)?.modelSelection;
+      const selected = currentAtStart.modelSelection;
+      if (currentAtStart.busy && running &&
+          (running.instanceId !== selected.instanceId || running.model !== selected.model ||
+           running.effort !== selected.effort || running.variant !== selected.variant)) {
+        const queued = queueSteeredMessage(botId, threadId, text, {
+          replyToId: replyTo?.id, sendId, sender, trigger, via,
+          prompt: promptWithReply(text, replyTo, cfg.profile?.name?.trim() || "User"),
+        });
+        chatGoals.steer(botId, threadId);
+        await interruptDirectThread(botId, threadId, { preserveCoordination: true, preserveGoal: true });
+        drainQueuedSends();
+        return { ok: true as const, queued: true as const, queueId: queued.id, threadId };
+      }
 
       // Claude can accept the message inside its live turn. If the write
       // loses a race with turn settlement, or the engine cannot steer, the
@@ -9317,7 +9372,8 @@ async function startTurn(
     /** Cursor into this bot's ordered startup-only backups. */
     automaticRecoveryIndex?: number;
     /** Queue receipts outlive the dispatch acknowledgment until this exact turn settles. */
-    onTurnSettled?: () => void;
+    onTurnSettled?: (outcome: DirectTurnOutcome) => void;
+    chatGoal?: ChatGoal;
     /** The person chose Send now on a 1:1 message queued behind this bot's
      * room turn: run it beside the room instead of waiting the room out.
      * The room's own next hop for this bot waits for the 1:1 to finish. */
@@ -9513,6 +9569,7 @@ async function startTurn(
   // in the background — boat provisioning can take ~90s and must never
   // hang the HTTP request
   const dispatchClaimId = randomUUID();
+  if (opts?.chatGoal) chatGoalTurnText.set(dispatchClaimId, []);
   // Guest-driven for as long as it runs, wherever it runs (cloudGuestDriven).
   if (guestConfined) guestDrivenTurns.set(threadId, dispatchClaimId);
   const resourceOwner: TurnOwner = { threadId, generation: dispatchClaimId };
@@ -10418,6 +10475,7 @@ async function startTurn(
         throw new DirectTurnSetupCancelled("Coordination access changed before dispatch");
       }
       const prompt = buildSystemPrompt(persona, liveBot?.soul ?? bot.soul ?? "", [
+        { id: "chat-goal", label: "Conversation goal", text: opts?.chatGoal ? chatGoalInstructions(opts.chatGoal) : "" },
         { id: "user-profile", label: "About the user", text: userProfileSystemPrompt(cfg.profile) },
         // first after the soul: the block names agent tools, so it only goes
         // to a turn whose engine actually mounted them (setupMode is already
@@ -10537,7 +10595,7 @@ async function startTurn(
         // This exact queued turn completed before its dispatch ACK arrived.
         const outcome = directFollowupTurns.takeEarlyCompletion(threadId, dispatch.value.turnId);
         if (outcome) settleDirectCoordination(dispatchClaimId, outcome);
-        settleDirectFollowup(dispatchClaimId);
+        settleDirectFollowup(dispatchClaimId, outcome ?? undefined);
       }
       clearDirectTurnDispatch(threadId, dispatchClaimId);
       // dispatched: the rewind is spent, and the old cursors are dead
@@ -21936,6 +21994,41 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const threadId = body.threadId ?? bot.threadId;
       const notYours = cloudGuestSendRefusal(auth, threadId);
       if (notYours) return json(res, 403, { error: notYours });
+      const goalCommand = !guarded ? chatGoalCommand(text) : null;
+      if (goalCommand) {
+        const task = store.taskByThread(bot.id, threadId);
+        if (!task) return json(res, 404, { error: "no such task" });
+        const sendId = parseSendId(body.sendId);
+        const receipt = await sendSequencer.run(sendId ? `goal:${bot.id}:${threadId}:${sendId}` : undefined,
+          sendFingerprint(text), async () => {
+            if (sendId) {
+              const previous = acceptedSendMatch(store.messagesFor(threadId), sendId, text);
+              if (previous.kind === "conflict") throw Object.assign(new Error("sendId already belongs to another message"), { status: 409 });
+              if (previous.kind === "match") return { ok: true, threadId, message: previous.message };
+            }
+            const current = store.taskByThread(bot.id, threadId)?.goal;
+            if (goalCommand.action === "start" && current && ["active", "paused", "blocked"].includes(current.status)) {
+              throw Object.assign(new Error("This chat already has a goal. Use /goal resume or /goal stop before starting another."), { status: 409 });
+            }
+            if (goalCommand.action === "start" || goalCommand.action === "resume") {
+              const refusal = directSendRefusal(bot.id, threadId);
+              if (refusal) throw Object.assign(new Error(String(refusal.body.error)), { status: refusal.status });
+            }
+            let goal = current;
+            if (goalCommand.action !== "start" && goalCommand.action !== "status") {
+              goal = chatGoals.control(bot.id, threadId, goalCommand.action);
+              if (goalCommand.action !== "resume" && current?.status === "active") await interruptDirectThread(bot.id, threadId, { preserveGoal: true });
+            }
+            if (!store.taskByThread(bot.id, threadId)) throw Object.assign(new Error("The target chat no longer exists."), { status: 409 });
+            const message = store.appendMessage(threadId, { role: "user", kind: "text", text, sendId, sender: messageSender(auth) });
+            if (goalCommand.action === "start") goal = chatGoals.start(bot.id, threadId, goalCommand.objective, message.id);
+            store.appendMessage(threadId, { role: "bot", kind: "text", text: goal
+              ? `Goal ${goal.status}: ${goal.objective}\n${goal.turns} run(s).${goal.detail ? ` ${goal.detail}` : ""}`
+              : "No goal in this chat. Use /goal followed by an objective. Controls: /goal status, /goal pause, /goal resume, /goal stop." });
+            return { ok: true, threadId, message };
+          });
+        return json(res, 202, receipt);
+      }
       // Who this message is from, for the ledger. It is captured here and
       // travels with the message: into the turn it starts, or into the queue
       // until it drains. A message steered into someone else's running turn
@@ -22043,6 +22136,16 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // Lift the whole queue atomically: a settle racing this request can
       // drain it as a follow-up, or this request can steer it into the live
       // turn — never both for the same words.
+      const runningSelection = directTurnBots.get(bot.threadId)?.modelSelection;
+      if (runningSelection && threadBusy(bot.id, bot.threadId) &&
+          (runningSelection.instanceId !== bot.modelSelection.instanceId || runningSelection.model !== bot.modelSelection.model ||
+           runningSelection.effort !== bot.modelSelection.effort || runningSelection.variant !== bot.modelSelection.variant)) {
+        if (!isSteeredMessageQueued(bot.id, bot.threadId, m[2])) return json(res, 404, { error: "no such queued message" });
+        chatGoals.steer(bot.id, bot.threadId);
+        await interruptDirectThread(bot.id, bot.threadId, { preserveCoordination: true, preserveGoal: true });
+        drainQueuedSends();
+        return json(res, 200, { ok: true, queued: true, threadId: bot.threadId });
+      }
       const held = holdSteeredQueue(bot.id, bot.threadId, m[2]);
       if (!held) return json(res, 404, { error: "no such queued message" });
       // A live steer has no image side channel. Attachment words wait for a
@@ -22832,7 +22935,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
       if (body.modelSelection !== undefined) {
         if (current.approvalGrant) return json(res, 409, { error: "the bot's approval mode is still being confirmed" });
-        const checked = checkedModelSelection(body.modelSelection, { selection: current.modelSelection, busy: threadBusy(current.id, current.threadId) }, body.requireAvailableModel === true);
+        const checked = checkedModelSelection(body.modelSelection, undefined, body.requireAvailableModel === true);
         if (!checked.ok) return json(res, checked.status, { error: checked.error });
         patch.modelSelection = checked.selection;
       }
@@ -22866,7 +22969,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (patch.modelSelection) {
         const checked = checkedTaskModelSwitch({ ...current,
           ...(patch.approvalMode ? { approvalMode: patch.approvalMode, autoApprove: patch.autoApprove } : {}),
-        }, patch.modelSelection, body.updateBotDefault === true, body.resetApprovalToAsk === true, body.requireAvailableModel === true);
+        }, patch.modelSelection, body.updateBotDefault === true, body.resetApprovalToAsk === true, body.requireAvailableModel === true, false, true);
         if (!checked.ok) return json(res, checked.status, { error: checked.error });
       }
       const task = patch.modelSelection
