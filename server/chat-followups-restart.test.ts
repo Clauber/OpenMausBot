@@ -229,12 +229,14 @@ it("survives a real server crash: queued sends keep receipts, cancellation and u
       expect.objectContaining({ kind: "activity", tool: { name: expect.stringContaining("Review the result"), ok: false } }),
     ]);
     expect((await api("POST", `/api/bots/${uncertain.id}/messages`, uncertainBody, 202)).message.queueId).toBe(claimed.queueId);
-    expect(prompts(later.threadId)).toHaveLength(1);
+    await runControlOmb(["wait", "--bot", uncertain.id, "--task", later.threadId, "--url", url]);
+    expect(prompts(later.threadId)).toHaveLength(2);
+    expect(JSON.stringify(prompts(later.threadId)[1])).toContain("Continue the interrupted work");
     // A second boot must not duplicate recovery notices or replay a claim.
     await waitForExit(restarted, { signal: "SIGTERM" });
     await restart();
     expect((await messages(later.threadId)).filter((message) => message.queueId === claimed.queueId)).toEqual(interrupted.filter((message) => message.queueId === claimed.queueId));
-    expect(prompts(later.threadId)).toHaveLength(1);
+    expect(prompts(later.threadId)).toHaveLength(2);
     evidence.push({ settled, channelSettled, journal: journal(), recoveredBot: await messages(bot.threadId), recoveredChannel: await messages(channel.threadId), interrupted });
   } finally {
     await waitForExit(restarted, { signal: "SIGTERM" });
