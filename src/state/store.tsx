@@ -942,7 +942,7 @@ export interface AppState {
   pluginsOpen: boolean;
   /** Which tab the Plugins panel opens on; "mcp" when a bot's tools
    * sent the user there to add a server. */
-  pluginsSurface: "apps" | "mcp";
+  pluginsSurface: "apps" | "mcp" | "plugins";
   /** The Triggers pop-up (webhooks, as a sentence: when this happens, that
    * bot should…). */
   triggersOpen: boolean;
@@ -1237,7 +1237,7 @@ export type Action =
   | { type: "notice"; notice: AppState["notice"] }
   | { type: "revealThread"; threadId: string }
   | { type: "toggleSettings"; open?: boolean; section?: BotSettingsSection; botId?: string }
-  | { type: "togglePlugins"; open?: boolean; surface?: "apps" | "mcp" }
+  | { type: "togglePlugins"; open?: boolean; surface?: "apps" | "mcp" | "plugins" }
   | { type: "toggleTriggers"; open?: boolean }
   | { type: "toggleNewBot"; open?: boolean }
   | { type: "toggleComputer"; open?: boolean }

@@ -510,6 +510,20 @@ import {
 } from "./skill-library.ts";
 import type { SkillsLibrarySkillWire } from "../shared/wire.ts";
 import { runSkillsLibraryBootSweep } from "./skills-library-migration.ts";
+import {
+  addMarketplace,
+  forgetBotPluginAccess,
+  harnessMarketplaces,
+  installPlugin,
+  listMarketplaces,
+  listPlugins,
+  marketplaceCatalog,
+  pluginMcpServersForBot,
+  refreshMarketplace,
+  removeMarketplace,
+  setPluginAccess,
+  uninstallPlugin,
+} from "./plugin-marketplace.ts";
 import { installedPlaybookInstructions } from "./installed-playbooks.ts";
 import { createBotPackageExport, createLibraryPackageExport, createTeamPackageExport, picture as sharedPicture, TeamExportError, type ExportablePackageSkill, type TeamExportSkip } from "./package-export.ts";
 import { importPackageDocument, importTeamManifest, PackageImportError, type PackageImportDeps, type PackageImportResult } from "./package-import.ts";
@@ -11585,6 +11599,7 @@ async function deleteBotWithLifecycle(botId: string, revalidate: () => void = ()
           routines!.disableForBot(bot.id);
           webhooks.disableForBot(bot.id);
           calendarCalls!.removeBot(bot.id);
+          forgetBotPluginAccess(bot.id);
           browserLive.closeForBot(bot.id);
           await forgetTemporaryBrowser(bot.id);
         } catch (error) {
@@ -15285,7 +15300,14 @@ function mcpServerBody(body: unknown): Record<string, unknown> {
 /** Configured MCP servers that may reach this bot's engine. While enrolled,
  * the organisation's allow-list filters them; config.json is never changed. */
 function engineMcpServers(bot: BotRecord) {
-  return withoutPendingSignIn(managedPolicy.filterMcp(customMcpServers(cfg, bot.mcpServers)), mcpOAuth);
+  // Plugins granted to this bot add their servers after the person's own,
+  // which keep their names; the org allow-list then filters both alike.
+  const withPlugins = {
+    ...cfg,
+    mcpServers: { ...pluginMcpServersForBot(bot.id, Object.keys(cfg.mcpServers ?? {})), ...cfg.mcpServers },
+  };
+  const only = bot.mcpServers ? [...bot.mcpServers, ...Object.keys(withPlugins.mcpServers).filter((name) => !(name in (cfg.mcpServers ?? {})))] : undefined;
+  return withoutPendingSignIn(managedPolicy.filterMcp(customMcpServers(withPlugins, only)), mcpOAuth);
 }
 
 function persistMcpServers(next: Record<string, unknown>): void {
@@ -24035,6 +24057,58 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         providerInstancesChanging.delete(instanceId);
         providerConfigBusy = false;
       }
+    }
+
+    // ── plugin marketplaces (server/plugin-marketplace.ts) ────────────────
+    if (path === "/api/plugins" && method === "GET") {
+      return json(res, 200, {
+        plugins: listPlugins(),
+        marketplaces: listMarketplaces(),
+        suggestedMarketplaces: harnessMarketplaces(),
+      });
+    }
+    if (path === "/api/plugins/marketplaces" && method === "POST") {
+      const parsed = z.object({ source: z.string().min(1).max(2000) }).safeParse(await readBody(req));
+      if (!parsed.success) return json(res, 400, { error: "source is required" });
+      const added = await addMarketplace(parsed.data.source);
+      return "error" in added ? json(res, 422, added) : json(res, 201, { marketplace: added });
+    }
+    m = path.match(/^\/api\/plugins\/marketplaces\/([a-z0-9][a-z0-9._-]{0,63})(\/catalog|\/refresh)?$/);
+    if (m && method === "GET" && m[2] === "/catalog") {
+      const catalog = marketplaceCatalog(m[1]!);
+      return "error" in catalog ? json(res, 404, catalog) : json(res, 200, { plugins: catalog });
+    }
+    if (m && method === "POST" && m[2] === "/refresh") {
+      const refreshed = await refreshMarketplace(m[1]!);
+      return "error" in refreshed ? json(res, 422, refreshed) : json(res, 200, { marketplace: refreshed });
+    }
+    if (m && method === "DELETE" && !m[2]) {
+      const removed = removeMarketplace(m[1]!);
+      return "error" in removed ? json(res, 409, removed) : json(res, 200, removed);
+    }
+    if (path === "/api/plugins/install" && method === "POST") {
+      const parsed = z.object({ marketplace: z.string().min(1).max(64), name: z.string().min(1).max(128) }).safeParse(await readBody(req));
+      if (!parsed.success) return json(res, 400, { error: "marketplace and name are required" });
+      const installed = await installPlugin(parsed.data.marketplace, parsed.data.name);
+      return "error" in installed ? json(res, 422, installed) : json(res, 201, { plugin: installed });
+    }
+    if (path === "/api/plugins/access" && method === "PUT") {
+      const parsed = z.object({
+        key: z.string().min(1).max(300),
+        access: z.union([z.literal("off"), z.literal("all"), z.array(z.string().min(1).max(100)).max(500)]),
+      }).safeParse(await readBody(req));
+      if (!parsed.success) return json(res, 400, { error: "access must be \"off\", \"all\" or a list of bot ids" });
+      if (Array.isArray(parsed.data.access) && parsed.data.access.some((id) => !store.bot(id))) {
+        return json(res, 400, { error: "unknown bot" });
+      }
+      const updated = setPluginAccess(parsed.data.key, parsed.data.access);
+      return "error" in updated ? json(res, 404, updated) : json(res, 200, { plugin: updated });
+    }
+    if (path === "/api/plugins/uninstall" && method === "POST") {
+      const parsed = z.object({ key: z.string().min(1).max(300) }).safeParse(await readBody(req));
+      if (!parsed.success) return json(res, 400, { error: "key is required" });
+      const removed = uninstallPlugin(parsed.data.key);
+      return "error" in removed ? json(res, 404, removed) : json(res, 200, removed);
     }
 
     // ── custom MCP servers (a local command or a URL; secrets write-only) ──
