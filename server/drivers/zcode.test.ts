@@ -217,8 +217,15 @@ describe("ZcodeDriver turns (fake app-server)", () => {
     const deltas = recorder.events.filter((event) => event.type === "content.delta");
     expect(deltas.some((event) => event.streamKind === "reasoning_text" && event.delta === "thinking ")).toBe(true);
     expect(deltas.filter((event) => event.streamKind === "assistant_text").map((event) => event.delta).join("")).toBe("Hello");
-    expect(recorder.events).toContainEqual(expect.objectContaining({ type: "item.started", itemType: "tool", itemId: "call_1", title: "Bash" }));
+    // One chip per call, with the input the model stream carried (the
+    // scheduled update omits it), and a failed call settles as failed.
+    const started = recorder.events.filter((event) => event.type === "item.started" && event.itemType === "tool");
+    expect(started.map((event) => event.type === "item.started" && event.itemId)).toEqual(["call_1", "call_2"]);
+    expect(started[0]).toMatchObject({ title: "Bash", summary: "ls" });
+    expect(started[0].type === "item.started" && started[0].input).toContain("/tmp");
+    expect(started[1].type === "item.started" && started[1].input).toContain("/tmp/missing");
     expect(recorder.events).toContainEqual(expect.objectContaining({ type: "item.completed", itemType: "tool", itemId: "call_1", ok: true }));
+    expect(recorder.events).toContainEqual(expect.objectContaining({ type: "item.completed", itemType: "tool", itemId: "call_2", ok: false, output: expect.stringContaining("no such file") }));
     expect(recorder.events).toContainEqual(expect.objectContaining({ type: "item.completed", itemType: "assistant_text", text: "Hello" }));
   });
 
