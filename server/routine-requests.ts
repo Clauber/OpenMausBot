@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { cronScheduleLabel } from "../shared/cron-label.ts";
 import { normalizeCronSchedule, nextCronRuns } from "../shared/routine-schedule.ts";
+import { ROUTINE_DEFAULT_RESULTS_THREAD, ROUTINE_OWN_RESULTS_THREAD } from "../shared/routines.ts";
 import { newId } from "./contracts.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { parseJson, schemaIssue, type JsonObject, type JsonValue } from "./schema.ts";
@@ -86,6 +87,7 @@ const routineToolDefinitionSchema = z.object({
   timeoutMinutes: z.number().nullable().optional(),
   continuity: z.boolean().optional(),
   overlap: z.enum(["skip", "queue"]).optional(),
+  results: z.enum(["main", "own"]).optional(),
 }).strict();
 
 const routineToolChangesSchema = routineToolDefinitionSchema
@@ -213,6 +215,7 @@ const storedDefinitionSchema = z.object({
   timeoutMinutes: z.number().int().min(5).max(240).optional(),
   continuity: z.boolean().optional(),
   overlap: z.enum(["skip", "queue"]).optional(),
+  results: z.enum(["main", "own"]).optional(),
 }).strict();
 const storedChangesSchema = storedDefinitionSchema
   .omit({ schedule: true, timeoutMinutes: true })
@@ -562,6 +565,7 @@ function normalizeDefinition(input: RoutineToolDefinitionInput, now: number): Ro
     ...(timeoutMinutes == null ? {} : { timeoutMinutes }),
     ...(input.continuity === true ? { continuity: true } : {}),
     ...(input.overlap === "queue" ? { overlap: "queue" as const } : {}),
+    ...(input.results === "own" ? { results: "own" as const } : {}),
   };
 }
 
@@ -575,6 +579,7 @@ function normalizeChanges(input: RoutineToolChangesInput, now: number): RoutineR
   if (input.timeoutMinutes !== undefined) changes.timeoutMinutes = timeout(input.timeoutMinutes);
   if (input.continuity !== undefined) changes.continuity = input.continuity === true;
   if (input.overlap !== undefined) changes.overlap = input.overlap;
+  if (input.results !== undefined) changes.results = input.results;
   return changes;
 }
 
@@ -884,6 +889,9 @@ function cardCopy(
       `Run limit: ${definition.timeoutMinutes === undefined ? "No limit" : `${definition.timeoutMinutes} minutes`}`,
       `Continuity: ${definition.continuity ? "Carries the previous run's report into the next run" : "Each run starts fresh"}`,
       `While busy: ${definition.overlap === "queue" ? "Queue one scheduled run; skip further occurrences until it starts" : "Skip overlapping scheduled occurrences"}`,
+      ...(definition.results
+        ? [`Results: ${definition.results === "own" ? "Posted to a conversation of the routine's own" : "Posted where it reports by default (the chat that set it up)"}`]
+        : []),
       // Last before the instructions: the one sentence that says what
       // confirming actually does, in the reader's terms.
       ...(operation.action === "create" || operation.action === "update"
@@ -910,6 +918,7 @@ function inputFromDefinition(definition: RoutineRequestDefinition, botId: string
     ...(definition.timeoutMinutes === undefined ? {} : { timeoutMinutes: definition.timeoutMinutes }),
     ...(definition.continuity ? { continuity: true } : {}),
     ...(definition.overlap === "queue" ? { overlap: "queue" as const } : {}),
+    ...(definition.results === "own" ? { resultsThreadId: ROUTINE_OWN_RESULTS_THREAD } : {}),
   };
 }
 
@@ -927,6 +936,7 @@ function updateFromChanges(
   if (changes.timeoutMinutes !== undefined) patch.timeoutMinutes = changes.timeoutMinutes;
   if (changes.continuity !== undefined) patch.continuity = changes.continuity;
   if (changes.overlap !== undefined) patch.overlap = changes.overlap;
+  if (changes.results !== undefined) patch.resultsThreadId = changes.results === "own" ? ROUTINE_OWN_RESULTS_THREAD : ROUTINE_DEFAULT_RESULTS_THREAD;
   return patch;
 }
 
