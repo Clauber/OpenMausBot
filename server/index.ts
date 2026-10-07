@@ -6,6 +6,7 @@
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { ChatGoals, chatGoalInstructions } from "./chat-goals.ts";
+import { TurnRecovery } from "./turn-recovery.ts";
 import { chatGoalCommand, type ChatGoal } from "../shared/chat-goal.ts";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, rmSync, mkdirSync } from "node:fs";
@@ -255,7 +256,7 @@ import type { GroupGoalRunCardData, GroupGoalRunStatus } from "../shared/group-g
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { openCodeProviderKeysAllowed, setOpenCodeOwnProviderKeys, setOpenCodeProviderKeyPolicy } from "./drivers/acp/opencode-go.ts";
 import { getOrCreateChannel, mirrorActivity, mirrorExchange, mirrorReply, type CommsBus } from "./comms-visibility.ts";
-import { readMessageText, recallMessages, recentMessages, searchMessagesAsync, closeMessageSearch, closeMessageDb, chatFollowups, cancelledChatFollowup, settleChatFollowups, threadsReferencing } from "./message-db.ts";
+import { type RunningTurn, readMessageText, recallMessages, recentMessages, searchMessagesAsync, closeMessageSearch, closeMessageDb, chatFollowups, cancelledChatFollowup, settleChatFollowups, threadsReferencing } from "./message-db.ts";
 import { briefCrossingLabel, claimRecallCrossings, recallCrossingLabel } from "./recall-disclosure.ts";
 import { parseSince, parseUntil, recentWork, recentWorkPrompt, turnOutcomeLine } from "./recent-work.ts";
 import { chiefForBot, INCIDENTS_THREAD_TITLE, IncidentLedger, incidentChip, incidentText, type Incident, type IncidentKind } from "./incidents.ts";
@@ -2571,6 +2572,7 @@ function settleDirectFollowup(generation: string | undefined, outcome: DirectTur
   // Failure/Stop can precede the adapter's terminal event. Quarantine only
   // this generation's bound ids, including after the watchdog frees its slot.
   for (const turnId of directFollowupTurns.deleteGeneration(pending.threadId, generation)) retireProviderTurn(turnId);
+  if (followupsReady) turnRecovery.finish(pending.threadId, generation);
   const goalText = chatGoalTurnText.get(generation);
   pending.settle?.(goalText ? { ...outcome, text: goalText.join("\n") || outcome.text } : outcome);
   // The main event fold publishes the sanitized final reply after this
@@ -2802,6 +2804,7 @@ function requestedTaskBot(botId: string, rawThreadId: unknown): BotRecord {
 }
 
 async function interruptDirectThread(botId: string, threadId: string, options?: { preserveComputerResume?: boolean; preserveCoordination?: boolean; preserveGoal?: boolean }): Promise<void> {
+  if (followupsReady) turnRecovery.cancel(threadId);
   if (!options?.preserveGoal && store.taskByThread(botId, threadId)?.goal?.status === "active") chatGoals.control(botId, threadId, "pause");
   // A parked turn has settled its provider but still owns a future resume.
   // Stop cancels that work too. The parking teardown itself preserves it.
@@ -3555,6 +3558,53 @@ const store = new Store(
 );
 const teamComputers = new TeamComputers(join(DATA_DIR, "team-computers.json"), ENVIRONMENT_ID);
 let followupsReady = false;
+const turnRecovery = new TurnRecovery();
+function drainRestartRecovery(): void {
+  if (!followupsReady) return;
+  turnRecovery.drain(turn => {
+    if (!followupsReady) return false;
+    const source = store.activePath(turn.threadId).find(message => message.id === turn.sourceMessageId);
+    const routine = turn.routineRunId ? routines?.runForThread(turn.threadId) : undefined;
+    if (!source || (turn.routineRunId && (routine?.id !== turn.routineRunId || !["running", "waiting"].includes(routine.status)))) {
+      turnRecovery.cancel(turn.threadId);
+      return true;
+    }
+    if (turn.kind === "bot") {
+      const bot = store.bot(turn.ownerId), task = store.taskByThread(turn.ownerId, turn.threadId);
+      if (!bot || bot.hidden || !task || task.archivedAt || task.closedBy ||
+          (turn.chatGoalId && (task.goal?.id !== turn.chatGoalId || task.goal.status !== "active"))) {
+        turnRecovery.cancel(turn.threadId);
+        return true;
+      }
+      // Persistent goals own their own next dispatch and consume the same
+      // recovery nudge there; a second runner would duplicate their work.
+      if (task.goal?.status === "active") { chatGoals.drain(); return false; }
+      if (!canAdmitDirectTurn(bot.id, turn.threadId) || hasQueuedSteeredMessages(bot.id, turn.threadId) || parksBehindCoordination(bot.id, turn.threadId)) return false;
+      return startTurn(bot.id, "Continue the interrupted work from the saved conversation. Check what already completed before taking further action.", {
+        threadId: turn.threadId, cardContinuation: true, userMessage: source,
+        requestMessageId: source.role === "user" ? source.id : undefined, unattended: turn.unattended, commsDepth: turn.commsDepth,
+      }).then(() => true);
+    }
+    const group = store.group(turn.ownerId), task = store.groupTaskByThread(turn.ownerId, turn.threadId);
+    if (!group || (!group.dm && !task)) {
+      turnRecovery.cancel(turn.threadId);
+      return true;
+    }
+    if (groupIsWorking(group) || group.memberIds.some(id => store.bot(id)?.busy)) return false;
+    startGroupTurn(group.id, source.text ?? "Continue the interrupted work", undefined, undefined, turn.channelMode, undefined, {
+      threadId: turn.threadId, recoveryMessage: source, recoveryResponderIds: turn.responderBotIds,
+      goalCoordinatorBotId: turn.goalCoordinatorBotId, goalRunId: turn.goalRunId,
+    });
+    // A removed responder cannot leave an endless restart attempt.
+    if (turnRecovery.pending.has(turn.threadId)) turnRecovery.cancel(turn.threadId);
+    return true;
+  }, (turn, error) => {
+    const detail = error instanceof Error ? error.message : String(error);
+    store.appendMessage(turn.threadId, { role: "bot", kind: "activity",
+      tool: { name: `Restart recovery could not start: ${detail}. Send a message after resolving this to continue.`, ok: false } });
+    if (turn.routineRunId) routines?.failThread(turn.threadId, detail);
+  });
+}
 const sendSequencer = new SendSequencer();
 const chatGoals = new ChatGoals({
   suspended: () => !followupsReady,
@@ -4402,6 +4452,7 @@ const publicBotQueuedMessages = () => queuedSteerSnapshot((botId, threadId) => B
 
 type GroupTurnOperation = {
   id: string;
+  serviceRecovery?: string;
   threadId: string;
   botIds: Set<string>;
   cancelled: boolean;
@@ -4914,8 +4965,9 @@ function beginGroupTurnOperation(
   groupId: string,
   threadId: string,
   botIds: Iterable<string> = [],
+  recovery: Partial<Pick<RunningTurn, "sourceMessageId" | "channelMode" | "goalCoordinatorBotId" | "goalRunId" | "responderBotIds">> = {},
 ): GroupTurnOperation {
-  const operation = {
+  const operation: GroupTurnOperation = {
     id: randomUUID(),
     threadId,
     botIds: new Set(botIds),
@@ -4923,6 +4975,10 @@ function beginGroupTurnOperation(
     cancellation: new AbortController(),
     providerHandshakePending: false,
   };
+  const source = store.activePath(threadId).findLast(message => message.kind === "text");
+  if (source) operation.serviceRecovery = turnRecovery.admit({ kind: "group", ownerId: groupId, threadId,
+    generation: operation.id, sourceMessageId: source.id, startedAt: Date.now(),
+    routineRunId: activeRoutineRunForThread(threadId)?.id, responderBotIds: [...operation.botIds], ...recovery });
   const operations = groupTurnOperations.get(groupId) ?? new Set<GroupTurnOperation>();
   operations.add(operation);
   groupTurnOperations.set(groupId, operations);
@@ -4932,6 +4988,7 @@ function beginGroupTurnOperation(
 }
 
 function finishGroupTurnOperation(groupId: string, operation: GroupTurnOperation) {
+  if (followupsReady) turnRecovery.finish(operation.threadId, operation.id);
   if (operation.goalRun && !operation.goalRun.finished) {
     finishGroupGoalRun(groupId, operation, "failed", "The team run ended before the lead reported an outcome.");
   }
@@ -4961,7 +5018,7 @@ function finishGroupGoalRun(
   detail: string,
 ): void {
   const run = operation.goalRun;
-  if (!run || run.finished) return;
+  if (!followupsReady || !run || run.finished) return;
   run.finished = true;
   const finishedAt = Date.now();
   const safeDetail = redactSecretsInText(detail.trim()).slice(0, 500);
@@ -5221,6 +5278,7 @@ function cancelGroupTurnOperations(
 ) {
   pendingComputerResumes.delete(threadId);
   cancelTeamSetupResumesForThread(threadId);
+  if (followupsReady) turnRecovery.cancel(threadId);
   roomHandoffs.cancelRoom(groupId, threadId);
   for (const operation of groupTurnOperations.get(groupId) ?? []) {
     if (operation.threadId !== threadId) continue;
@@ -7329,7 +7387,7 @@ bus.subscribe((event: RuntimeEvent) => {
     const publicEvent = event.type === "request.opened" ? { ...event, command: undefined } : event;
     broadcast({ kind: "runtime", event: publicEvent });
   }
-  const routineRun = privateImageEvent ? null : (routines?.handleRuntimeEvent(event) ?? null);
+  const routineRun = privateImageEvent || !followupsReady ? null : (routines?.handleRuntimeEvent(event) ?? null);
   const ownerBot = store.botByThread(event.threadId);
   const bot = ownerBot ? botForThread(ownerBot.id, event.threadId) ?? undefined : undefined;
   const group = bot ? undefined : store.groupByThread(event.threadId);
@@ -8731,6 +8789,7 @@ function drainQueuedSends() {
   // reaches this point, so the aside lane drains on all of them — not
   // just turn.completed.
   drainAsideLane();
+  drainRestartRecovery();
   chatGoals.drain();
 }
 
@@ -9398,6 +9457,12 @@ async function startTurn(
       },
     };
   }
+  // Provider disposal during shutdown is an interruption, not a routine
+  // failure. Leave its durable run available for the next process.
+  if (opts?.onDispatchError) {
+    const onDispatchError = opts.onDispatchError;
+    opts = { ...opts, onDispatchError: message => { if (followupsReady) onDispatchError(message); } };
+  }
   const bot = store.projectBotForTask(botId, threadId);
   if (!bot) throw Object.assign(new Error("no such task"), { status: 404 });
   // Routines and legacy peer delivery already have their own completion
@@ -9569,6 +9634,12 @@ async function startTurn(
   // in the background — boat provisioning can take ~90s and must never
   // hang the HTTP request
   const dispatchClaimId = randomUUID();
+  const serviceRecovery = turnRecovery.admit({ kind: "bot", ownerId: bot.id, threadId,
+    generation: dispatchClaimId, sourceMessageId: store.activePath(threadId).findLast(message => message.role === "user" && message.kind === "text")?.id ?? store.activePath(threadId).findLast(message => message.kind === "text")?.id ?? userMessage.id,
+    startedAt: Date.now(), routineRunId: activeRoutineRunForThread(threadId)?.id,
+    unattended: opts?.unattended, commsDepth: opts?.commsDepth, chatGoalId: opts?.chatGoal?.id });
+  if (serviceRecovery) store.appendMessage(threadId, { role: "bot", kind: "activity",
+    tool: { name: "LEGION restarted. Continuing interrupted work from the saved conversation.", ok: true } });
   if (opts?.chatGoal) chatGoalTurnText.set(dispatchClaimId, []);
   // Guest-driven for as long as it runs, wherever it runs (cloudGuestDriven).
   if (guestConfined) guestDrivenTurns.set(threadId, dispatchClaimId);
@@ -10475,6 +10546,7 @@ async function startTurn(
         throw new DirectTurnSetupCancelled("Coordination access changed before dispatch");
       }
       const prompt = buildSystemPrompt(persona, liveBot?.soul ?? bot.soul ?? "", [
+        { id: "service-recovery", label: "Service restart", text: serviceRecovery },
         { id: "chat-goal", label: "Conversation goal", text: opts?.chatGoal ? chatGoalInstructions(opts.chatGoal) : "" },
         { id: "user-profile", label: "About the user", text: userProfileSystemPrompt(cfg.profile) },
         // first after the soul: the block names agent tools, so it only goes
@@ -11024,6 +11096,7 @@ _loadPending();
 
 routines = new RoutineManager({
   emit: broadcast,
+  recoverRunning: run => Boolean(run.threadId && turnRecovery.pending.get(run.threadId)?.routineRunId === run.id),
   hasPendingDelegations: (threadId) => pendingThreads().includes(threadId) ||
     [...delegationWatch.values()].some((watch) => watch.sourceThreadId === threadId) ||
     pendingDelegationWakes.has(threadId),
@@ -11113,6 +11186,7 @@ routines = new RoutineManager({
     });
   },
   interruptTurn: async (botId, threadId) => {
+    if (followupsReady) turnRecovery.cancel(threadId);
     const bot = botForThread(botId, threadId);
     pendingDelegationWakes.delete(threadId);
     discardDelegations(commsBus, threadId);
@@ -11244,7 +11318,7 @@ store.reconcileInterruptedGroupGoals((runId, threadId) => {
         : "OpenMausBot restarted before this scheduled team goal finished."
   );
   return { status, detail, finishedAt: run.finishedAt ?? groupGoalRecoveryAt };
-});
+}, undefined, groupGoalRecoveryAt, (runId, threadId) => turnRecovery.pending.get(threadId)?.goalRunId === runId);
 calendarCalls = new CalendarCallManager({
   botExists: (botId) => Boolean(store.bot(botId)),
   onDue: deliverCalendarCall,
@@ -12762,6 +12836,7 @@ async function runGroupMemberTurn(
     }
   }
   const roomSystem = buildSystemPrompt(system, store.bot(bot.id)?.soul ?? bot.soul ?? "", [
+    { id: "service-recovery", label: "Service restart", text: operation?.serviceRecovery ?? "" },
     { id: "user-profile", label: "About the user", text: userProfileSystemPrompt(cfg.profile) },
     { id: "files", label: "File locations", text: workspace ? workspaceLocationsPrompt(bot.id, cwd, readyBot.cwd) : "" },
     { id: "mcp", label: "MCP servers", text: customMcpPrompt(Object.keys(integrations.custom ?? {})) },
@@ -13525,6 +13600,9 @@ async function runGroupGoalOperation(args: {
 }
 
 type StartGroupTurnOptions = {
+  /** Restart continues the existing request without appending it again. */
+  recoveryMessage?: Message;
+  recoveryResponderIds?: string[];
   /** Run against an existing background room task instead of the active UI task. */
   threadId?: string;
   /** Internal routine goals choose their lead explicitly rather than by @mention/default. */
@@ -13580,7 +13658,7 @@ function startGroupTurn(
   }
   // An Auto room may ask the decision model who answers. It reads the room
   // as it stood before this message, which is appended just below.
-  const autoCandidate = !group.dm && channelMode === "chat" && group.defaultResponder.kind === "auto" &&
+  const autoCandidate = !options.recoveryResponderIds?.length && !group.dm && channelMode === "chat" && group.defaultResponder.kind === "auto" &&
     deciderReady(cfg, "roomRouting");
   const historyBeforeSend = autoCandidate
     ? store.messagesFor(threadId).filter((m) => m.kind === "text" && m.text).slice(-GROUP_CONTEXT_MESSAGES)
@@ -13589,7 +13667,7 @@ function startGroupTurn(
   // chips and sendId receipts stay per-item); the LAST line is the turn's
   // user message, exactly like the 1:1 drain's userMessage.
   const queuedGroup = options.queuedGroup;
-  const message = queuedGroup && queuedGroup.length > 0
+  const message = options.recoveryMessage ?? (queuedGroup && queuedGroup.length > 0
     ? (() => {
         for (const item of queuedGroup.slice(0, -1)) {
           store.appendMessage(threadId, {
@@ -13627,7 +13705,7 @@ function startGroupTurn(
         queueId,
         via: options.via,
         sender: options.sender,
-      });
+      }));
   // Admitted (see startTurn): the room's speakers are booked to this sender.
   if (options.trigger) turnTriggers.set(threadId, options.trigger);
   const titled = group.dm ? null : store.titleGroupTaskFromFirstMessage(group.id, text, threadId);
@@ -13645,7 +13723,9 @@ function startGroupTurn(
       },
     });
   }
-  let responders = roomResponders(text, members, group.defaultResponder);
+  let responders = options.recoveryResponderIds?.length
+    ? availableMembers.filter(member => options.recoveryResponderIds!.includes(member.id))
+    : roomResponders(text, members, group.defaultResponder);
   const explicitlyMentionedLead = roomResponders(text, availableMembers, { kind: "mentions" })[0];
   const goalCoordinator = channelMode === "goal"
     ? requestedGoalCoordinator ?? explicitlyMentionedLead ?? selectGroupGoalCoordinator(availableMembers, group.defaultResponder)
@@ -13704,10 +13784,13 @@ function startGroupTurn(
   // An Auto round titles with whoever the decision picks, once it has.
   if (!autoRoute) startTitle(goalCoordinator ?? responders[0]!);
 
+  const goalRunId = goalCoordinator ? options.goalRunId?.trim() || `goal-${Date.now().toString(36)}-${randomUUID()}` : undefined;
   const operation = beginGroupTurnOperation(
     groupId,
     threadId,
     goalCoordinator || autoRoute ? [] : responders.map((responder) => responder.id),
+    { sourceMessageId: message.id, channelMode, goalCoordinatorBotId: goalCoordinator?.id,
+      goalRunId, responderBotIds: responders.map(bot => bot.id) },
   );
   // Asked now, in parallel with any earlier room work still queued: the
   // answer is waited for only when this round's turn comes up. It never
@@ -13723,10 +13806,11 @@ function startGroupTurn(
     operation.queuedQueueIds = queuedGroup.map((item) => item.id);
   }
   if (goalCoordinator) {
-    const runId = options.goalRunId?.trim() || `goal-${Date.now().toString(36)}-${randomUUID()}`;
+    const runId = goalRunId!;
     const startedAt = Date.now();
     const detail = `${goalCoordinator.name} is coordinating this goal.`;
-    const card = store.appendMessage(threadId, {
+    const previousCard = options.recoveryMessage ? store.messagesFor(threadId).findLast(row => row.goalRun?.runId === runId) : undefined;
+    const card = previousCard ?? store.appendMessage(threadId, {
       role: "bot",
       kind: "goal.run",
       text: `Goal in progress: ${detail}`,
@@ -13749,12 +13833,14 @@ function startGroupTurn(
       goal: text,
       coordinatorBotId: goalCoordinator.id,
       coordinatorName: goalCoordinator.name,
-      turnCount: 0,
-      maxTurns: GROUP_GOAL_MAX_TURNS,
-      startedAt,
+      turnCount: previousCard?.goalRun?.turnCount ?? 0,
+      maxTurns: previousCard?.goalRun?.maxTurns ?? GROUP_GOAL_MAX_TURNS,
+      startedAt: previousCard?.goalRun?.startedAt ?? startedAt,
       finished: false,
     };
   }
+  if (operation.serviceRecovery) store.appendMessage(threadId, { role: "bot", kind: "activity",
+    tool: { name: "LEGION restarted. Continuing interrupted room work from the saved conversation.", ok: true } });
   const prev = groupQueues.get(groupId) ?? Promise.resolve();
   const next = prev.then(async () => {
     if (operation.cancelled) return;
