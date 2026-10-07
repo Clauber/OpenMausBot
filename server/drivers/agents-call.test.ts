@@ -252,3 +252,57 @@ describe("propose_team_memory", () => {
     } }]);
   });
 });
+
+describe("create_skin", () => {
+  it("refuses a missing name before calling the harness", async () => {
+    const calls: string[] = [];
+    const result = await callTool("create_skin", { mode: "dark", accent: "#d97706" }, context({
+      client: { api: async (path) => { calls.push(path); return {}; }, apiResponse: async () => ({ ok: true, status: 200, body: {} }) },
+    }));
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("name");
+    expect(calls).toEqual([]);
+  });
+
+  it("sends the recipe whole and points the bot at the picker", async () => {
+    const calls: Array<{ path: string; body: any }> = [];
+    const result = await callTool("create_skin", {
+      name: " Ember ", mode: "dark", accent: "#d97706", tint: "#1b1410", bubble: "match", corners: "sharp",
+    }, context({
+      client: {
+        api: async (path, init) => {
+          calls.push({ path, body: JSON.parse(String(init?.body)) });
+          return { skin: { name: "Ember" }, replaced: false };
+        },
+        apiResponse: async () => ({ ok: true, status: 200, body: {} }),
+      },
+    }));
+    expect(result.isError).toBeFalsy();
+    expect(calls).toEqual([{ path: "/api/internal/create-skin", body: {
+      name: "Ember", mode: "dark", accent: "#d97706", tint: "#1b1410", bubble: "match", corners: "sharp",
+    } }]);
+    expect(result.text).toContain("Created the skin \"Ember\"");
+    expect(result.text).toContain("Settings → Appearance");
+  });
+
+  it("says so when an existing skin was replaced", async () => {
+    const result = await callTool("create_skin", { name: "Ember", mode: "dark", accent: "#f59e0b" }, context({
+      client: {
+        api: async () => ({ skin: { name: "Ember" }, replaced: true }),
+        apiResponse: async () => ({ ok: true, status: 200, body: {} }),
+      },
+    }));
+    expect(result.text).toContain("Replaced the skin \"Ember\"");
+  });
+
+  it("surfaces the server's fixable validation error as a tool error", async () => {
+    const result = await callTool("create_skin", { name: "X", mode: "twilight", accent: "#ffffff" }, context({
+      client: {
+        api: async () => { throw new Error("mode must be \"dark\" or \"light\"."); },
+        apiResponse: async () => ({ ok: false, status: 400, body: { error: "mode must be \"dark\" or \"light\"." } }),
+      },
+    }));
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("mode");
+  });
+});

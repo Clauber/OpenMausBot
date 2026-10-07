@@ -366,6 +366,12 @@ export const CLIENT_ALLOW: ReadonlyArray<{ methods: readonly string[]; path: Reg
   { methods: ["POST"], path: /^\/api\/routine-runs\/seen-all$/ },
   // webhook list is secret-free; creating or rotating one is not
   { methods: ["GET"], path: /^\/api\/webhooks$/ },
+  // custom skins: appearance, not authorization. Every signed-in person sees
+  // and edits the shared picker; the payloads carry colours, never secrets.
+  // The id shape matches the route module, so anything else stays admin-only
+  // and unknown.
+  { methods: ["GET", "POST"], path: /^\/api\/skins$/ },
+  { methods: ["PATCH", "DELETE"], path: /^\/api\/skins\/cs-[0-9a-f]{8}$/ },
   // configured-or-not booleans; the handler strips the few identifying fields for clients
   { methods: ["GET"], path: /^\/api\/config$/ },
 ];

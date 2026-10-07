@@ -21,6 +21,7 @@ const fixture = vi.hoisted(() => ({
   api: vi.fn(),
   dispatch: vi.fn(),
   switches: [] as ComponentProps<typeof Switch>[],
+  customSkins: [] as Array<Record<string, unknown>>,
 }));
 // The Cloud account card reads the host platform (what a saved sign-in still locked asks for).
 vi.mock("./DesktopCapabilities", () => ({ useDesktopCapabilities: () => ({ capabilities: { host: { platform: "darwin" } } }) }));
@@ -28,7 +29,7 @@ vi.mock("./DesktopCapabilities", () => ({ useDesktopCapabilities: () => ({ capab
 vi.mock("@/state/store", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/state/store")>(),
   api: fixture.api,
-  useStore: () => ({ state: { appSettingsSection: fixture.section, instances: [] }, dispatch: fixture.dispatch }),
+  useStore: () => ({ state: { appSettingsSection: fixture.section, instances: [], customSkins: fixture.customSkins }, dispatch: fixture.dispatch }),
 }));
 vi.mock("@/lib/thread-preferences", () => ({
   useShowThreads: () => fixture.showThreads,
@@ -73,6 +74,7 @@ beforeEach(() => {
   // these pin the Advanced rail; Simple has its own suite (SettingsModal.simple.test.ts)
   fixture.advancedMode = true;
   fixture.switches = [];
+  fixture.customSkins = [];
   vi.stubGlobal("window", {});
   vi.stubGlobal("document", { documentElement: { dataset: {} } });
   setLocale("en");
@@ -279,5 +281,42 @@ describe("Settings → Appearance", () => {
     vi.stubGlobal("window", {}); expect(render()).not.toContain('<option value="cloudAccount"');
     vi.stubGlobal("window", { ogb: { cloudAccount: {}, remoteClient: { active: true } } });
     expect(render()).not.toContain('<option value="cloudAccount"');
+  });
+});
+
+describe("Settings → Appearance: custom skins", () => {
+  it("offers the entry points and never calls the API on render", () => {
+    const html = render();
+    expect(html).toContain("Your skins");
+    expect(html).toContain("New skin");
+    expect(fixture.api).not.toHaveBeenCalled();
+  });
+
+  it("renders the workspace's custom skins from the store", () => {
+    fixture.customSkins = [{
+      id: "cs-0123abcd",
+      name: "Ember",
+      tagline: "Warm brass on a night floor",
+      recipe: { mode: "dark", accent: "#d97706", tint: "#3b2a18", bubble: "match", corners: "sharp" },
+      createdAt: 1,
+      updatedAt: 1,
+    }];
+    const html = render();
+    expect(html).toContain("Ember");
+    expect(html).toContain("Warm brass on a night floor");
+    expect(html).toContain('data-skin="custom:cs-0123abcd"');
+  });
+
+  it("credits a bot-made skin", () => {
+    fixture.customSkins = [{
+      id: "cs-0123abcd",
+      name: "Ember",
+      tagline: "",
+      recipe: { mode: "dark", accent: "#d97706", tint: "#3b2a18", bubble: "match", corners: "sharp" },
+      createdAt: 1,
+      updatedAt: 1,
+      createdBy: { botId: "b1", name: "Kero" },
+    }];
+    expect(render()).toContain("Made by Kero");
   });
 });

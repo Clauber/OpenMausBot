@@ -1,8 +1,11 @@
-// Skins are pure CSS. Every one of them is a block of custom properties in
+// Skins are pure CSS. Every built-in one is a block of custom properties in
 // styles.css, selected by a `data-skin` attribute; this module only decides
 // which one is active and remembers the choice. Nothing here knows a colour —
 // that keeps the two halves from drifting apart, and it means adding a skin is
-// one CSS block plus one line in SKINS.
+// one CSS block plus one line in SKINS. User-made skins live in
+// src/lib/custom-skins.ts and share this attribute and this storage key.
+
+import { customSkinWindowColor } from "./custom-skins";
 
 export const SKIN_IDS = [
   "midnight",
@@ -38,6 +41,14 @@ export const SKINS: readonly Skin[] = [
 
 export const DEFAULT_SKIN: SkinId = "midnight";
 
+// A custom skin rides the same stored choice: `omb-skin` holds either a
+// built-in id or `custom:cs-xxxxxxxx`. The custom half of the value is
+// validated by src/lib/custom-skins.ts (which also owns the collection
+// cache), so this module only needs to know the value is not one of ours.
+export function isCustomSkinValue(value: unknown): boolean {
+  return typeof value === "string" && value.startsWith("custom:cs-");
+}
+
 const KEY = "omb-skin";
 
 // The input is whatever localStorage handed back — a string this app wrote
@@ -61,10 +72,11 @@ function getStore(): Storage | undefined {
   }
 }
 
-export function readSkin(): SkinId {
+/** The stored choice: a built-in id, a custom reference, or the default. */
+export function readSkin(): string {
   try {
     const stored = getStore()?.getItem(KEY);
-    return isSkinId(stored) ? stored : DEFAULT_SKIN;
+    return isSkinId(stored) || isCustomSkinValue(stored) ? stored! : DEFAULT_SKIN;
   } catch {
     return DEFAULT_SKIN;
   }
@@ -74,8 +86,13 @@ export function readSkin(): SkinId {
  * Point the document at a skin and remember it. Called once before the first
  * paint (main.tsx) and again on every change from the picker — a stamped
  * attribute rather than a class so it can never collide with Tailwind.
+ *
+ * A custom id (`custom:cs-…`) is accepted as-is: the generated block must
+ * already be in the document (main.tsx ensures it from the cache; the store
+ * keeps it fresh). Its ground colour rides along to the desktop bridge so
+ * the native window matches while the page loads.
  */
-export function applySkin(id: SkinId): void {
+export function applySkin(id: string): void {
   document.documentElement.dataset.skin = id;
   try {
     getStore()?.setItem(KEY, id);
@@ -86,9 +103,14 @@ export function applySkin(id: SkinId): void {
   // native overlay the main process paints. Left at the default it stays
   // Midnight-black on a light skin — the "black block in the top-right
   // corner" of issue #454. Best-effort: a browser tab or an older desktop
-  // build has no bridge, and the skin still applies without it.
+  // build has no bridge, and the skin still applies without it. Built-in ids
+  // are resolved by the main process's own table; a custom id carries its
+  // derived ground because the main process has never heard of it.
   try {
-    void window.ogb?.applySkin?.(id)?.catch(() => undefined);
+    const color = isCustomSkinValue(id)
+      ? customSkinWindowColor(id.slice("custom:".length))
+      : undefined;
+    void window.ogb?.applySkin?.(id, color)?.catch(() => undefined);
   } catch {
     /* no bridge */
   }

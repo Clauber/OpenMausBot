@@ -429,6 +429,25 @@ const toolDefinitions = (externalRuntime: boolean) => [
     },
   },
   {
+    name: "create_skin",
+    description:
+      "Create a custom look for the app (Settings → Appearance) when the user asks for a skin, theme or look — 'a cozy dark theme with amber highlights'. Pick mode dark or light to match the request. accent is the colour for buttons, links and highlights, as #rrggbb. tint is the hue every surface leans toward — a faint cousin of the accent (dark mode likes a near-black tint such as #1b1410, light mode a near-white one such as #f3ece2); omit it for plain grey. bubble 'inverted' paints the user's own messages in the opposite ink, like the Daylight skin; corners 'sharp' reads technical, 'round' soft. Colour contrast is derived automatically, so any hue is safe to try. A skin of the same name is replaced, so reuse the name when adjusting ('more orange') and say you replaced it. The skin appears in Settings → Appearance on every signed-in screen — tell the user to pick it there; you cannot apply it yourself. It changes the look for everyone in this workspace: only on request, and never twice in a row without their feedback.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        name: { type: "string", description: "A short name to show in the picker, for example Ember or Paper Sky." },
+        tagline: { type: "string", description: "One line under the name, for example Warm brass on a night floor. Optional." },
+        mode: { type: "string", enum: ["dark", "light"], description: "Dark for evening/near-black looks, light for paper/daylight looks." },
+        accent: { type: "string", description: "The highlight colour as #rrggbb, for example #d97706 (amber) or #0f766e (teal)." },
+        tint: { type: "string", description: "The surface hue as #rrggbb — a faint, darker-or-lighter cousin of the accent. Optional; default is neutral grey." },
+        bubble: { type: "string", enum: ["match", "inverted"], description: "inverted = the user's own messages in the opposite ink (dramatic, like Daylight). Optional; default match." },
+        corners: { type: "string", enum: ["sharp", "soft", "round"], description: "Corner style. Optional; default soft." },
+      },
+      required: ["name", "mode", "accent"],
+    },
+  },
+  {
     name: "create_bot",
     description:
       "Create a specialist bot in your section. Chief of Staff only. Omit modelSelection to use the workspace default, or choose exact IDs from list_team_setup. Connected apps and automatic approvals start disabled. Assign work through delegate_bot. Maximum four new bots per turn.",

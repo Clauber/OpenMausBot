@@ -7,6 +7,7 @@ import {
 import { bootstrapBrand } from "./lib/brand";
 import { applySkin, readSkin } from "./lib/skins";
 import { applyFont, readFont } from "./lib/fonts";
+import { ensureCustomSkinStyles, readCustomSkinsCache } from "./lib/custom-skins";
 import { settleAdvancedModeDefault } from "./lib/interface-mode";
 import { BrowserSignInPage } from "./pair/BrowserSignInPage";
 import { PairPage } from "./pair/PairPage";
@@ -20,6 +21,10 @@ import "./styles.css";
 // Simple vs Advanced is decided first: applySkin below writes omb-skin, which
 // would otherwise make every fresh install look like an existing one.
 settleAdvancedModeDefault();
+// A custom skin's CSS block must exist before the attribute names it, or the
+// first paint falls back to the default palette. The cache mirrors the
+// server's collection from the last run; the store refreshes both moments later.
+ensureCustomSkinStyles(readCustomSkinsCache());
 applySkin(readSkin());
 applyFont(readFont());
 

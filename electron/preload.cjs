@@ -201,7 +201,7 @@ const bridge = {
   openExternal: (url) => ipcRenderer.invoke("desktop:open-external", url),
   /** Tell the window which skin the page wears, so the native chrome the
    * renderer cannot paint (the Windows caption-button overlay) matches. */
-  applySkin: (skin) => ipcRenderer.invoke("desktop:skin", skin),
+  applySkin: (skin, color) => ipcRenderer.invoke("desktop:skin", skin, color),
   /** The renderer-drawn Windows caption buttons: minimize / restore /
    * maximize / close, plus live maximize state so the glyph can flip. */
   windowControls: {

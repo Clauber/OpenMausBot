@@ -582,6 +582,35 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
       text: `Posted in ${r.roomName ?? "the room"}${r.attachedVoiceNote ? " with the voice note attached" : ""}. Nobody's turn was started, so expect no reply — tell the user it is posted.`,
     };
   }
+  if (name === "create_skin") {
+    // The recipe goes through whole: the server runs the same narrow parser
+    // for the tool and the editor, so its error text is the fixable kind.
+    const recipe: Record<string, unknown> = {
+      name: typeof args.name === "string" ? args.name.trim() : "",
+      mode: args.mode,
+      accent: args.accent,
+    };
+    for (const key of ["tagline", "tint", "bubble", "corners"] as const) {
+      if (args[key] !== undefined && args[key] !== null && args[key] !== "") recipe[key] = args[key];
+    }
+    if (!recipe.name) return { text: "create_skin needs a short name for the skin.", isError: true };
+    try {
+      const r = await api("/api/internal/create-skin", {
+        method: "POST",
+        body: JSON.stringify(recipe),
+      });
+      // SAFETY: the route answers { skin, replaced }; Json is Record<string, unknown>.
+      const skin = r.skin as { name?: unknown } | undefined;
+      const skinName = typeof skin?.name === "string" ? skin.name : recipe.name;
+      return {
+        text: r.replaced === true
+          ? `Replaced the skin "${skinName}" with the new look. It is in Settings → Appearance on every signed-in screen — tell the user to pick it there (or to keep looking if it is not right yet).`
+          : `Created the skin "${skinName}". It is in Settings → Appearance under "your skins" on every signed-in screen — tell the user to open Settings → Appearance and select it there.`,
+      };
+    } catch (error) {
+      return { text: error instanceof Error ? error.message : String(error), isError: true };
+    }
+  }
   if (name === "ask_bot") {
     const toBotId = String(args.bot_id ?? "").trim();
     const message = String(args.message ?? "").trim();
