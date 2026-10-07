@@ -22,6 +22,7 @@ import type { MausColor, MausMotion } from "@/lib/mascot";
 import type { BotAvatarCrop } from "../../shared/bot-avatar";
 import { approvalModeFor, type ApprovalMode } from "../../shared/approval-mode";
 import type { MascotBodyId } from "../../shared/mascot-bodies";
+import type { CustomSkin } from "../../shared/skin-recipe";
 import type { QuestionRequestCardData } from "../../shared/ask-question";
 import type { ProfileRequestCardData } from "../../shared/profile-request";
 import type { ModelRequestCardData } from "../../shared/model-request";
@@ -35,6 +36,8 @@ import {
 } from "../../shared/skill-request";
 import type { Routine, RoutineInput, RoutineRun, RoutineRunStatusFilter } from "@/lib/routines";
 import type { WebhookAttempt, WebhookIngressStatus, WebhookTrigger } from "@/lib/webhooks";
+import { applySkin, DEFAULT_SKIN, isCustomSkinValue } from "@/lib/skins";
+import { customSkinAttr, ensureCustomSkinStyles, readCustomSkinsCache, writeCustomSkinsCache } from "@/lib/custom-skins";
 import { botShowsUnread } from "@/lib/bot-unread";
 import { answerResponse, dismissResponse } from "@/lib/card-answer";
 import { currentCall } from "@/lib/call";
@@ -939,6 +942,12 @@ export interface AppState {
   webhooks: WebhookTrigger[];
   webhookAttempts: WebhookAttempt[];
   webhookIngress: WebhookIngressStatus | null;
+  /** The workspace's user-made skins (Settings → Appearance). Server-owned,
+   *  mirrored to localStorage by the sync effect for pre-paint restores. */
+  customSkins: CustomSkin[];
+  /** True once the server's list has actually arrived: until then the
+   *  localStorage cache, not the empty array, is what the machine knows. */
+  customSkinsLoaded: boolean;
   settingsOpen: boolean;
   pluginsOpen: boolean;
   /** Which tab the Plugins panel opens on; "mcp" when a bot's tools
@@ -1113,6 +1122,9 @@ export type Action =
   | { type: "routineDeleted"; routineId: string }
   | { type: "routineRunPatched"; run: RoutineRun }
   | { type: "webhooksHydrated"; webhooks: WebhookTrigger[]; attempts: WebhookAttempt[]; ingress: WebhookIngressStatus }
+  | { type: "customSkinsHydrated"; skins: CustomSkin[] }
+  | { type: "customSkinPatched"; skin: CustomSkin }
+  | { type: "customSkinDeleted"; skinId: string }
   | { type: "webhookPatched"; webhook: WebhookTrigger }
   | { type: "webhookAttempted"; attempt: WebhookAttempt }
   | { type: "webhookDeleted"; webhookId: string }
@@ -1590,6 +1602,19 @@ export function reducer(state: AppState, action: Action): AppState {
     }
     case "webhooksHydrated":
       return { ...state, webhooks: action.webhooks, webhookAttempts: action.attempts, webhookIngress: action.ingress };
+    case "customSkinsHydrated":
+      return { ...state, customSkins: action.skins, customSkinsLoaded: true };
+    case "customSkinPatched": {
+      const exists = state.customSkins.some((skin) => skin.id === action.skin.id);
+      return {
+        ...state,
+        customSkins: exists
+          ? state.customSkins.map((skin) => (skin.id === action.skin.id ? action.skin : skin))
+          : [action.skin, ...state.customSkins],
+      };
+    }
+    case "customSkinDeleted":
+      return { ...state, customSkins: state.customSkins.filter((skin) => skin.id !== action.skinId) };
     case "webhookPatched": {
       const exists = state.webhooks.some((webhook) => webhook.id === action.webhook.id);
       return {
@@ -2432,6 +2457,8 @@ export const initialState: AppState = {
   webhooks: [],
   webhookAttempts: [],
   webhookIngress: null,
+  customSkins: [],
+  customSkinsLoaded: false,
   settingsOpen: false,
   pluginsOpen: false,
   pluginsSurface: "apps",
@@ -3648,7 +3675,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // ── initial load + SSE fold ──────────────────────────────────────────
   useEffect(() => {
     let alive = true;
-    type PeripheralKey = "instances" | "config" | "routines" | "webhooks";
+    type PeripheralKey = "instances" | "config" | "routines" | "webhooks" | "skins";
     type PeripheralPart = {
       key: PeripheralKey;
       request: () => Promise<() => void>;
@@ -3688,6 +3715,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         request: async () => {
           const { routines, runs } = await api("/api/routines");
           return () => rawDispatch({ type: "routinesHydrated", routines, runs });
+        },
+      },
+      {
+        key: "skins",
+        request: async () => {
+          const { skins } = await api("/api/skins");
+          return () => rawDispatch({ type: "customSkinsHydrated", skins: Array.isArray(skins) ? skins : [] });
         },
       },
       ...(window.ogb?.remoteClient?.active ? [] : [{
@@ -3830,6 +3864,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (frame.kind === "config") bumpPeripheralVersion("config", "instances");
       else if (frame.kind === "routine" || frame.kind === "routine.deleted" || frame.kind === "routine.run") {
         bumpPeripheralVersion("routines");
+      } else if (frame.kind === "skin" || frame.kind === "skin.deleted") {
+        // Folded directly, like a webhook patch; the bump only keeps an
+        // in-flight hydration lane from overwriting this newer news.
+        bumpPeripheralVersion("skins");
+        rawDispatch(
+          frame.kind === "skin"
+            ? { type: "customSkinPatched", skin: frame.skin }
+            : { type: "customSkinDeleted", skinId: frame.skinId },
+        );
       } else if (
         frame.kind === "webhook" ||
         frame.kind === "webhook.attempt" ||
@@ -4023,6 +4066,26 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       stopLive();
     };
   }, []);
+
+  // Custom skins: keep the document's generated CSS, the pre-paint cache and
+  // the active choice in step with the server's collection. Runs on mount and
+  // on every collection change (hydration and each folded skin frame).
+  const customSkins = state.customSkins;
+  const customSkinsLoaded = state.customSkinsLoaded;
+  useEffect(() => {
+    // Until the first hydration lands the empty list is not authoritative —
+    // the cache main.tsx restored from knows this machine's skins. Only a
+    // loaded collection may unwear one (deleted here or elsewhere): then the
+    // active choice falls back to the default instead of claiming a missing
+    // skin, and the cache is rewritten from the server's truth.
+    const known = customSkinsLoaded ? customSkins : readCustomSkinsCache();
+    ensureCustomSkinStyles(known);
+    if (customSkinsLoaded) writeCustomSkinsCache(customSkins);
+    const active = document.documentElement.dataset.skin;
+    if (isCustomSkinValue(active) && !known.some((skin) => customSkinAttr(skin.id) === active)) {
+      applySkin(DEFAULT_SKIN);
+    }
+  }, [customSkins, customSkinsLoaded]);
 
   // Re-probe the engines on demand. A CLI installed while the app is running
   // is invisible until something asks again — the setup screens expose this

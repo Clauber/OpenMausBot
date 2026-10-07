@@ -2553,13 +2553,16 @@ ipcMain.handle("desktop:save-file", localOnly("desktop:save-file", async (event,
 // The renderer owns the skin, including the Windows caption buttons it draws
 // itself (titleBarStyle hidden, no native overlay). Keep syncing the window
 // background so a light skin never flashes the Midnight-black cold start.
-ipcMain.handle("desktop:skin", (event, skin) => {
-  if (!isKnownSkin(skin)) return false;
+ipcMain.handle("desktop:skin", (event, skin, color) => {
+  // A custom skin is unknown to the chrome table, so the renderer sends its
+  // derived ground alongside the id; only an exact opaque hex is trusted.
+  const custom = !isKnownSkin(skin) && typeof color === "string" && /^#[0-9a-fA-F]{6}$/.test(color) ? color : null;
+  if (!isKnownSkin(skin) && !custom) return false;
   try {
-    const { color } = skinChrome(skin);
+    const resolved = custom ?? skinChrome(skin).color;
     const win = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
     if (win && !win.isDestroyed()) {
-      try { win.setBackgroundColor(color); } catch {}
+      try { win.setBackgroundColor(resolved); } catch {}
     }
   } catch {}
   return true;

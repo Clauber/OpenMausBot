@@ -1,66 +1,23 @@
-// Choosing a skin is a visual decision, so the options are shown visually: each
-// card carries a working miniature of the app rendered in that skin, not a row
-// of paint chips. That works because the skin blocks in styles.css are keyed on
-// `[data-skin]` rather than `:root[data-skin]` — any element can open a skin
-// context for its own subtree, so the miniature styles itself and can never
-// drift from what picking it actually does.
+// The skin picker: built-in skins first, then the workspace's own skins, then
+// the tile that opens the editor. Each card carries a working miniature of the
+// app rendered in that skin, not a row of paint chips — a skin is judged by
+// where its colour lands, and the miniatures cannot drift from what picking
+// actually does because every block (built-in or generated) is keyed on
+// `[data-skin]`, which any element can open for its own subtree.
 import { useState } from "react";
-import { Check } from "lucide-react";
-import { SKINS, applySkin, readSkin, type SkinId } from "@/lib/skins";
+import { Check, Pencil, Plus, Trash2 } from "lucide-react";
+import { SKINS, applySkin, readSkin } from "@/lib/skins";
+import { customSkinAttr } from "@/lib/custom-skins";
+import { api, useStore } from "@/state/store";
+import { t } from "@/lib/i18n";
 import { cn } from "@/lib/cn";
+import { Miniature } from "./SkinPickerMiniature";
+import { CustomSkinEditor } from "./CustomSkinEditor";
+import type { CustomSkin } from "../../shared/skin-recipe";
 
-/**
- * The app's own layout at roughly 1/14 scale: rail, sidebar with a selected
- * row, thread, composer. The selected row and the send button are drawn in the
- * accent on purpose — a skin is mostly judged by where its colour lands, and a
- * single dot was too small to judge.
- */
-function Miniature({ skin }: { skin: SkinId }) {
-  return (
-    <div
-      data-skin={skin}
-      aria-hidden="true"
-      className="flex h-[78px] w-full overflow-hidden rounded-lg bg-app ring-1 ring-hairline/60"
-    >
-      {/* rail */}
-      <div className="flex w-[11px] shrink-0 flex-col items-center gap-[3px] bg-panel pt-[5px]">
-        <span className="size-[5px] rounded-full bg-accent" />
-        <span className="size-[5px] rounded-full bg-ink-secondary/40" />
-        <span className="size-[5px] rounded-full bg-ink-secondary/40" />
-      </div>
-      {/* sidebar — the top row is the selected conversation */}
-      <div className="flex w-[30px] shrink-0 flex-col gap-[3px] border-r border-hairline bg-panel p-[4px]">
-        <span className="flex h-[9px] w-full items-center gap-[2px] rounded-sm bg-raised px-[2px]">
-          <span className="size-[4px] shrink-0 rounded-full bg-accent" />
-          <span className="h-[2px] flex-1 rounded-full bg-ink/50" />
-        </span>
-        <span className="h-[3px] w-[80%] rounded-full bg-ink-secondary/30" />
-        <span className="h-[3px] w-[62%] rounded-full bg-ink-secondary/30" />
-        <span className="h-[3px] w-[74%] rounded-full bg-ink-secondary/30" />
-      </div>
-      {/* thread */}
-      <div className="flex min-w-0 flex-1 flex-col gap-[4px] p-[6px]">
-        <span className="h-[13px] w-[62%] self-end rounded-md bg-bubble-user" />
-        <div className="flex w-[88%] flex-col gap-[3px] rounded-md bg-card p-[4px]">
-          <span className="h-[2px] w-full rounded-full bg-ink/45" />
-          <span className="h-[2px] w-[85%] rounded-full bg-ink/45" />
-          <span className="h-[2px] w-[60%] rounded-full bg-ink-secondary/40" />
-        </div>
-        <div className="mt-auto flex items-center gap-[4px]">
-          <span className="h-[11px] flex-1 rounded-full bg-inset ring-1 ring-hairline" />
-          {/* filled accent with its own ink — Foundry's inversion reads right
-              here: bright brass carrying a dark mark, where the others carry
-              a light one */}
-          <span className="flex size-[11px] items-center justify-center rounded-full bg-accent">
-            <span
-              className="h-[1.5px] w-[5px] rounded-full"
-              style={{ background: "var(--color-accent-ink)" }}
-            />
-          </span>
-        </div>
-      </div>
-    </div>
-  );
+function customTagline(skin: CustomSkin): string {
+  if (skin.tagline) return skin.tagline;
+  return skin.createdBy ? t("settings.skin.custom.madeBy", { name: skin.createdBy.name }) : t("settings.skin.custom.fallbackTagline");
 }
 
 export function SkinPicker() {
@@ -69,45 +26,151 @@ export function SkinPicker() {
   // skin was set some other way.
   // SAFETY: main.tsx writes this attribute from applySkin() before the first
   // paint, and readSkin() covers the case where it is absent or unreadable.
-  const [active, setActive] = useState<SkinId>(
-    () => (document.documentElement.dataset.skin as SkinId) || readSkin(),
+  const [active, setActive] = useState<string>(
+    () => document.documentElement.dataset.skin || readSkin(),
   );
+  const { state } = useStore();
+  // The mocked stores in tests build states by hand; absence means "none yet".
+  const customSkins = state.customSkins ?? [];
+  const [editing, setEditing] = useState<{ skin: CustomSkin | null } | null>(null);
+  const [armedDelete, setArmedDelete] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const pick = (value: string) => {
+    applySkin(value);
+    setActive(value);
+  };
+
+  const remove = async (id: string) => {
+    if (armedDelete !== id) {
+      setArmedDelete(id);
+      return;
+    }
+    setArmedDelete(null);
+    try {
+      await api(`/api/skins/${id}`, { method: "DELETE" });
+      // The frame bumps the peripheral and the store refetches; if this was
+      // the active skin, the store's sync effect falls back to the default.
+      setDeleteError(null);
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   return (
-    // Four columns keep each miniature useful while allowing the collection
-    // to grow into a second row; Settings already scrolls on short windows.
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-      {SKINS.map((skin) => {
-        const selected = skin.id === active;
-        return (
-          <button
-            key={skin.id}
-            type="button"
-            onClick={() => {
-              applySkin(skin.id);
-              setActive(skin.id);
-            }}
-            aria-pressed={selected}
-            className={cn(
-              "flex flex-col gap-2 rounded-xl border p-2 text-left transition-colors",
-              selected
-                ? "border-accent-border bg-control"
-                : "border-hairline/60 hover:border-hairline hover:bg-control/50",
-            )}
-          >
-            <Miniature skin={skin.id} />
-            <div className="flex items-start gap-1.5 px-0.5 pb-0.5">
-              <div className="min-w-0 flex-1">
-                <div className="text-[13px] font-medium text-ink">{skin.name}</div>
-                <div className="mt-0.5 text-[11px] leading-snug text-ink-secondary">
-                  {skin.tagline}
+    <div className="flex flex-col gap-4">
+      {/* Four columns keep each miniature useful while allowing the collection
+          to grow into a second row; Settings already scrolls on short windows. */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {SKINS.map((skin) => {
+          const selected = skin.id === active;
+          return (
+            <button
+              key={skin.id}
+              type="button"
+              onClick={() => pick(skin.id)}
+              aria-pressed={selected}
+              className={cn(
+                "flex flex-col gap-2 rounded-xl border p-2 text-left transition-colors",
+                selected
+                  ? "border-accent-border bg-control"
+                  : "border-hairline/60 hover:border-hairline hover:bg-control/50",
+              )}
+            >
+              <Miniature skin={skin.id} />
+              <div className="flex items-start gap-1.5 px-0.5 pb-0.5">
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13px] font-medium text-ink">{skin.name}</div>
+                  <div className="mt-0.5 text-[11px] leading-snug text-ink-secondary">
+                    {skin.tagline}
+                  </div>
                 </div>
+                {selected && <Check size={13} className="mt-0.5 shrink-0 text-accent-text" />}
               </div>
-              {selected && <Check size={13} className="mt-0.5 shrink-0 text-accent-text" />}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[13px] font-medium text-ink">{t("settings.skin.custom.title")}</div>
+      </div>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {customSkins.map((skin) => {
+          const value = customSkinAttr(skin.id);
+          const selected = value === active;
+          return (
+            <div
+              key={skin.id}
+              className={cn(
+                "group relative flex flex-col gap-2 rounded-xl border p-2 text-left transition-colors",
+                selected
+                  ? "border-accent-border bg-control"
+                  : "border-hairline/60 hover:border-hairline hover:bg-control/50",
+              )}
+            >
+              <button
+                type="button"
+                onClick={() => pick(value)}
+                aria-pressed={selected}
+                className="flex flex-col gap-2 text-left"
+              >
+                <Miniature skin={value} />
+                <div className="flex items-start gap-1.5 px-0.5">
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[13px] font-medium text-ink">{skin.name}</div>
+                    <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-ink-secondary">
+                      {customTagline(skin)}
+                    </div>
+                  </div>
+                  {selected && <Check size={13} className="mt-0.5 shrink-0 text-accent-text" />}
+                </div>
+              </button>
+              <div className="absolute right-1.5 top-1.5 flex gap-1 rounded-lg bg-panel/80 p-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 touch:opacity-100">
+                <button
+                  type="button"
+                  aria-label={t("settings.skin.custom.edit", { name: skin.name })}
+                  title={t("settings.skin.custom.edit", { name: skin.name })}
+                  onClick={() => setEditing({ skin })}
+                  className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"
+                >
+                  <Pencil size={12} />
+                </button>
+                <button
+                  type="button"
+                  aria-label={armedDelete === skin.id ? t("settings.skin.custom.deleteConfirm") : t("settings.skin.custom.delete", { name: skin.name })}
+                  title={armedDelete === skin.id ? t("settings.skin.custom.deleteConfirm") : t("settings.skin.custom.delete", { name: skin.name })}
+                  onClick={() => void remove(skin.id)}
+                  onBlur={() => setArmedDelete(null)}
+                  className={cn(
+                    "rounded-md p-1 hover:bg-raised",
+                    armedDelete === skin.id ? "bg-danger text-danger-ink" : "text-ink-secondary hover:text-ink",
+                  )}
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
             </div>
-          </button>
-        );
-      })}
+          );
+        })}
+        <button
+          type="button"
+          onClick={() => setEditing({ skin: null })}
+          className="flex min-h-[132px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-hairline/70 p-2 text-ink-secondary transition-colors hover:border-hairline hover:bg-control/50 hover:text-ink"
+        >
+          <Plus size={18} />
+          <span className="text-[12px] font-medium">{t("settings.skin.custom.new")}</span>
+        </button>
+      </div>
+      {deleteError && <div className="text-[12px] text-danger">{deleteError}</div>}
+
+      {editing && (
+        <CustomSkinEditor
+          skin={editing.skin}
+          onClose={() => setEditing(null)}
+          onPreview={pick}
+        />
+      )}
     </div>
   );
 }

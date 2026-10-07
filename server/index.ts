@@ -626,6 +626,8 @@ import { localDesktopTarget, localVmViewerStatus, viewerTargetId } from "./deskt
 import { createAntigravityLeftoverRoutes } from "./routes/antigravity-leftovers.ts";
 import { findAntigravityLeftovers, removeAntigravityLeftovers } from "./drivers/antigravity-temp.ts";
 import { createLiveRoutes } from "./routes/live.ts";
+import { createSkinRoutes } from "./routes/skins.ts";
+import { CustomSkinManager } from "./custom-skins.ts";
 
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
 const WEBHOOK_PORT = Number(process.env.OMB_WEBHOOK_PORT || PORT + 1);
@@ -12087,6 +12089,11 @@ try {
   console.error(`openmausbot webhook receiver unavailable: ${webhookIngressError}`);
 }
 
+// Custom skins: the Appearance picker's "your skins", writable by the person
+// in Settings and by a bot through create_skin. Frames ride the same SSE
+// stream as everything else, so every signed-in client re-renders its picker.
+const customSkins = new CustomSkinManager({ emit: broadcast });
+
 const webhookIngressStatus = () => ({
   available: Boolean(webhookIngress),
   baseUrl: webhookIngress?.baseUrl ?? `http://127.0.0.1:${WEBHOOK_PORT}`,
@@ -15641,6 +15648,8 @@ ROUTES.push(createAntigravityLeftoverRoutes({
   remove: () => removeAntigravityLeftovers(),
 }));
 
+ROUTES.push(createSkinRoutes({ skins: customSkins }));
+
 ROUTES.push(desktopViewer.route);
 
 // Live calls (GPT-Live as the voice, the bot as the brain). A client holds
@@ -17818,6 +17827,22 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           return json(res, sent ? 200 : 409, { receipts,
             ...(sent ? { message: "End your turn after sending all work. These actual teammates will reply and resume you automatically. Do not poll or wait." } : { error: refused.join("; ") }),
           });
+        }
+      }
+      // create_skin: a bot turns a described look (dark or light, an accent,
+      // a surface tint, bubble style, corners) into a real skin in the
+      // Appearance picker. CustomSkinManager validates with the same parser
+      // the editor uses, replaces by name so the bot can iterate, and the
+      // frame tells every signed-in client to refetch.
+      if (method === "POST" && path === "/api/internal/create-skin") {
+        const body = await readInternalBody();
+        try {
+          const { skin, replaced } = customSkins.save(body, { botId: internalSender.id, name: internalSender.name });
+          return json(res, replaced ? 200 : 201, { skin, replaced });
+        } catch (error) {
+          const status = (error as { status?: number }).status;
+          if (typeof status !== "number") throw error;
+          return json(res, status, { error: (error as Error).message });
         }
       }
       // post_to_room: a bot puts ONE message into a room it belongs to,

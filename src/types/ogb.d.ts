@@ -245,8 +245,10 @@ const __APP_VERSION__: string;
       openInstallTerminal?(command: string): Promise<boolean>;
       /** Opens an http(s) link in the user's default browser. */
       openExternal?(url: string): Promise<boolean>;
-      /** Recolor the native window chrome for a skin; absent on older builds. */
-      applySkin?(skin: string): Promise<boolean>;
+      /** Recolor the native window chrome for a skin; absent on older builds.
+       * A custom skin passes its derived ground colour along — the main
+       * process has no table for ids it has never heard of. */
+      applySkin?(skin: string, color?: string): Promise<boolean>;
       /** The renderer-drawn Windows caption buttons; absent outside the
        * frameless Windows shell (macOS/Linux/browser keep native chrome). */
       windowControls?: {
