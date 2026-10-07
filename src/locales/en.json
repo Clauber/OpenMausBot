@@ -520,7 +520,7 @@
   "settings.skin.custom.delete": "Delete {name}",
   "settings.skin.custom.deleteConfirm": "Delete? Click again to confirm",
   "settings.skin.custom.madeBy": "Made by {name}",
-  "settings.skin.custom.fallbackTagline": "A custom look for this workspace.",
+  "settings.skin.custom.fallbackTagline": "A custom look made here.",
   "settings.skin.editor.newTitle": "New skin",
   "settings.skin.editor.editTitle": "Edit {name}",
   "settings.skin.editor.subtitle": "Pick a few colours; readable contrast is derived for you.",
