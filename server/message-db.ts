@@ -69,6 +69,11 @@ function open(): DatabaseSync {
       payload TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS chat_followups_receipt ON chat_followups(kind, owner_id, thread_id, send_id);
+    CREATE TABLE IF NOT EXISTS running_turns (
+      thread_id TEXT PRIMARY KEY,
+      generation TEXT NOT NULL,
+      payload TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS command_receipts (
       kind TEXT NOT NULL,
       key TEXT NOT NULL,
@@ -273,6 +278,44 @@ function writeFollowups(write: (connection: DatabaseSync) => void): void {
     try { write(connection); connection.exec("COMMIT"); }
     catch (error) { connection.exec("ROLLBACK"); throw error; }
   } finally { connection.exec("PRAGMA synchronous = NORMAL"); }
+}
+
+/** A dispatch is journaled before any provider can act. Recovery sends a
+ * continuation with history, never silently replays the original request. */
+export interface RunningTurn {
+  threadId: string;
+  ownerId: string;
+  kind: "bot" | "group";
+  generation: string;
+  sourceMessageId: string;
+  startedAt: number;
+  routineRunId?: string;
+  unattended?: boolean;
+  commsDepth?: number;
+  chatGoalId?: string;
+  channelMode?: "chat" | "goal";
+  responderBotIds?: string[];
+  goalCoordinatorBotId?: string;
+  goalRunId?: string;
+}
+
+export function readRunningTurns(): RunningTurn[] {
+  return (db().prepare("SELECT payload FROM running_turns ORDER BY rowid").all() as { payload: string }[])
+    .map(row => JSON.parse(row.payload) as RunningTurn);
+}
+
+export function saveRunningTurn(turn: RunningTurn): void {
+  writeFollowups(connection => {
+    connection.prepare("INSERT OR REPLACE INTO running_turns (thread_id, generation, payload) VALUES (?, ?, ?)")
+      .run(turn.threadId, turn.generation, JSON.stringify(turn));
+  });
+}
+
+export function retireRunningTurn(threadId: string, generation?: string): void {
+  writeFollowups(connection => {
+    if (generation === undefined) connection.prepare("DELETE FROM running_turns WHERE thread_id = ?").run(threadId);
+    else connection.prepare("DELETE FROM running_turns WHERE thread_id = ? AND generation = ?").run(threadId, generation);
+  });
 }
 
 export interface StoredCommandReceipt {
@@ -517,6 +560,7 @@ export function deleteThread(threadId: string): void {
     connection.prepare("DELETE FROM chat_followups WHERE thread_id = ?").run(threadId);
     connection.prepare("DELETE FROM messages WHERE thread_id = ?").run(threadId);
     connection.prepare("DELETE FROM thread_state WHERE thread_id = ?").run(threadId);
+    connection.prepare("DELETE FROM running_turns WHERE thread_id = ?").run(threadId);
   });
 }
 
