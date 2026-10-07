@@ -168,7 +168,7 @@ export function EffortRow({
 export function ThinkingPicker({ bot, threadId, className }: { bot: Bot; threadId?: string; className?: string }) {
   const { state, dispatch } = useStore();
   const [open, setOpen] = useState(false);
-  const motion = useMenuMotion(open && !bot.busy);
+  const motion = useMenuMotion(open && (!bot.busy || Boolean(threadId)));
   const rootRef = useRef<HTMLDivElement>(null);
   const ownerOrAdmin = useOwnerOrAdmin();
   const advanced = useAdvancedMode();
@@ -202,11 +202,11 @@ export function ThinkingPicker({ bot, threadId, className }: { bot: Bot; threadI
       <button
         type="button"
         data-thinking-picker
-        disabled={Boolean(bot.busy)}
-        aria-expanded={open && !bot.busy}
+        disabled={Boolean(bot.busy && !threadId)}
+        aria-expanded={open && (!bot.busy || Boolean(threadId))}
         aria-haspopup="listbox"
         aria-label="Reasoning effort"
-        title={bot.busy ? t(threadId ? "model.threadBusy" : "model.busy") : "Reasoning effort"}
+        title={bot.busy ? (threadId ? "Applies next run, or immediately when you send a steering message" : t("model.busy")) : "Reasoning effort"}
         onClick={() => setOpen((was) => !was)}
         className="flex h-8 items-center gap-1 rounded-full px-2 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
       >
@@ -275,7 +275,7 @@ export function ModelVariantRow({ bot, threadId, updateBotDefault, className, la
     <div className={className}>
       <label className="flex items-center justify-between gap-3">
         {label}
-        <select aria-label="Reasoning variant" disabled={bot.busy}
+        <select aria-label="Reasoning variant" disabled={Boolean(bot.busy && !threadId)}
           value={selection.variant === undefined ? "unset" : missing ? "missing" : String(options.findIndex((option) => option.id === selection.variant))}
           onChange={(event) => choose(options[Number(event.target.value)]?.id)}
           className={cn("min-w-0 rounded-lg border border-hairline/40 bg-inset px-2 py-1.5 text-[12px] text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-50",
@@ -299,7 +299,7 @@ export function ModelVariantRow({ bot, threadId, updateBotDefault, className, la
         </p>
       )}
       {selection.variant !== undefined && (
-        <button type="button" disabled={bot.busy} onClick={() => choose()}
+        <button type="button" disabled={Boolean(bot.busy && !threadId)} onClick={() => choose()}
           title="Send no variant selection; OpenCode keeps its session or configured setting"
           className="mt-2 block text-[12px] text-ink-secondary underline underline-offset-2 hover:text-ink disabled:opacity-50">
           Clear variant selection
@@ -311,7 +311,7 @@ export function ModelVariantRow({ bot, threadId, updateBotDefault, className, la
             <button
               key={option.id}
               type="button"
-              disabled={bot.busy}
+              disabled={Boolean(bot.busy && !threadId)}
               aria-pressed={selection.variant === option.id}
               title={`Use ${variantLabel(option)} for this model`}
               onClick={() => choose(option.id)}
@@ -563,7 +563,7 @@ export function ModelPicker({
 }) {
   const { state, dispatch, refreshInstances, refreshModels: refreshInstanceModels } = useStore();
   const [open, setOpen] = useState(false);
-  const motion = useMenuMotion(open && !bot.busy);
+  const motion = useMenuMotion(open && (!bot.busy || Boolean(threadId)));
   const [railId, setRailId] = useState<string | null>(null);
   const [pane, setPane] = useState<"main" | "custom">("main");
   const [query, setQuery] = useState("");
@@ -673,8 +673,8 @@ export function ModelPicker({
   }, [open, refreshLocalInstances]);
 
   useEffect(() => {
-    if (bot.busy) setOpen(false);
-  }, [bot.busy]);
+    if (bot.busy && !threadId) setOpen(false);
+  }, [bot.busy, threadId]);
 
   useEffect(() => {
     if (!open) return;
@@ -739,7 +739,7 @@ export function ModelPicker({
   };
 
   const pick = (instance: InstanceInfo, model: string) => {
-    if (bot.busy || instance.policy) return;
+    if ((bot.busy && !threadId) || instance.policy) return;
     const nextSelection = modelSelectionForPick(selection, instance, model);
     // Simple mode has no scope choice: an owner's pick is also the bot's
     // default, while a Cloud guest changes only their own conversation.
@@ -854,9 +854,9 @@ export function ModelPicker({
   const trigger = (
     <button data-tour="model"
       type="button"
-      disabled={Boolean(bot.busy)}
+      disabled={Boolean(bot.busy && !threadId)}
       onClick={() => {
-        if (bot.busy) return;
+        if (bot.busy && !threadId) return;
         if (active && isClaudeAccount(active)) lastClaudeIdRef.current = active.instanceId;
         if (active && signInFamily(active) === "openai") lastOpenaiIdRef.current = active.instanceId;
         const initial = pickerInstances.find((instance) => instance.instanceId === selection.instanceId) ?? pickerInstances[0];
@@ -870,7 +870,7 @@ export function ModelPicker({
           return next;
         });
       }}
-      aria-expanded={open && !bot.busy}
+      aria-expanded={open && (!bot.busy || Boolean(threadId))}
       aria-haspopup="dialog"
       className={cn(
         "flex items-center gap-1.5 rounded-full border border-hairline/40 bg-control/60 py-1 pl-2 pr-2.5 text-[13px] text-ink hover:bg-raised-hover disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-control/60",
@@ -882,7 +882,7 @@ export function ModelPicker({
       )}
       title={
         bot.busy
-          ? t(threadId ? "model.threadBusy" : "model.busy")
+          ? threadId ? "Applies next run, or immediately when you send a steering message" : t("model.busy")
           : active
           ? `${active.displayName} · ${modelLabel(active, selection.model)}${
               modelProvider(active, selection.model) ? ` · ${modelProvider(active, selection.model)}` : ""

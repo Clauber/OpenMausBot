@@ -124,7 +124,7 @@ export function toWireTask(task: TaskRecord): WireTask {
 }
 
 const TASK_PATCH_FIELDS = [
-  "title", "projectId", "modelSelection", "approvalMode", "autoApprove", "alwaysAllow",
+  "title", "projectId", "modelSelection", "approvalMode", "autoApprove", "alwaysAllow", "goal",
   "unread", "rewound", "archivedAt", "pinned", "pinnedMessageId", "resumeCursors", "lastInstanceId", "cwd",
   "routineRunId", "surface", "surfaceSource", "snoozedUntil", "appliedCompactionId", "contextFloor", "lastContextModel",
 ] as const satisfies readonly (keyof TaskRecord)[];

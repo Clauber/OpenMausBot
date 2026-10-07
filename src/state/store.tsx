@@ -292,6 +292,7 @@ export interface ModelSelection {
 /** One of a bot's separate contexts: its own thread, transcript and
  * provider session. The bot's threadId points at the active one. */
 export interface Task {
+  goal?: import("../../shared/chat-goal").ChatGoal;
   waitingForTeammates?: boolean;
   threadId: string;
   /** Internal routine execution; reachable through its run receipt, not history menus. */
