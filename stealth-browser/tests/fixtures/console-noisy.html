@@ -1,0 +1,12 @@
+<!doctype html>
+<html>
+  <body>
+    <script>
+      for (let i = 0; i < 50; i++) {
+        if (i % 10 === 0) console.error("error #" + i);
+        else if (i % 5 === 0) console.warn("warn #" + i);
+        else console.log("log #" + i);
+      }
+    </script>
+  </body>
+</html>

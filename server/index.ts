@@ -185,6 +185,7 @@ import {
   type AppConfig,
   vpsSshAlias,
   browserEngineAttachCdpUrl,
+  browserEngineStealthUrl,
   DATA_DIR,
   skillsLibraryEnabled,
   EVENTS_DIR,
@@ -452,6 +453,7 @@ import * as vps from "./vps-computer.ts";
 import { RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
 import { CalendarCallManager, type CalendarCall } from "./calendar-calls.ts";
 import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
+import { StealthAttachments } from "./stealth-browser.ts";
 import { BrowserRuntime, browserRuntimeEnv } from "./browser-runtime.ts";
 import { BrowserLive } from "./browser-live.ts";
 import {
@@ -3012,6 +3014,7 @@ async function forgetTemporaryBrowser(botId: string): Promise<void> {
   if (closed) await browserRuntime.close(session);
   else console.warn(`temporary browser ${session}: could not close its session; run agent-browser --session ${session} close on this server`);
 }
+const stealthAttachments = new StealthAttachments();
 async function browserIntegration(botId: string, profile: string | undefined, turn?: { threadId: string; generation: string }) {
   const status = browserEngineStatus();
   if (status.kind !== "ready") {
@@ -3025,13 +3028,20 @@ async function browserIntegration(botId: string, profile: string | undefined, tu
   const profileTarget = profile && profile !== "guest" ? browserProfilePartitionTarget(cfg, profile) : null;
   const partitionId = profile === "guest" ? "guest" : (profileTarget?.partitionId ?? "");
   const session = currentBrowserSession(botId, profile);
+  // A guest browser never saves, so it stays on the managed engine; a
+  // persistent one is its own Chrome in the stealth-browser service. With
+  // stealth configured there is no silent fallback: a session that cannot
+  // reach the service gets no browser this turn rather than a different one.
+  const stealthBase = profile !== "guest" ? browserEngineStealthUrl(cfg) : null;
+  const stealthUrl = stealthBase ? await stealthAttachments.attachUrl(stealthBase, session) : null;
+  if (stealthBase && !stealthUrl) return null;
   const spec = agentBrowserIntegration({
       binaryPath: status.binaryPath,
       session,
       encryptionKey: browserEngineEncryptionKey(),
       persistent: profile !== "guest",
       env: { ...process.env, PATH: augmentedPath() },
-      attachCdpUrl: browserEngineAttachCdpUrl(cfg) ?? undefined,
+      attachCdpUrl: stealthUrl ?? browserEngineAttachCdpUrl(cfg) ?? undefined,
     });
   await prepareBrowserSessionState(status.binaryPath, session, { env: spec.env, persistent: profile !== "guest", isCurrent: () => {
     const current = store.bot(botId);
