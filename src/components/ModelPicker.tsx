@@ -81,7 +81,7 @@ export function offersLocalModels(instance: InstanceInfo | undefined, localCount
 
 /** The others capitalize cleanly; "xhigh" would read "Xhigh". */
 export function effortLabel(level: EffortLevel): string {
-  return level === "xhigh" ? "X-High" : level[0].toUpperCase() + level.slice(1);
+  return friendlyEffort(level);
 }
 
 /** How hard the bot thinks, for the engine it currently runs on. Rendered

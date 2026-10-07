@@ -163,7 +163,7 @@ describe("the model picker in Simple mode", () => {
     expect(opened.nodes.some((node) => node.type === ModelEngineRail)).toBe(false);
     expect(html).toContain("Claude");
     expect(html).toContain("Opus 5.5");
-    for (const step of ["Quick", "Balanced", "Deep", "Max"]) expect(html).toContain(`>${step}</button>`);
+    for (const step of ["Low", "Medium", "High", "Max"]) expect(html).toContain(`>${step}</button>`);
     expect(html).not.toContain(">Deeper</button>");
     expect(html).not.toContain("new chats too"); // every pick is also the bot's default
   });
@@ -194,10 +194,10 @@ describe("the model picker in Simple mode", () => {
     const list = region(html, "data-simple-models", "data-simple-effort-band");
     expect(list).toContain("Opus 5.5");
     expect(list).toContain("Sonnet 5.5");
-    expect(list).not.toContain(">Deep</button>");
+    expect(list).not.toContain(">High</button>");
 
     const bottom = region(html, "data-simple-effort-band");
-    expect(bottom).toContain(">Deep</button>");
+    expect(bottom).toContain(">High</button>");
     expect(bottom).not.toContain("new chats too");
     expect(bottom).toContain("Manage AI accounts");
   });
@@ -445,8 +445,8 @@ describe("the model picker in Simple mode", () => {
     expect(region(html, "data-simple-effort-band")).toContain('aria-label="Reasoning effort"');
   });
 
-  it("names the effort in plain words on the header chip", () => {
-    expect(render(bot("high")).html).toContain("· Deep");
+  it("uses the same native effort name on the header chip in both modes", () => {
+    expect(render(bot("high")).html).toContain("· High");
     fixture.advanced = true;
     expect(render(bot("high")).html).toContain("· High");
   });
