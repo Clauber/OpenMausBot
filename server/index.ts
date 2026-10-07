@@ -20726,9 +20726,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
       if ([existing, selected].some((owner) => {
         const mode = approvalModeFor(owner);
-        return (mode === "full" || mode === "custom") &&
-          (!supportsApprovalMode(checked.selection, mode) ||
-            registry.cliTarget(checked.selection.instanceId)?.driverKind !== registry.cliTarget(owner.modelSelection.instanceId)?.driverKind);
+        return (mode === "full" || mode === "custom") && !supportsApprovalMode(checked.selection, mode);
       })) {
         return json(res, 400, {
           error: "Changing providers with elevated permissions requires choosing Ask first",
@@ -21105,17 +21103,14 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const targetSelection = normalizedSelection ?? existingBot?.modelSelection;
       if (normalizedSelection && selectedTask) {
         const mode = approvalModeFor(selectedTask);
-        if ((mode === "full" || mode === "custom") &&
-          (!supportsApprovalMode(normalizedSelection, mode) ||
-            registry.cliTarget(normalizedSelection.instanceId)?.driverKind !== registry.cliTarget(selectedTask.modelSelection.instanceId)?.driverKind)) {
+        if ((mode === "full" || mode === "custom") && !supportsApprovalMode(normalizedSelection, mode)) {
           return json(res, 400, { error: "Choose Ask for the selected thread before changing providers with elevated permissions" });
         }
       }
       if (
         (requestedApprovalMode === "full" || requestedApprovalMode === "custom") &&
         (body.approvalMode !== undefined || normalizedSelection !== undefined) &&
-        (!targetSelection || !supportsApprovalMode(targetSelection, requestedApprovalMode) ||
-          (existingBot && normalizedSelection && registry.cliTarget(normalizedSelection.instanceId)?.driverKind !== registry.cliTarget(existingBot.modelSelection.instanceId)?.driverKind))
+        (!targetSelection || !supportsApprovalMode(targetSelection, requestedApprovalMode))
       ) {
         return json(res, 400, {
           error: "This provider does not support the selected approval level, or changing providers requires choosing Ask first",

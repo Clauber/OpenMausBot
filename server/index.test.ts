@@ -5344,7 +5344,7 @@ describe("harness HTTP API", () => {
     }
   });
 
-  it("keeps Full and Custom bots on Codex when the paired model route changes providers", async () => {
+  it("carries Full across providers and keeps Custom bots on Codex", async () => {
     const isolatedHome = mkdtempSync(join(tmpdir(), "omb-trusted-mode-model-"));
     const isolatedData = join(isolatedHome, ".openmausbot");
     const isolatedStatic = join(isolatedHome, "static");
@@ -5412,15 +5412,17 @@ describe("harness HTTP API", () => {
       const claude = instances.find((instance: { instanceId: string }) => instance.instanceId === "claude");
       const targetSelection = { instanceId: claude.instanceId, model: claude.models.default };
 
-      for (const seeded of trustedBots) {
+      // Claude can't run Custom, so a Custom bot stays on Codex until it
+      // leaves Custom through the desktop app.
+      for (const seeded of trustedBots.filter(candidate => candidate.approvalMode === "custom")) {
         const rejected = await isolatedApi("PATCH", `/api/bots/${seeded.id}/model`, targetSelection);
         expect(rejected.status, seeded.approvalMode).toBe(400);
         expect(rejected.body.error).toMatch(/requires choosing Ask first/i);
         const scoped = await isolatedApi("PATCH", `/api/bots/${seeded.id}/tasks/${seeded.threadId}`, {
           modelSelection: targetSelection, updateBotDefault: true, approvalMode: "ask",
         });
-        expect(scoped.status, seeded.approvalMode).toBe(seeded.approvalMode === "custom" ? 403 : 400);
-        expect(scoped.body.error).toMatch(/Custom approval|resetApprovalToAsk/i);
+        expect(scoped.status, seeded.approvalMode).toBe(403);
+        expect(scoped.body.error).toMatch(/Custom approval/i);
         const unchanged = (await isolatedApi("GET", "/api/bots?messages=0")).body.bots.find(
           (candidate: { id: string }) => candidate.id === seeded.id,
         );
@@ -5447,16 +5449,20 @@ describe("harness HTTP API", () => {
       });
       expect(sameProvider.status).toBe(200);
       expect(sameProvider.body.task.approvalMode ?? sameProvider.body.bot.approvalMode).toBe("full");
+      // Claude runs Full too, so the switch needs no confirmation and the
+      // bot, its thread and a following sibling all keep Full.
       const switched = await isolatedApi("PATCH", `/api/bots/${full.id}/tasks/${full.threadId}`, {
-        modelSelection: targetSelection, updateBotDefault: true, resetApprovalToAsk: true,
+        modelSelection: targetSelection, updateBotDefault: true,
       });
       expect(switched.status).toBe(200);
-      expect(switched.body.bot).toMatchObject({ modelSelection: targetSelection, approvalMode: "ask", autoApprove: false });
-      expect(switched.body.task).toMatchObject({ modelSelection: targetSelection, approvalMode: "ask", alwaysAllow: [] });
+      expect(switched.body.bot).toMatchObject({ modelSelection: targetSelection, approvalMode: "full" });
+      expect(switched.body.task).toMatchObject({ modelSelection: targetSelection });
+      expect(switched.body.task.approvalMode ?? "full").toBe("full");
       expect(switched.body.bot.tasks.find((task: { threadId: string }) => task.threadId === sibling.threadId))
         .toMatchObject({ modelSelection: full.modelSelection, approvalMode: "full" });
       const created = await isolatedApi("POST", `/api/bots/${full.id}/tasks`, { title: "New defaults" });
-      expect(created.body.task).toMatchObject({ modelSelection: targetSelection, approvalMode: "ask" });
+      expect(created.body.task).toMatchObject({ modelSelection: targetSelection });
+      expect(created.body.task.approvalMode ?? "full").toBe("full");
       const refusedCustom = trustedBots.find(candidate => candidate.approvalMode === "custom")!;
       expect((await isolatedApi("PATCH", `/api/bots/${refusedCustom.id}/tasks/${refusedCustom.threadId}`, {
         modelSelection: targetSelection, resetApprovalToAsk: true,

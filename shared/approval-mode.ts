@@ -24,16 +24,14 @@ export function supportsApprovalMode(driverKind: string | undefined, mode: Appro
     "openai-compat", "grok", "minimax", "mistral", "cerebras", "zcodeAgent"].includes(driverKind ?? "");
 }
 
-/** A Full/Custom grant belongs to one provider's tool semantics. Other
- * modes carry across only when the destination actually implements them.
- * Adapted from tahodev's provider-switch guard in PR #1120. */
+/** A level carries across a provider switch whenever the destination
+ * implements it; only one it can't run falls back to Ask. */
 export function modelSwitchNeedsAsk(
   mode: ApprovalMode,
-  fromDriver: string | undefined,
+  _fromDriver: string | undefined,
   toDriver: string | undefined,
 ): boolean {
-  return !supportsApprovalMode(toDriver, mode) ||
-    ((mode === "full" || mode === "custom") && fromDriver !== toDriver);
+  return !supportsApprovalMode(toDriver, mode);
 }
 
 export function hasNativeAutoReview(driverKind: string | undefined): boolean {
