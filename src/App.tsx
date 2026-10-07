@@ -8,7 +8,6 @@ import { FirstConversationTour } from "@/components/onboarding/FirstConversation
 import { GuidedTour } from "@/components/onboarding/GuidedTour";
 import { LiveCallHost } from "@/components/LiveCallHost";
 import { ThreadRefsProvider } from "@/components/ThreadRefs";
-import { initAnalytics } from "@/lib/analytics";
 import { Sidebar } from "@/components/Sidebar";
 import { ChatView } from "@/components/ChatView";
 import { GroupView } from "@/components/GroupView";
@@ -403,9 +402,6 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
 }
 
 function Application() {
-  useEffect(() => {
-    initAnalytics();
-  }, []);
   const viewer = useWelcomeViewer();
   return (
     <DesktopCapabilitiesProvider>
