@@ -6,6 +6,7 @@ import { StoreProvider, useStore, type Bot } from "../state/store";
 import { PermissionsSection } from "../components/bot-settings/PermissionsSection";
 import { useBotSettingsDerived } from "../components/bot-settings/useBotSettingsDerived";
 import { applySkin } from "../lib/skins";
+import { setAnalyticsEnabled } from "../lib/analytics";
 import "../styles.css";
 
 function Permissions({ bot }: { bot: Bot }) {
@@ -25,5 +26,6 @@ function Fixture() {
     {bot && <div className="min-h-0 flex-1"><ChatView bot={bot} /></div>}
   </div>;
 }
+setAnalyticsEnabled(false);
 applySkin("midnight");
 createRoot(document.getElementById("root")!).render(<DesktopCapabilitiesProvider><StoreProvider><Fixture /></StoreProvider></DesktopCapabilitiesProvider>);

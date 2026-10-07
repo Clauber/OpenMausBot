@@ -2,6 +2,7 @@ import { Children, createElement, isValidElement, type ReactElement, type ReactN
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConfigStatus } from "@/state/store";
+import { DECIDER_JOBS, type DeciderJob } from "../../shared/decider-jobs";
 import { DecisionModelSettings, deciderFailureText } from "./DecisionModelSettings";
 import { Switch } from "./SettingsPrimitives";
 
@@ -51,7 +52,10 @@ function render() {
 const click = (node: Node) => (node.props.onClick as () => void)();
 const type = (node: Node, value: string) => (node.props.onChange as (event: { target: { value: string } }) => void)({ target: { value } });
 const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
-const status = (decider: NonNullable<ConfigStatus["decider"]>) => ({ decider } as ConfigStatus);
+type DeciderStatus = NonNullable<ConfigStatus["decider"]>;
+/** Jobs the fixture does not name read as the server reports them: off. */
+const status = (decider: Omit<DeciderStatus, "jobs"> & { jobs: Partial<DeciderStatus["jobs"]> }) =>
+  ({ decider: { ...decider, jobs: { ...Object.fromEntries(DECIDER_JOBS.map((job) => [job, false])), ...decider.jobs } as Record<DeciderJob, boolean> } } as ConfigStatus);
 
 beforeEach(() => {
   fixture.values = [];
@@ -76,12 +80,23 @@ describe("DecisionModelSettings", () => {
     expect(view.html).toContain("Save a key below to turn this on.");
   });
 
-  it("lists the coming-soon jobs with no switch", () => {
+  it("lists every job with its own switch, and nothing as coming soon", () => {
     const view = render();
-    for (const label of ["Browser clicks", "Tool selection", "Where work runs"]) expect(view.html).toContain(label);
-    expect(view.html.match(/Coming soon/g)).toHaveLength(3);
-    // only the master switch and the room job have switches
-    expect(view.switches).toHaveLength(2);
+    for (const label of ["Who answers in rooms", "Fewer connected-app tools", "Where work runs", "Click by description"]) expect(view.html).toContain(label);
+    expect(view.html).not.toContain("Coming soon");
+    // the master switch, then one per job
+    expect(view.switches).toHaveLength(1 + DECIDER_JOBS.length);
+  });
+
+  it("a job's switch writes only that job", async () => {
+    fixture.config = status({ provider: "jev", configured: true, enabled: true, jobs: { roomRouting: true, workPlace: true } });
+    fixture.api.mockResolvedValueOnce(fixture.config);
+    const view = render();
+    const [place] = view.switches.filter((node) => node.props["data-testid"] === "decider-job-workPlace");
+    expect(place!.props.checked).toBe(true);
+    click(place!);
+    await flush();
+    expect(fixture.api).toHaveBeenLastCalledWith("/api/config", { method: "PUT", body: JSON.stringify({ decider: { jobs: { workPlace: false } } }) });
   });
 
   it("every button shows a pointer cursor", () => {

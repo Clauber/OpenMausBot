@@ -13,6 +13,10 @@ beforeAll(() => {
 
 // Pinned to Advanced: these cover the Advanced rail; Simple has its own suite.
 vi.mock("@/lib/interface-mode", () => ({ useAdvancedMode: () => true, setAdvancedMode: () => {} }));
+vi.mock("@/lib/analytics", () => ({
+  analyticsEnabled: () => false,
+  setAnalyticsEnabled: () => {},
+}));
 
 describe("Settings → Decision model", () => {
   it("is a sidebar item of its own, not a row under Connections", async () => {

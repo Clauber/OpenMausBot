@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { ChatView } from "../../src/components/ChatView";
 import { DesktopCapabilitiesProvider } from "../../src/components/DesktopCapabilities";
 import { StoreProvider, useStore } from "../../src/state/store";
+import { setAnalyticsEnabled } from "../../src/lib/analytics";
 import { applySkin } from "../../src/lib/skins";
 import "../../src/styles.css";
 
@@ -16,5 +17,6 @@ function Fixture() {
     {bot && <div className="min-h-0 flex-1"><ChatView bot={bot} /></div>}
   </main>;
 }
+setAnalyticsEnabled(false);
 applySkin("midnight");
 createRoot(document.getElementById("root")!).render(<DesktopCapabilitiesProvider><StoreProvider><Fixture /></StoreProvider></DesktopCapabilitiesProvider>);

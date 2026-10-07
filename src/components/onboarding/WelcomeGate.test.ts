@@ -81,7 +81,7 @@ describe("who gets the welcome flow", () => {
     vi.stubGlobal("window", LOCAL_PAGE);
     const { tree } = gate(LOCAL_VIEWER);
     expect(tree?.type).toBe(WelcomeFlow);
-    expect(tree?.props).toMatchObject({ hosted: false, initialBeat: undefined });
+    expect(tree?.props).toMatchObject({ hosted: false, initialBeat: undefined, replay: false });
   });
 
   it("opens the hosted beat set for a hosted workspace's admin", () => {
@@ -147,7 +147,7 @@ describe("who gets the welcome flow", () => {
     store.state = { ...store.state, welcomeOpen: true };
     const replay = gate({ hosted: false, canSave: false }).tree!;
     expect(replay.type).toBe(WelcomeFlow);
-    expect(replay.props).toMatchObject({ hosted: false });
+    expect(replay.props).toMatchObject({ hosted: false, replay: true });
   });
 
   it("treats a hosted workspace opened inside the desktop app like a browser", () => {
