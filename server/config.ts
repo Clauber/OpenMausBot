@@ -68,6 +68,15 @@ export function isValidCdpTarget(value: unknown): value is string {
   return CDP_URL.test(value);
 }
 
+/** Base URL of the stealth-browser service (stealth-browser/ in this repo). */
+export function isValidStealthUrl(value: unknown): value is string {
+  if (typeof value !== "string" || value === "") return false;
+  try {
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password && !url.search && !url.hash;
+  } catch { return false; }
+}
+
 /** Keep the persisted VPS shape deliberately smaller than an SSH connection. */
 export function normalizeVpsConfig(raw: unknown): { sshAlias?: string } {
   if (raw === undefined || raw === null) return {};
@@ -95,6 +104,9 @@ const vpsConfigSchema = z.object({
 const browserEngineConfigSchema = z.object({
   attachCdpUrl: z.string().trim().max(2048).refine((value) => value === "" || isValidCdpTarget(value), {
     message: "browserEngine.attachCdpUrl must be a CDP port (1-65535) or an http(s)/ws(s) URL",
+  }).optional(),
+  stealthUrl: z.string().trim().max(2048).refine((value) => value === "" || isValidStealthUrl(value), {
+    message: "browserEngine.stealthUrl must be an http(s) URL of a stealth-browser service",
   }).optional(),
 });
 const roomConfigSchema = z.object({
@@ -644,8 +656,10 @@ export interface AppConfig {
   browserProfiles?: BrowserProfile[];
   /** CDP target of a Chrome the operator already has running (a bare port,
    * e.g. "9333", or an http(s)/ws(s) URL). When set, a bot's browser
-   * attaches to it instead of agent-browser spawning its own (#1396). */
-  browserEngine?: { attachCdpUrl?: string };
+   * attaches to it instead of agent-browser spawning its own (#1396).
+   * stealthUrl: a stealth-browser service; each bot's persistent browser
+   * becomes its own headed stealth Chrome there, attached over CDP. */
+  browserEngine?: { attachCdpUrl?: string; stealthUrl?: string };
   instances?: InstanceConfigMap;
 }
 export type BrowserProfile = z.output<typeof browserProfileSchema> & {
@@ -763,6 +777,11 @@ export function vpsSshAlias(cfg: AppConfig): string | null {
  * second, cheap guarantee rather than trusting a hand-edited config.json. */
 export function browserEngineAttachCdpUrl(cfg: AppConfig): string | null {
   return isValidCdpTarget(cfg.browserEngine?.attachCdpUrl) ? cfg.browserEngine.attachCdpUrl : null;
+}
+
+/** Same read-and-revalidate shape as browserEngineAttachCdpUrl. */
+export function browserEngineStealthUrl(cfg: AppConfig): string | null {
+  return isValidStealthUrl(cfg.browserEngine?.stealthUrl) ? cfg.browserEngine.stealthUrl : null;
 }
 
 export function roomTurnTimeoutMinutes(cfg: AppConfig): number {

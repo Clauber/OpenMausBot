@@ -39,6 +39,7 @@ import { cacheUntilConfigChanges,
   syncCredentialEnv,
   vpsSshAlias,
   browserEngineAttachCdpUrl,
+  browserEngineStealthUrl,
   withInstanceCli,
   WORKSPACE_CREDENTIAL_ENV,
   liveSettingsFor,
@@ -486,6 +487,18 @@ describe("configuration boundaries", () => {
     // An empty string clears the setting (same convention as tts.baseUrl, vps.sshAlias).
     expect(parseConfigPatch({ browserEngine: { attachCdpUrl: "" } })).toEqual({ browserEngine: { attachCdpUrl: "" } });
     expect(browserEngineAttachCdpUrl({ browserEngine: { attachCdpUrl: "" } })).toBeNull();
+  });
+
+  it("validates browserEngine.stealthUrl as a plain http(s) base URL", () => {
+    expect(browserEngineStealthUrl({})).toBeNull();
+    for (const value of ["http://127.0.0.1:9379", "https://stealth.internal/"]) {
+      expect(parseStoredConfig({ browserEngine: { stealthUrl: value } })).toEqual({ browserEngine: { stealthUrl: value } });
+      expect(browserEngineStealthUrl({ browserEngine: { stealthUrl: value } })).toBe(value);
+    }
+    for (const value of ["9379", "ws://127.0.0.1:9379", "http://user:pw@127.0.0.1:9379", "http://127.0.0.1:9379/?x=1", "not-a-url"]) {
+      expect(() => parseConfigPatch({ browserEngine: { stealthUrl: value } })).toThrow("browserEngine.stealthUrl");
+    }
+    expect(browserEngineStealthUrl({ browserEngine: { stealthUrl: "" } })).toBeNull();
   });
 
   it("accepts a persisted global room turn timeout and supplies the legacy default", () => {
