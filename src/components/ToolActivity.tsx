@@ -17,7 +17,7 @@ export function ToolActivity({ tool, place = null }: { tool: NonNullable<Message
   const [expanded, setExpanded] = useState(false);
   const failed = tool.ok === false;
   const status = tool.ok === undefined ? t("toolDetail.running") : failed ? t("toolDetail.failed") : t("toolDetail.completed");
-  return (
+  const chip = (
     <details onToggle={(event) => setExpanded(event.currentTarget.open)} className="group/tool w-fit max-w-full rounded-xl border border-hairline/40 bg-panel text-[13px] open:w-[min(38rem,100%)]" data-testid="tool-activity">
       <summary
         role="button"
@@ -44,5 +44,29 @@ export function ToolActivity({ tool, place = null }: { tool: NonNullable<Message
         <p className="text-[11px] text-ink-secondary">{t("toolDetail.previewHint")}</p>
       </div>
     </details>
+  );
+  if (!tool.thought) return chip;
+  // What the model was thinking right before this step, readable without
+  // opening anything: long tool-heavy turns otherwise read as bare names.
+  return (
+    <div className="flex max-w-full flex-col items-start gap-1.5">
+      <ThoughtText text={tool.thought} />
+      {chip}
+    </div>
+  );
+}
+
+function ThoughtText({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => setOpen((value) => !value)}
+      aria-expanded={open}
+      className={cn("max-w-[42rem] text-left text-[13px] leading-relaxed whitespace-pre-wrap break-words text-ink-tertiary hover:text-ink-secondary", !open && "line-clamp-3")}
+      data-testid="tool-thought"
+    >
+      {text}
+    </button>
   );
 }
