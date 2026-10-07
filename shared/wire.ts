@@ -120,6 +120,7 @@ export interface GroupThreadUsage extends TaskUsage {
  * session. Wire form: no resumeCursors or lastInstanceId — the harness's
  * own bookkeeping that no client has ever used. */
 export interface WireTask {
+  goal?: import("./chat-goal.ts").ChatGoal;
   /** Outstanding handoffs, not an active provider turn. */
   waitingForTeammates?: boolean;
   threadId: string;

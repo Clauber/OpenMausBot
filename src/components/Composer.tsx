@@ -319,10 +319,10 @@ export function Composer({
           )?.capabilities?.agentsMcp,
       );
     const available: ComposerSlashCommand[] = [];
-    if (group && !group.dm) available.push({
+    if (bot || (group && !group.dm)) available.push({
       id: "goal",
       label: "/goal",
-      description: t("composer.command.goalDesc"),
+      description: bot && !group ? "Work toward a persistent goal in this chat" : t("composer.command.goalDesc"),
     });
     if (
       skillAuthoringEnabled(state.config) &&
@@ -398,7 +398,7 @@ export function Composer({
 
   const pickCommand = (command: ComposerSlashCommand) => {
     if (!slash) return;
-    const replacement = command.id === "learn" ? "/learn " : command.id === "setup" ? "/setup " : "";
+    const replacement = command.id === "learn" ? "/learn " : command.id === "setup" ? "/setup " : !group ? "/goal " : "";
     const next = replaceComposerSlashTrigger(text, slash, replacement);
     editText(next.text);
     setCaret(next.caret);
@@ -797,8 +797,21 @@ export function Composer({
     setRecording((r) => !r);
   };
 
+  const chatGoal = !group ? bot?.tasks?.find(task => task.threadId === (threadId ?? bot.threadId))?.goal : undefined;
+  const goalControl = (action: "pause" | "resume" | "stop") => {
+    if (bot) dispatch({ type: "send", botId: bot.id, threadId: threadId ?? bot.threadId, text: `/goal ${action}`, sendId: crypto.randomUUID() });
+  };
+
   return (
     <div className="pointer-events-none relative px-5 pb-3">
+      {chatGoal && (
+        <div data-chat-goal className="pointer-events-auto mb-2 flex items-center gap-2 rounded-xl border border-hairline/40 bg-card px-3 py-2 text-[12px]">
+          <span className="min-w-0 flex-1 truncate" title={chatGoal.detail ?? chatGoal.objective}>Goal {chatGoal.status}: {chatGoal.objective}</span>
+          {chatGoal.status === "active" && <button type="button" onClick={() => goalControl("pause")}>Pause goal</button>}
+          {(chatGoal.status === "paused" || chatGoal.status === "blocked") && <button type="button" onClick={() => goalControl("resume")}>Resume goal</button>}
+          {!["completed", "stopped"].includes(chatGoal.status) && <button type="button" onClick={() => goalControl("stop")}>Stop goal</button>}
+        </div>
+      )}
       {/* No fill or hairline on this wrapper — those were the black frame
           in the pill's top corners. The dock overlays the transcript. */}
       {speechError && (

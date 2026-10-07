@@ -271,11 +271,17 @@ describe("ModelPicker trigger", () => {
   const effortChip = (markup: string) =>
     markup.match(/<span data-model-effort[^>]*>(.*?)<\/span>/s)?.[1].replace(/<!--.*?-->/g, "").trim();
 
-  it("names the thread in busy header help and the bot in profile settings", () => {
+  it("allows next-run selection in a busy thread while profile editing stays locked", () => {
     fixture.instances = [engine()];
     for (const threadId of ["independent-thread", undefined]) {
       const markup = renderToStaticMarkup(createElement(ModelPicker, { bot: { ...bot(), busy: true }, threadId }));
-      expect(markup).toContain(`Stop this ${threadId ? "thread" : "bot"}&#x27;s turn before changing its model`);
+      if (threadId) {
+        expect(markup).toContain("Applies next run, or immediately when you send a steering message");
+        expect(markup).not.toContain('disabled=""');
+      } else {
+        expect(markup).toContain("Stop this bot&#x27;s turn before changing its model");
+        expect(markup).toContain('disabled=""');
+      }
     }
   });
 
