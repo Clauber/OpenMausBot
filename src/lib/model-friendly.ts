@@ -1,24 +1,15 @@
-// Plain words for the model picker's Simple view. Nothing here changes what
-// is sent to a provider: the friendly names map one-to-one onto the real
-// effort levels, and a blurb is only a hover hint on a model's row.
+// Display names for the model picker. Effort names preserve the engine's
+// capability values; a blurb is only a hover hint on a model's row.
 import type { EffortLevel } from "../../shared/wire";
 import { t } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
 
-const FRIENDLY_EFFORT: Record<EffortLevel, LocaleKey> = {
-  none: "model.effort.off",
-  low: "model.effort.quick",
-  medium: "model.effort.balanced",
-  high: "model.effort.deep",
-  xhigh: "model.effort.deeper",
-  max: "model.effort.max",
-};
-
+// Keep the engine capability names visible in both picker modes.
 export function friendlyEffort(level: EffortLevel): string {
-  return t(FRIENDLY_EFFORT[level]);
+  return level === "xhigh" ? "X-High" : level[0].toUpperCase() + level.slice(1);
 }
 
-/** At most four steps people can tell apart: quick, balanced, deep and the
+/** At most four steps: low, medium, high and the
  * top level the engine offers (max, else xhigh). An engine without those
  * keeps its own first four. The bot's current level always stays visible,
  * so Simple mode never hides a choice that is already in effect. */
