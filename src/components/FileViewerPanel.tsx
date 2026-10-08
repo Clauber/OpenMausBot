@@ -176,7 +176,7 @@ function FileViewerContent({ tab }: { tab: FileViewerTab }) {
         {!source && previewKind === "html" && !content.truncated
           ? <iframe title={tab.name} sandbox="allow-scripts" srcDoc={sandboxedHtml(content.text ?? "")} className="min-h-0 flex-1 border-0 bg-white" />
           : !source && previewKind === "markdown"
-          ? <div className="min-h-0 flex-1 overflow-auto p-4"><ChatMarkdown>{content.text ?? ""}</ChatMarkdown></div>
+          ? <div className="min-h-0 flex-1 overflow-auto p-4"><ChatMarkdown text={content.text ?? ""} /></div>
           : <div dir="ltr" className="min-h-0 flex-1 overflow-auto p-4"><CodeBlock lang={fileLanguage(tab.path)} code={content.text ?? ""} /></div>}
       </div>
     );
