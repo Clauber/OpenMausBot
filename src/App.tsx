@@ -24,6 +24,7 @@ import { InspectorPanel } from "@/components/InspectorPanel";
 import { ActivityPanel } from "@/components/ActivityPanel";
 import { FileViewerPanel } from "@/components/FileViewerPanel";
 import { FileViewerContext, type FileViewerTab } from "@/lib/file-viewer";
+import { TerminalPanel } from "@/components/TerminalPanel";
 import { SettingsModal } from "@/components/SettingsModal";
 import { WorkspaceBackupRecovery } from "@/components/WorkspaceBackupSettings";
 import { UpdateBanner } from "@/components/UpdateBanner";
@@ -175,6 +176,21 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [state.bots, state.selectedId, state.shortcutsOpen, dispatch]);
+
+  // Ctrl+` toggles the terminal dock. Capture phase on purpose: xterm's
+  // textarea must never see the chord, or a closing panel also feeds the
+  // shell a stray control byte.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+      if (e.key !== "`" && e.code !== "Backquote") return;
+      e.preventDefault();
+      e.stopPropagation();
+      dispatch({ type: "toggleTerminal" });
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [dispatch]);
 
   useEffect(() => {
     window.ogb?.setUnreadCount?.(unreadCount);
@@ -396,6 +412,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
           palette on top when one of them is open underneath */}
       <CommandPalette onOpenChange={setPaletteOpen} />
       </div>
+      {state.terminalOpen && <TerminalPanel />}
       {/* Renderer-drawn caption buttons for the overlay-less frameless
           Windows window. Deliberately the LAST child of the shell: Blink
           resolves -webkit-app-region in DOM-walk order, so these no-drag
