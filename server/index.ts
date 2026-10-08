@@ -186,6 +186,7 @@ import {
   vpsSshAlias,
   browserEngineAttachCdpUrl,
   browserStealthEnabled,
+  browserEngineStealthUrl,
   DATA_DIR,
   skillsLibraryEnabled,
   EVENTS_DIR,
@@ -453,6 +454,7 @@ import * as vps from "./vps-computer.ts";
 import { RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
 import { CalendarCallManager, type CalendarCall } from "./calendar-calls.ts";
 import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
+import { StealthAttachments } from "./stealth-browser.ts";
 import { BrowserRuntime, browserRuntimeEnv } from "./browser-runtime.ts";
 import { BrowserLive } from "./browser-live.ts";
 import { stealthCdpTarget, dropStealthSession, shutdownStealthBrowser } from "./browser-stealth.ts";
@@ -3016,6 +3018,7 @@ async function forgetTemporaryBrowser(botId: string): Promise<void> {
   if (closed) await browserRuntime.close(session);
   else console.warn(`temporary browser ${session}: could not close its session; run agent-browser --session ${session} close on this server`);
 }
+const stealthAttachments = new StealthAttachments();
 async function browserIntegration(botId: string, profile: string | undefined, turn?: { threadId: string; generation: string }) {
   const status = browserEngineStatus();
   if (status.kind !== "ready") {
@@ -3029,9 +3032,14 @@ async function browserIntegration(botId: string, profile: string | undefined, tu
   const profileTarget = profile && profile !== "guest" ? browserProfilePartitionTarget(cfg, profile) : null;
   const partitionId = profile === "guest" ? "guest" : (profileTarget?.partitionId ?? "");
   const session = currentBrowserSession(botId, profile);
-  // The built-in stealth browser supplies its own attach target; an enabled
-  // stealth runtime that cannot start fails the browser mount rather than
-  // silently handing the bot a plain, fingerprintable Chrome.
+  // The built-in stealth browser wins when configured: it launches this
+  // server's own fingerprinted Chrome per session, and an enabled runtime
+  // that cannot start fails the mount rather than silently handing the bot a
+  // plain, fingerprintable Chrome. Otherwise a configured stealthUrl service
+  // takes non-guest sessions (a guest browser never saves, so it stays on
+  // the managed engine there); with neither, attachCdpUrl or the managed
+  // engine applies. No silent fallbacks in either stealth path: a session
+  // that cannot reach its stealth browser gets no browser this turn.
   let attachCdpUrl: string | null = null;
   if (browserStealthEnabled(cfg)) {
     try {
@@ -3043,6 +3051,10 @@ async function browserIntegration(botId: string, profile: string | undefined, tu
       }
       return null;
     }
+  } else {
+    const stealthBase = profile !== "guest" ? browserEngineStealthUrl(cfg) : null;
+    attachCdpUrl = stealthBase ? await stealthAttachments.attachUrl(stealthBase, session) : null;
+    if (stealthBase && !attachCdpUrl) return null;
   }
   const spec = agentBrowserIntegration({
       binaryPath: status.binaryPath,
@@ -5717,6 +5729,11 @@ onSteeredQueueChange(() => broadcast({ kind: "bot.queued", queues: publicBotQueu
 // item/request ids are only unique within a thread, so two bots acting at
 // once can collide on a bare id and patch each other's messages.
 const toolMessageByItem = new Map<string, string>(); // threadId:itemId -> messageId
+// Reasoning streamed since the thread's last tool call. The next tool chip
+// carries it as its `thought`, so a long tool-heavy turn reads as what the
+// bot was thinking before each step, not a list of bare tool names.
+const pendingThoughtByThread = new Map<string, string>();
+const THOUGHT_MAX = 4_000;
 const askMessageByRequest = new Map<string, string>(); // threadId:requestId -> messageId
 // Only native, live permission metadata can become a remembered grant. Never
 // rebuild executable authority from an imported transcript or display summary.
@@ -7456,6 +7473,12 @@ bus.subscribe((event: RuntimeEvent) => {
   if (requestOwner && event.turnId && !requestOwner.turnId && event.type === "turn.started" &&
       directTurnDispatchClaims.get(event.threadId)?.id === requestOwner.generation) requestOwner.turnId = event.turnId;
   const liveTurnId = event.turnId ?? liveTurnByThread.get(event.threadId);
+  if (event.type === "content.delta" && event.streamKind === "reasoning_text" && !goalCoordinatorTurn && !ambiguousCoordinatorText) {
+    const sofar = pendingThoughtByThread.get(event.threadId) ?? "";
+    if (sofar.length < THOUGHT_MAX * 2) pendingThoughtByThread.set(event.threadId, sofar + event.delta);
+  } else if (event.type === "turn.started" || event.type === "turn.completed") {
+    pendingThoughtByThread.delete(event.threadId);
+  }
   switch (event.type) {
     case "turn.started":
       turnStartedAt.set(event.threadId, Date.now());
@@ -7527,13 +7550,16 @@ bus.subscribe((event: RuntimeEvent) => {
         // appends a richer "Messaged @X" chip linking to the channel
         if (event.title?.endsWith("__ask_bot")) break;
         const name = event.title ?? "tool";
+        const pending = pendingThoughtByThread.get(event.threadId)?.trim();
+        pendingThoughtByThread.delete(event.threadId);
+        const thought = pending ? redactSecretsInText(pending).trim().slice(-THOUGHT_MAX) : undefined;
         // narration is folded in here, once, so call mode can read the
         // chip aloud without re-deriving it — and so the phrase a user
         // hears and the chip they see can never drift apart
         const message = pushMessage({
           role: "bot",
           kind: "activity",
-          tool: { name, spoken: narrateTool(name) ?? undefined, summary: event.summary, input: event.input, itemId: event.itemId ?? event.eventId },
+          tool: { name, spoken: narrateTool(name) ?? undefined, summary: event.summary, input: event.input, itemId: event.itemId ?? event.eventId, ...(thought ? { thought } : {}) },
           // attributed to its turn so the digest can count it
           turnId: liveTurnId,
         });

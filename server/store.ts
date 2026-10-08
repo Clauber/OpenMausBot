@@ -153,6 +153,7 @@ function redactBotAuthored<T extends Omit<Message, "id" | "at"> & { at?: number 
   if (out.tool?.name) {
     out.tool = { ...out.tool, name: redactSecretsInText(out.tool.name) };
     if (out.tool.summary) out.tool.summary = redactSecretsInText(out.tool.summary);
+    if (out.tool.thought) out.tool.thought = redactSecretsInText(out.tool.thought);
   }
   if (out.routineRun) {
     const routineRun = { ...out.routineRun };

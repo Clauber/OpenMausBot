@@ -1,0 +1,27 @@
+# systemd --user unit: a headed stealth Chrome per bot for OpenMausBot.
+# Install: copy to ~/.config/systemd/user/, adjust the paths, then
+#   systemctl --user daemon-reload && systemctl --user enable --now stealth-browser
+# and set OpenMausBot's browserEngine.stealthUrl to http://127.0.0.1:9379.
+[Unit]
+Description=Stealth browser for OpenMausBot (headed Chrome under Xvfb, loopback only)
+After=network-online.target
+
+[Service]
+Environment=HOST=127.0.0.1
+Environment=PORT=9379
+Environment=HEADLESS=false
+Environment=VIEWPORT=1280x720
+Environment=DEBUG_PORT_BASE=9500
+# OpenMausBot drives these browsers over CDP, which the service cannot see;
+# never close a profile for idleness under a bot that is working.
+Environment=PERSISTENT_IDLE_MS=31536000000
+Environment=STATE_DIR=%h/.local/share/stealth-browser/state
+Environment=PROFILES_DIR=%h/.local/share/stealth-browser/profiles
+Environment=RECORDINGS_DIR=%h/.local/share/stealth-browser/recordings
+WorkingDirectory=%h/.local/share/stealth-browser/app
+ExecStart=/usr/bin/xvfb-run -a -s "-screen 0 2560x1440x24" /usr/bin/env node dist/server.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

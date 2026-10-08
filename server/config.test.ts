@@ -41,6 +41,7 @@ import { cacheUntilConfigChanges,
   browserEngineAttachCdpUrl,
   browserStealthEnabled,
   browserStealthOptions,
+  browserEngineStealthUrl,
   withInstanceCli,
   WORKSPACE_CREDENTIAL_ENV,
   liveSettingsFor,
@@ -506,6 +507,18 @@ describe("configuration boundaries", () => {
     expect(() => parseConfigPatch({ browserEngine: { stealth: { enabled: "yes" } } })).toThrow("browserEngine");
     expect(() => parseConfigPatch({ browserEngine: { stealth: { debugPortBase: 80 } } })).toThrow("browserEngine");
     expect(parseConfigPatch({ browserEngine: { stealth: { surprise: true } } })).toEqual({ browserEngine: { stealth: {} } });
+  });
+
+  it("validates browserEngine.stealthUrl as a plain http(s) base URL", () => {
+    expect(browserEngineStealthUrl({})).toBeNull();
+    for (const value of ["http://127.0.0.1:9379", "https://stealth.internal/"]) {
+      expect(parseStoredConfig({ browserEngine: { stealthUrl: value } })).toEqual({ browserEngine: { stealthUrl: value } });
+      expect(browserEngineStealthUrl({ browserEngine: { stealthUrl: value } })).toBe(value);
+    }
+    for (const value of ["9379", "ws://127.0.0.1:9379", "http://user:pw@127.0.0.1:9379", "http://127.0.0.1:9379/?x=1", "not-a-url"]) {
+      expect(() => parseConfigPatch({ browserEngine: { stealthUrl: value } })).toThrow("browserEngine.stealthUrl");
+    }
+    expect(browserEngineStealthUrl({ browserEngine: { stealthUrl: "" } })).toBeNull();
   });
 
   it("accepts a persisted global room turn timeout and supplies the legacy default", () => {

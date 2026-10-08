@@ -68,6 +68,15 @@ export function isValidCdpTarget(value: unknown): value is string {
   return CDP_URL.test(value);
 }
 
+/** Base URL of the stealth-browser service (stealth-browser/ in this repo). */
+export function isValidStealthUrl(value: unknown): value is string {
+  if (typeof value !== "string" || value === "") return false;
+  try {
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password && !url.search && !url.hash;
+  } catch { return false; }
+}
+
 /** Keep the persisted VPS shape deliberately smaller than an SSH connection. */
 export function normalizeVpsConfig(raw: unknown): { sshAlias?: string } {
   if (raw === undefined || raw === null) return {};
@@ -109,6 +118,9 @@ const browserEngineConfigSchema = z.object({
     message: "browserEngine.attachCdpUrl must be a CDP port (1-65535) or an http(s)/ws(s) URL",
   }).optional(),
   stealth: browserEngineStealthSchema.optional(),
+  stealthUrl: z.string().trim().max(2048).refine((value) => value === "" || isValidStealthUrl(value), {
+    message: "browserEngine.stealthUrl must be an http(s) URL of a stealth-browser service",
+  }).optional(),
 });
 const roomConfigSchema = z.object({
   turnTimeoutMinutes: z
@@ -657,8 +669,13 @@ export interface AppConfig {
   browserProfiles?: BrowserProfile[];
   /** CDP target of a Chrome the operator already has running (a bare port,
    * e.g. "9333", or an http(s)/ws(s) URL). When set, a bot's browser
-   * attaches to it instead of agent-browser spawning its own (#1396). */
-  browserEngine?: { attachCdpUrl?: string; stealth?: { enabled?: boolean; headed?: boolean; debugPortBase?: number } };
+   * attaches to it instead of agent-browser spawning its own (#1396).
+   * stealth: LEGION's built-in fingerprinted browser (server/stealth-browser/),
+   * which supplies its own attach target. stealthUrl: an external
+   * stealth-browser service; each bot's persistent browser becomes its own
+   * headed stealth Chrome there, attached over CDP. The built-in runtime
+   * wins when both are configured. */
+  browserEngine?: { attachCdpUrl?: string; stealth?: { enabled?: boolean; headed?: boolean; debugPortBase?: number }; stealthUrl?: string };
   instances?: InstanceConfigMap;
 }
 export type BrowserProfile = z.output<typeof browserProfileSchema> & {
@@ -789,6 +806,11 @@ export function browserStealthOptions(cfg: AppConfig): { headed: boolean; debugP
     headed: cfg.browserEngine?.stealth?.headed !== false,
     debugPortBase: cfg.browserEngine?.stealth?.debugPortBase ?? 9500,
   };
+}
+
+/** Same read-and-revalidate shape as browserEngineAttachCdpUrl. */
+export function browserEngineStealthUrl(cfg: AppConfig): string | null {
+  return isValidStealthUrl(cfg.browserEngine?.stealthUrl) ? cfg.browserEngine.stealthUrl : null;
 }
 
 export function roomTurnTimeoutMinutes(cfg: AppConfig): number {

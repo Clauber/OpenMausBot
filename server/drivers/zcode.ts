@@ -703,7 +703,14 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
 
       let abandoned = false;
       let sessionId: string | null = null;
-      const state = { settled: false, lastText: "", sawStreamDelta: false, usage: undefined as { input: number; output: number; cachedInput?: number } | undefined };
+      const state = {
+        settled: false,
+        lastText: "",
+        sawStreamDelta: false,
+        usage: undefined as { input: number; output: number; cachedInput?: number } | undefined,
+        toolInputs: new Map<string, unknown>(),
+        startedTools: new Set<string>(),
+      };
       const asks = new Map<string, (behavior: "allow" | "deny" | "answer", message?: string, source?: "user" | "timeout" | "system") => void>();
       let nextId = 1;
       const rpcPending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
@@ -857,6 +864,13 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
             break;
           }
           case "model.streaming": {
+            // The CLI strips a call's input from its `scheduled` update
+            // (inputOmitted, inputRef "model_stream") once the model stream
+            // has carried it here, so this is the only copy of the command.
+            if (payload.kind === "tool_call" && typeof payload.toolCallId === "string" && "input" in payload) {
+              state.toolInputs.set(payload.toolCallId, payload.input);
+              break;
+            }
             const delta = typeof payload.delta === "string" ? payload.delta : "";
             if (!delta) break;
             if (payload.kind === "text_delta") {
@@ -872,14 +886,23 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
             const title = typeof payload.toolName === "string" && payload.toolName ? payload.toolName : "tool";
             if (!toolCallId) break;
             if (payload.kind === "scheduled" || payload.kind === "started") {
+              // Every call reports both; one chip per call.
+              if (state.startedTools.has(toolCallId)) break;
+              state.startedTools.add(toolCallId);
+              const input = payload.input !== undefined ? payload.input : state.toolInputs.get(toolCallId);
+              state.toolInputs.delete(toolCallId);
               emit({
                 ...base(threadId, turnId),
                 type: "item.started",
                 itemType: "tool",
                 itemId: toolCallId,
                 title,
-                input: toolDetailPreview(payload.input),
+                summary: commandSummary(input),
+                input: toolDetailPreview(input),
               });
+            } else if (payload.kind === "error") {
+              const message = typeof payload.error?.message === "string" ? payload.error.message : "tool failed";
+              emit({ ...base(threadId, turnId), type: "item.completed", itemType: "tool", itemId: toolCallId, ok: false, output: toolDetailPreview(message) });
             } else if (payload.kind === "result" || payload.kind === "completed") {
               const result = payload.result && typeof payload.result === "object" ? payload.result as Record<string, unknown> : null;
               emit({

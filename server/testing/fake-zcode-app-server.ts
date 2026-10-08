@@ -66,8 +66,15 @@ const event = (type: string, payload: Record<string, unknown>) =>
   });
 
 const completionTail = () => {
-  event("tool.updated", { kind: "started", toolCallId: "call_1", toolName: "Bash", input: { command: "ls", cwd: "/tmp" } });
+  // The CLI's real order: the model stream carries the input, the
+  // scheduled update omits it (inputRef "model_stream"), started repeats
+  // the call without input.
+  event("model.streaming", { kind: "tool_call", toolCallId: "call_1", toolName: "Bash", input: { command: "ls", cwd: "/tmp" } });
+  event("tool.updated", { kind: "scheduled", toolCallId: "call_1", toolName: "Bash", inputOmitted: true, inputRef: "model_stream", inputByteLength: 30 });
+  event("tool.updated", { kind: "started", toolCallId: "call_1", toolName: "Bash", startedAt: Date.now() });
   event("tool.updated", { kind: "result", toolCallId: "call_1", toolName: "Bash", result: { success: true, content: "files" } });
+  event("tool.updated", { kind: "scheduled", toolCallId: "call_2", toolName: "Read", input: { file_path: "/tmp/missing" } });
+  event("tool.updated", { kind: "error", toolCallId: "call_2", toolName: "Read", error: { type: "tool", message: "no such file" } });
   event("turn.completed", {
     response: "Hello",
     tokenCount: 5,
