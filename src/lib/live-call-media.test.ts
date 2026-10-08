@@ -86,6 +86,62 @@ describe("live call media", () => {
     expect(liveMedia().phase).toBe("live");
   });
 
+  it("says what it is waiting for when the microphone prompt sits unanswered, then gives up with instructions", async () => {
+    vi.useFakeTimers();
+    try {
+      configureLiveMedia({
+        getUserMedia: () => new Promise(() => {}), // the prompt is never answered
+        createPeer: () => peer as unknown as RTCPeerConnection,
+        request: request as never,
+        playRemote: () => {},
+        stopRemote: () => {},
+        iceTimeoutMs: 50,
+        capabilities: () => ({ dictation: { reasonCode: "desktop-app-required" } }) as never,
+      });
+      const starting = startLiveCall({ botId: "b1", threadId: "t1" });
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(liveMedia().notice).toBe("Waiting for the microphone — approve the prompt (check the address bar).");
+      expect(liveMedia().phase).toBe("starting");
+      // no request left the window while the prompt is open
+      expect(request).not.toHaveBeenCalledWith("/api/live/session", expect.anything());
+      await vi.advanceTimersByTimeAsync(19_000);
+      expect(liveMedia()).toMatchObject({ phase: "failed", canRetry: true, callId: null });
+      expect(liveMedia().notice).toContain("The microphone was never allowed");
+      void starting.catch(() => {});
+      expect(request).not.toHaveBeenCalledWith("/api/live/session", expect.anything());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears the mic wait notice and proceeds when the prompt is answered", async () => {
+    vi.useFakeTimers();
+    try {
+      let releaseMic: ((stream: MediaStream) => void) | null = null;
+      configureLiveMedia({
+        getUserMedia: () => new Promise((resolve) => { releaseMic = resolve; }),
+        createPeer: () => peer as unknown as RTCPeerConnection,
+        request: request as never,
+        playRemote: () => {},
+        stopRemote: () => {},
+        iceTimeoutMs: 50,
+      });
+      const starting = startLiveCall({ botId: "b1", threadId: "t1" });
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(liveMedia().notice).toContain("Waiting for the microphone");
+      releaseMic!({ getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(liveMedia().notice).toBeNull();
+      await vi.advanceTimersByTimeAsync(0);
+      await starting;
+      onServerCall({ ...call, status: "live" });
+      peer.channel.open();
+      expect(liveMedia().phase).toBe("live");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("asks for a key and releases the microphone", async () => {
     request.mockRejectedValueOnce(new ApiError("Add an OpenAI API key to use Live calls.", 409, { needsKey: true }));
     await startLiveCall({ botId: "b1", threadId: "t1" });
