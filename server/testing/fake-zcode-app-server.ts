@@ -49,6 +49,7 @@ const reply = (id: unknown, result: unknown) => send({ id, result });
 const fail = (id: unknown, code: number, message: string) => send({ id, error: { code, message } });
 
 let nextSeq = 1;
+let promptCount = 0;
 // Wire shape (verified against a live app-server): the discriminator is
 // params.type and the member data rides params.payload — the schema union's
 // members describe the payload, not a type-tagged payload object.
@@ -235,6 +236,11 @@ process.stdin.on("data", (chunk) => {
         break;
       case "session/send": {
         reply(msg.id, { accepted: true, inputId: "in-1" });
+        promptCount++;
+        if ((mode === "announce" && promptCount === 1) || mode === "announce-twice") {
+          setTimeout(() => event("turn.completed", { response: "Now let me run the build.", resultType: "success" }), 20);
+          break;
+        }
         if (mode === "exit-mid-turn") {
           process.stderr.write("synthetic mid-turn crash\n");
           process.exit(1);

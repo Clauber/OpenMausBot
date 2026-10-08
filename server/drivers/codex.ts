@@ -49,6 +49,7 @@ import type { ApprovalMode } from "../../shared/approval-mode.ts";
 import { CodexDeviceAuthController } from "./codex-device-auth.ts";
 import { codexAccountEmail } from "./codex-identity.ts";
 import { classifyResumeFailure, mayReplay, recoveryPromptFor } from "../resume-recovery.ts";
+import { announcesAction, CONTINUATION_NUDGE } from "./announced-action.ts";
 import { extractMcpImages } from "../mcp-tool-images.ts";
 import { parseProtocolAskQuestions, questionAnswersById, questionChoices } from "../../shared/ask-question.ts";
 import { codexVersionBehind, readLatestCodexRelease } from "./codex-release.ts";
@@ -845,6 +846,10 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         });
 
       let abandoned = false;
+      // Assigned inside the attempt body's try, but hoisted here because the
+      // announced-action nudge re-issues turn/start from handleNotification,
+      // which must send the same approval surface the turn itself ran on.
+      let approvalParams: CodexApprovalParams;
       let codexThreadId: string | null = null;
       let codexTurnId: string | null = null;
       let startingNativeTurn = false;
@@ -854,6 +859,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         lastError: "",
         lastText: "",
         sawStreamDelta: false,
+        /** One announced-action continuation per turn: a nudge already sent
+         * must never send another, whatever the continuation announces. */
+        nudged: false,
         // codex reports token usage as a running total for this app-server
         // process. The harness wants this turn's figure: the total minus
         // whatever the process already carried before turn/start (a resumed
@@ -1385,6 +1393,26 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
                 ...(classifyError({ text: message }).reason === "auth" ? { setup: true } : {}),
               });
             }
+            // The announced-action nudge: a completed turn whose last agent
+            // message only announces the next step ("Now let me run the
+            // build.") gets one continuation turn on the same thread — the
+            // nudge the person would otherwise have to type. Usage keeps
+            // accumulating against this turn's baseline, and the
+            // continuation's own turn/completed settles below.
+            if (t.status === "completed" && !state.settled && !stopRequested && !state.nudged &&
+                codexThreadId && state.lastText && announcesAction(state.lastText)) {
+              state.nudged = true;
+              startingNativeTurn = true;
+              request("turn/start", {
+                threadId: codexThreadId,
+                input: [{ type: "text", text: CONTINUATION_NUDGE }],
+                ...approvalParams.turn,
+              }).catch(() => {
+                // The continuation never started: the round that ran stands.
+                void settle(true, null);
+              });
+              break;
+            }
             void settle(t.status === "completed", t.status === "completed" ? null :
               (classifyError({ text: message || state.lastError }).reason === "provider_safety" ? "provider_safety" : (message || t.status || "failed")));
             break;
@@ -1631,7 +1659,6 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           effectiveConfig,
           stableInstructions ?? turn.system ?? "",
         );
-        let approvalParams: CodexApprovalParams;
         if (approvalMode === "custom") {
           // config/read returns the effective global + project config for this
           // cwd. Reasserting those values is essential: simply omitting them

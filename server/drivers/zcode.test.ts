@@ -195,6 +195,18 @@ describe("ZcodeDriver turns (fake app-server)", () => {
     removeTempDir(scratch);
   });
 
+  it.each(["announce", "announce-twice"])("continues an announced action once in the native session (%s)", async (mode) => {
+    const dump = newDump();
+    await create({ mode });
+    const { turnId } = await instance.adapter.sendTurn({ threadId: "announcement", text: "Fixture", cwd: scratch, system: "You are a fixture bot." });
+    expect(await recorder.until(event => event.type === "turn.completed" && event.turnId === turnId)).toMatchObject({ ok: true });
+    const calls = JSON.parse(readFileSync(dump, "utf8")).calls;
+    const prompts = calls.filter((call: { method: string }) => call.method === "session/send");
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1].params.sessionId).toBe(prompts[0].params.sessionId);
+    expect(prompts[1].params.content).toContain("Continue now with your tools.");
+  });
+
   it("drives the create → subscribe → send handshake and normalizes the scripted turn", async () => {
     const dump = newDump();
     await create();

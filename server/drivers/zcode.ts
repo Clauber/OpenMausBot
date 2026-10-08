@@ -35,6 +35,7 @@ import { augmentedPath } from "../env-path.ts";
 import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
 import { isHarnessOwnedMcpEnvName } from "../mcp-registry.ts";
 import { appendNative } from "./native.ts";
+import { announcesAction, CONTINUATION_NUDGE } from "./announced-action.ts";
 import { classifyError } from "./retry.ts";
 import { commandSummary, toolDetailPreview } from "../tool-summary.ts";
 import { gateServer } from "../mcp-gate-config.ts";
@@ -707,6 +708,7 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
         settled: false,
         lastText: "",
         sawStreamDelta: false,
+        nudged: false,
         usage: undefined as { input: number; output: number; cachedInput?: number } | undefined,
         toolInputs: new Map<string, unknown>(),
         startedTools: new Set<string>(),
@@ -935,6 +937,19 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
                 output,
                 ...(typeof usage.cacheReadTokens === "number" ? { cachedInput: usage.cacheReadTokens } : {}),
               };
+            }
+            if (!state.settled && !abandoned && !state.nudged && payload.resultType !== "cancelled" && announcesAction(response)) {
+              state.nudged = true;
+              state.lastText = "";
+              state.sawStreamDelta = false;
+              state.toolInputs.clear();
+              state.startedTools.clear();
+              void request("session/send", { sessionId, content: CONTINUATION_NUDGE }).catch((error: unknown) => {
+                if (state.settled || abandoned) return;
+                emit({ ...base(threadId, turnId), type: "runtime.error", message: error instanceof Error ? error.message : "continuation failed" });
+                void settle(false, "failed");
+              });
+              break;
             }
             void settle(true, payload.resultType === "cancelled" ? "interrupted" : null);
             break;
