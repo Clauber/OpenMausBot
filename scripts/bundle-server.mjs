@@ -87,6 +87,12 @@ await build({
   allowOverwrite: true,
   logLevel: "info",
   plugins: [yamlEsmPlugin],
+  // The stealth browser stack spawns browser processes and resolves its own
+  // package layout at runtime; inlining it breaks, so it ships as real
+  // node_modules beside the bundle (scripts/build-npm-package.mjs installs
+  // them into the package). Loaded lazily, so an install without them only
+  // loses the stealth browser, never server startup.
+  external: ["patchright", "fingerprint-generator", "fingerprint-injector"],
 });
 
 // External MCP clients launch this as an independent stdio process. Keep its

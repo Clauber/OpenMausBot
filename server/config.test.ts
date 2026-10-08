@@ -39,6 +39,8 @@ import { cacheUntilConfigChanges,
   syncCredentialEnv,
   vpsSshAlias,
   browserEngineAttachCdpUrl,
+  browserStealthEnabled,
+  browserStealthOptions,
   withInstanceCli,
   WORKSPACE_CREDENTIAL_ENV,
   liveSettingsFor,
@@ -486,6 +488,24 @@ describe("configuration boundaries", () => {
     // An empty string clears the setting (same convention as tts.baseUrl, vps.sshAlias).
     expect(parseConfigPatch({ browserEngine: { attachCdpUrl: "" } })).toEqual({ browserEngine: { attachCdpUrl: "" } });
     expect(browserEngineAttachCdpUrl({ browserEngine: { attachCdpUrl: "" } })).toBeNull();
+  });
+
+  it("parses browserEngine.stealth and defaults the built-in stealth options conservatively", () => {
+    expect(browserStealthEnabled({})).toBe(false);
+    expect(browserStealthOptions({})).toEqual({ headed: true, debugPortBase: 9500 });
+    const configured = { browserEngine: { stealth: { enabled: true, headed: false, debugPortBase: 9700 } } };
+    expect(parseStoredConfig(configured)).toEqual(configured);
+    expect(parseConfigPatch(configured)).toEqual(configured);
+    expect(browserStealthEnabled(configured)).toBe(true);
+    expect(browserStealthOptions(configured)).toEqual({ headed: false, debugPortBase: 9700 });
+    // Partial settings keep their documented defaults.
+    expect(browserStealthOptions({ browserEngine: { stealth: { enabled: true } } })).toEqual({ headed: true, debugPortBase: 9500 });
+    // Bad shapes are rejected, not ignored. Unknown keys strip silently, the
+    // same convention as attachCdpUrl: browserEngine is a hand-edited,
+    // server-owned section, so one stray key must not lose the whole file.
+    expect(() => parseConfigPatch({ browserEngine: { stealth: { enabled: "yes" } } })).toThrow("browserEngine");
+    expect(() => parseConfigPatch({ browserEngine: { stealth: { debugPortBase: 80 } } })).toThrow("browserEngine");
+    expect(parseConfigPatch({ browserEngine: { stealth: { surprise: true } } })).toEqual({ browserEngine: { stealth: {} } });
   });
 
   it("accepts a persisted global room turn timeout and supplies the legacy default", () => {

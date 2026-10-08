@@ -185,6 +185,7 @@ import {
   type AppConfig,
   vpsSshAlias,
   browserEngineAttachCdpUrl,
+  browserStealthEnabled,
   DATA_DIR,
   skillsLibraryEnabled,
   EVENTS_DIR,
@@ -454,6 +455,7 @@ import { CalendarCallManager, type CalendarCall } from "./calendar-calls.ts";
 import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
 import { BrowserRuntime, browserRuntimeEnv } from "./browser-runtime.ts";
 import { BrowserLive } from "./browser-live.ts";
+import { stealthCdpTarget, dropStealthSession, shutdownStealthBrowser } from "./browser-stealth.ts";
 import {
   agentBrowserFrame,
   agentBrowserIntegration,
@@ -2026,6 +2028,7 @@ const browserCleanup: BrowserCleanupCoordinator = new BrowserCleanupCoordinator(
     const work = status.kind === "ready" && sessions.length
       ? Promise.all(sessions.map(async (session) => {
           const ok = await clearBrowserSessionState(status.binaryPath, session, { encryptionKey: browserEngineEncryptionKey() });
+          if (browserStealthEnabled(cfg)) await dropStealthSession(session, cfg).catch(() => {});
           if (!ok) console.warn(`browser cleanup: could not clear saved state for session ${session}; restart OpenMausBot to retry this profile's cleanup. Do not use state clear --all: it erases other profiles too.`);
           return ok;
         }))
@@ -3009,6 +3012,7 @@ async function forgetTemporaryBrowser(botId: string): Promise<void> {
   const closed = await clearBrowserSessionState(engine.binaryPath, session, {
     env: { PATH: augmentedPath() }, encryptionKey: browserEngineEncryptionKey(),
   });
+  if (browserStealthEnabled(cfg)) await dropStealthSession(session, cfg).catch(() => {});
   if (closed) await browserRuntime.close(session);
   else console.warn(`temporary browser ${session}: could not close its session; run agent-browser --session ${session} close on this server`);
 }
@@ -3025,14 +3029,41 @@ async function browserIntegration(botId: string, profile: string | undefined, tu
   const profileTarget = profile && profile !== "guest" ? browserProfilePartitionTarget(cfg, profile) : null;
   const partitionId = profile === "guest" ? "guest" : (profileTarget?.partitionId ?? "");
   const session = currentBrowserSession(botId, profile);
+  // The built-in stealth browser supplies its own attach target; an enabled
+  // stealth runtime that cannot start fails the browser mount rather than
+  // silently handing the bot a plain, fingerprintable Chrome.
+  let attachCdpUrl: string | null = null;
+  if (browserStealthEnabled(cfg)) {
+    try {
+      attachCdpUrl = await stealthCdpTarget(session, cfg);
+    } catch (error) {
+      if (!engineUnavailableLogged) {
+        engineUnavailableLogged = true;
+        console.warn(`stealth browser: ${(error as Error).message}; bots get no browser tools until it can start`);
+      }
+      return null;
+    }
+  }
   const spec = agentBrowserIntegration({
       binaryPath: status.binaryPath,
       session,
       encryptionKey: browserEngineEncryptionKey(),
       persistent: profile !== "guest",
       env: { ...process.env, PATH: augmentedPath() },
-      attachCdpUrl: browserEngineAttachCdpUrl(cfg) ?? undefined,
+      attachCdpUrl: attachCdpUrl ?? browserEngineAttachCdpUrl(cfg) ?? undefined,
     });
+  if (attachCdpUrl) {
+    console.log(`stealth-browser: session ${session} mounts through ${attachCdpUrl}`);
+    // agent-browser weighs CDP-attach against launching its own browser once,
+    // when its daemon first starts — never again. Warm the daemon here with
+    // this exact environment so that one decision is made against the stealth
+    // context's verified-ready endpoint instead of raced by the first tool.
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 20_000);
+      timer.unref?.();
+      execCli(status.binaryPath, ["get", "cdp-url", "--json"], { timeout: 20_000, env: browserRuntimeEnv(spec.env) }, () => { clearTimeout(timer); resolve(); });
+    });
+  }
   await prepareBrowserSessionState(status.binaryPath, session, { env: spec.env, persistent: profile !== "guest", isCurrent: () => {
     const current = store.bot(botId);
     return !!current && current.browser !== false && builtInBrowserEnabled(cfg)
@@ -25494,6 +25525,7 @@ const gracefulShutdown = createGracefulShutdown({
     async () => {
       await Promise.all([...temporaryBrowserSessions.keys()].map((botId) => forgetTemporaryBrowser(botId)));
       await browserRuntime.closeAll();
+      await shutdownStealthBrowser();
     },
     () => liveCalls.shutdown(),
     () => flushAllProfileHistory(),
