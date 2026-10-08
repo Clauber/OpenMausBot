@@ -98,9 +98,15 @@ function cloudHomeMicrophoneAllowed(permission, requestingUrlOrOrigin, homeOrigi
  *   `mainContents`: the main window's webContents, or null; `cloudHomeOrigin`:
  *   the Cloud the sign-in verified, asked on every request so signing out
  *   takes the microphone away at once; `serverOrigin`: the added server open
- *   in the main window, or null, asked on every request likewise.
+ *   in the main window, or null, asked on every request likewise;
+ *   `systemMicrophone`: this Mac's own microphone permission. A microphone
+ *   request the policy allows asks it first — the system prompt when
+ *   undecided, `denied()` (which points to System Settings, as macOS never
+ *   prompts twice) when refused. Any status but granted, not-determined,
+ *   denied or restricted (another platform) leaves the decision to the page
+ *   policy alone.
  */
-export function appPermissionHandlers({ rendererOrigin, mainContents, cloudHomeOrigin, serverOrigin = () => null }) {
+export function appPermissionHandlers({ rendererOrigin, mainContents, cloudHomeOrigin, serverOrigin = () => null, systemMicrophone = null }) {
   const allowed = (contents, permission, requesting, details) => {
     if (appPermissionAllowed(permission, requesting, rendererOrigin(), details)) return true;
     const main = mainContents();
@@ -110,11 +116,35 @@ export function appPermissionHandlers({ rendererOrigin, mainContents, cloudHomeO
   };
   return {
     request: (contents, permission, callback, details) => {
-      callback(allowed(contents, permission, details?.requestingUrl ?? contents?.getURL?.() ?? "", details));
+      const granted = allowed(contents, permission, details?.requestingUrl ?? contents?.getURL?.() ?? "", details);
+      if (!granted || !systemMicrophone || !asksMicrophone(details)) return callback(granted);
+      void macMicrophoneAllowed(systemMicrophone).then(callback, () => callback(false));
     },
     check: (contents, permission, requestingOrigin, details) =>
       allowed(contents, permission, requestingOrigin || contents?.getURL?.() || "", details),
   };
+}
+
+/** A media request that names the microphone. Empty media types are the
+ * guarded screen capture, which macOS gates separately. */
+function asksMicrophone(details) {
+  if (details?.mediaType !== undefined) return details.mediaType === "audio";
+  return Array.isArray(details?.mediaTypes) && details.mediaTypes.includes("audio");
+}
+
+async function macMicrophoneAllowed(systemMicrophone) {
+  const status = systemMicrophone.status();
+  if (status === "granted") return true;
+  if (status === "not-determined") {
+    if (await systemMicrophone.ask()) return true;
+    systemMicrophone.denied();
+    return false;
+  }
+  if (status === "denied" || status === "restricted") {
+    systemMicrophone.denied();
+    return false;
+  }
+  return true;
 }
 
 // Both explicit IPC links and window.open must use the same web-only policy.
