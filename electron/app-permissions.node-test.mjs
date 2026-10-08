@@ -181,9 +181,52 @@ test("this computer's own page keeps its permissions through the same handlers",
   assert.equal(check("clipboard-read", "https://other.example", { isMainFrame: true }, local), false);
 });
 
+// ── A server the person added, open in this app's window ──
+// Adding a server and opening it is the person choosing that page, the same
+// as opening it in a browser and approving the prompt: it gets the
+// microphone for a Live call, under the same limits as the Cloud.
+const SERVER = "https://openmaus.example.com";
+function serverFixture() {
+  const main = { getURL: () => `${SERVER}/chat` };
+  const state = { server: SERVER, main };
+  const handlers = appPermissionHandlers({
+    rendererOrigin: () => LOCAL_ORIGIN,
+    mainContents: () => state.main,
+    cloudHomeOrigin: () => null,
+    serverOrigin: () => state.server,
+  });
+  const ask = (permission, details, contents = state.main) => {
+    let granted;
+    handlers.request(contents, permission, (value) => { granted = value; }, details);
+    return granted;
+  };
+  return { state, ask };
+}
+const onServer = (fields = {}) => ({ requestingUrl: `${SERVER}/chat`, isMainFrame: true, ...fields });
+
+test("the added server open in this window may use the microphone and nothing else", () => {
+  const { ask } = serverFixture();
+  assert.equal(ask("media", onServer({ mediaTypes: ["audio"] })), true);
+  for (const mediaTypes of [["video"], ["audio", "video"], []]) {
+    assert.equal(ask("media", onServer({ mediaTypes })), false, JSON.stringify(mediaTypes));
+  }
+  for (const permission of ["notifications", "clipboard-read", "geolocation", "camera"]) {
+    assert.equal(ask(permission, onServer({ mediaTypes: ["audio"] })), false, permission);
+  }
+  assert.equal(ask("media", onServer({ mediaTypes: ["audio"], isMainFrame: false })), false, "a subframe");
+  assert.equal(ask("media", { isMainFrame: true, mediaTypes: ["audio"], requestingUrl: "https://evil.example/" }), false, "another origin");
+});
+
+test("switching away from the added server takes its microphone at once", () => {
+  const { state, ask } = serverFixture();
+  state.server = null;
+  assert.equal(ask("media", onServer({ mediaTypes: ["audio"] })), false);
+});
+
 test("the app installs these handlers, with the Cloud the sign-in verified", () => {
   const main = readFileSync(new URL("./main.mjs", import.meta.url), "utf8");
   assert.match(main, /setPermissionRequestHandler\(appPermissions\.request\)/);
   assert.match(main, /setPermissionCheckHandler\(appPermissions\.check\)/);
   assert.match(main, /cloudHomeOrigin: \(\) => desktopRemoteAccess \? null : cloudAccount\?\.homeTarget\(\)\?\.origin \?\? null/);
+  assert.match(main, /serverOrigin: \(\) => desktopRemoteAccess \? null : activeEnvironment\(environmentsState\)\?\.origin \?\? null/);
 });

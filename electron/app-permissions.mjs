@@ -12,7 +12,9 @@
 //
 // One exception: the person's own Cloud, open in the main window, may use the
 // microphone (for a Live call) and nothing else. A Cloud is personal, so its
-// page hearing the microphone is the person's own page hearing it. Any other
+// page hearing the microphone is the person's own page hearing it. The same
+// goes for a server the person added and opened here: choosing it is the
+// same as opening it in a browser and approving the prompt. Any other
 // server's page stays refused.
 
 const ALLOWED_APP_PERMISSIONS = new Set([
@@ -92,16 +94,19 @@ function cloudHomeMicrophoneAllowed(permission, requestingUrlOrOrigin, homeOrigi
  * appPermissionAllowed; the Cloud gets the microphone, and only while it is
  * the page open in the main window.
  *
- * @param {{ rendererOrigin: () => string, mainContents: () => unknown, cloudHomeOrigin: () => string | null }} context
+ * @param {{ rendererOrigin: () => string, mainContents: () => unknown, cloudHomeOrigin: () => string | null, serverOrigin?: () => string | null }} context
  *   `mainContents`: the main window's webContents, or null; `cloudHomeOrigin`:
  *   the Cloud the sign-in verified, asked on every request so signing out
- *   takes the microphone away at once.
+ *   takes the microphone away at once; `serverOrigin`: the added server open
+ *   in the main window, or null, asked on every request likewise.
  */
-export function appPermissionHandlers({ rendererOrigin, mainContents, cloudHomeOrigin }) {
+export function appPermissionHandlers({ rendererOrigin, mainContents, cloudHomeOrigin, serverOrigin = () => null }) {
   const allowed = (contents, permission, requesting, details) => {
     if (appPermissionAllowed(permission, requesting, rendererOrigin(), details)) return true;
     const main = mainContents();
-    return Boolean(contents) && contents === main && cloudHomeMicrophoneAllowed(permission, requesting, cloudHomeOrigin(), details);
+    if (!contents || contents !== main) return false;
+    return cloudHomeMicrophoneAllowed(permission, requesting, cloudHomeOrigin(), details) ||
+      cloudHomeMicrophoneAllowed(permission, requesting, serverOrigin(), details);
   };
   return {
     request: (contents, permission, callback, details) => {
