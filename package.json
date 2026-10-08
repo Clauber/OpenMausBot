@@ -143,10 +143,5 @@
   },
   "optionalDependencies": {
     "node-pty": "^1.1.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "node-pty"
-    ]
   }
 }
