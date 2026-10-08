@@ -111,6 +111,9 @@ const browserEngineStealthSchema = z.object({
    * headless Chrome fingerprints differently, so this only turns off for a
    * host that cannot run Xvfb. */
   headed: z.boolean().optional(),
+  /** Click Cloudflare's "verify you are human" checkbox automatically when a
+   * challenge blocks a bot's page. On while the stealth browser runs. */
+  cloudflare: z.boolean().optional(),
   debugPortBase: z.number().int().min(1024).max(65000).optional(),
 });
 const browserEngineConfigSchema = z.object({
@@ -675,7 +678,7 @@ export interface AppConfig {
    * stealth-browser service; each bot's persistent browser becomes its own
    * headed stealth Chrome there, attached over CDP. The built-in runtime
    * wins when both are configured. */
-  browserEngine?: { attachCdpUrl?: string; stealth?: { enabled?: boolean; headed?: boolean; debugPortBase?: number }; stealthUrl?: string };
+  browserEngine?: { attachCdpUrl?: string; stealth?: { enabled?: boolean; headed?: boolean; debugPortBase?: number; cloudflare?: boolean }; stealthUrl?: string };
   instances?: InstanceConfigMap;
 }
 export type BrowserProfile = z.output<typeof browserProfileSchema> & {
@@ -801,10 +804,11 @@ export function browserStealthEnabled(cfg: AppConfig): boolean {
   return cfg.browserEngine?.stealth?.enabled === true;
 }
 
-export function browserStealthOptions(cfg: AppConfig): { headed: boolean; debugPortBase: number } {
+export function browserStealthOptions(cfg: AppConfig): { headed: boolean; debugPortBase: number; cloudflare: boolean } {
   return {
     headed: cfg.browserEngine?.stealth?.headed !== false,
     debugPortBase: cfg.browserEngine?.stealth?.debugPortBase ?? 9500,
+    cloudflare: cfg.browserEngine?.stealth?.cloudflare !== false,
   };
 }
 

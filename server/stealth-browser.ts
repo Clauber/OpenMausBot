@@ -40,7 +40,14 @@ export async function stealthBrowserCdpUrl(baseUrl: string, session: string, opt
 export class StealthAttachments {
   private readonly known = new Map<string, string>();
   private readonly failedAt = new Map<string, number>();
-  constructor(private readonly resolve: (base: string, session: string) => Promise<string> = stealthBrowserCdpUrl, private readonly now = () => Date.now()) {}
+  // Plain fields, not parameter properties: this file loads through
+  // node --experimental-strip-types in dev, which cannot transform them.
+  private readonly resolve: (base: string, session: string) => Promise<string>;
+  private readonly now: () => number;
+  constructor(resolve: (base: string, session: string) => Promise<string> = stealthBrowserCdpUrl, now: () => number = () => Date.now()) {
+    this.resolve = resolve;
+    this.now = now;
+  }
 
   /** The CDP address, or null when this session has never reached the service. */
   async attachUrl(base: string, session: string, warn: (message: string) => void = console.warn): Promise<string | null> {

@@ -23,6 +23,7 @@ import type { Fingerprint } from "fingerprint-generator";
 import type { BrowserContext } from "patchright";
 
 import { BROWSER_ARGS, loadFingerprintSuite, loadPatchright } from "./stealth.ts";
+import { armCloudflareSolver } from "./challenge.ts";
 import { buildEvasionScript } from "./evasions.ts";
 
 type FingerprintBundle = { fingerprint: Fingerprint; headers: Record<string, string> };
@@ -43,6 +44,9 @@ export interface StealthRuntimeOptions {
    * displayless Linux hosts get an automatic Xvfb display unless this is
    * explicitly turned off. */
   headed?: boolean;
+  /** Click Cloudflare's "verify you are human" checkbox automatically when a
+   * challenge blocks a page, so the bot never sees the interstitial. */
+  solveCloudflare?: boolean;
   /** A system Chrome to use when channel:"chrome" is not installed. */
   chromeExecutable?: string;
   env?: NodeJS.ProcessEnv;
@@ -128,6 +132,8 @@ async function attachBrowserLevelInjection(context: BrowserContext, debugPort: n
     return;
   }
   const socket = new WebSocket(wsUrl);
+  socket.addEventListener("close", () => log?.(`stealth-browser: session "${session}" identity injection socket closed`));
+  socket.addEventListener("error", () => log?.(`stealth-browser: session "${session}" identity injection socket errored`));
   await new Promise<void>((resolve, reject) => {
     socket.onopen = () => resolve();
     socket.onerror = () => reject(new Error("the stealth browser's CDP endpoint refused a connection"));
@@ -140,25 +146,28 @@ async function attachBrowserLevelInjection(context: BrowserContext, debugPort: n
     socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
   });
   socket.onmessage = (event) => {
-    const message = JSON.parse(String(event.data)) as { id?: number; result?: unknown; method?: string; params?: { targetInfo?: { type?: string; targetId?: string } } };
+    const message = JSON.parse(String(event.data)) as { id?: number; result?: unknown; method?: string; params?: { targetInfo?: { type?: string; targetId?: string }; sessionId?: string } };
     if (message.id !== undefined && pending.has(message.id)) {
       pending.get(message.id)?.(message.result);
       pending.delete(message.id);
       return;
     }
-    if (message.method !== "Target.targetCreated") return;
+    if (message.method !== "Target.attachedToTarget") return;
     const info = message.params?.targetInfo;
-    if (info?.type !== "page" || !info.targetId) return;
+    const sessionId = message.params?.sessionId;
+    if (!info?.targetId || !sessionId) return;
     void (async () => {
-      const attached = await send("Target.attachToTarget", { targetId: info.targetId, flatten: true }) as { sessionId?: string } | undefined;
-      if (!attached?.sessionId) return;
-      // runImmediately patches a document the client already committed (the
-      // automation client can navigate between target creation and our
-      // attach); every later document gets the script before its own scripts.
-      await send("Page.addScriptToEvaluateOnNewDocument", { source: script, runImmediately: true }, attached.sessionId).catch(() => {});
+      // No start pause: coexisting automation clients (agent-browser's
+      // playwright, a patchright inspector) close targets they find paused
+      // by someone else. Instead the identity is registered for every future
+      // document AND evaluated into whatever document the page already has.
+      if (info.type === "page") {
+        await send("Page.addScriptToEvaluateOnNewDocument", { source: script, runImmediately: true }, sessionId).catch(() => {});
+        await send("Runtime.evaluate", { expression: script }, sessionId).catch(() => {});
+      }
     })();
   };
-  await send("Target.setDiscoverTargets", { discover: true });
+  await send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
   log?.(`stealth-browser: session "${session}" registers browser-wide identity injection`);
 }
 
@@ -337,8 +346,20 @@ export function createStealthRuntime(options: StealthRuntimeOptions): StealthRun
     // reach them. Everything the page must see before its first script runs
     // is registered browser-wide over CDP instead: the fingerprint overrides
     // and the evasions in one pre-document script, on every new target.
-    const script = `${(await loadFingerprintSuite()).injector.getInjectableScript({ fingerprint, headers })}\n;${buildEvasionScript(fingerprint, session)}`;
+    const injectable = `${(await loadFingerprintSuite()).injector.getInjectableScript({ fingerprint, headers })}\n;${buildEvasionScript(fingerprint, session)}`;
+    // The script can run twice on one document (registered for future
+    // documents AND evaluated into the current one); the guard makes the
+    // second run a no-op instead of double-applying the canvas noise.
+    const script = `if(!window.__ombStealthApplied){window.__ombStealthApplied=true;${injectable}}`;
     await attachBrowserLevelInjection(context, debugPort, script, session, log);
+    if (options.solveCloudflare !== false) {
+      // Every page in the context gets the challenge watcher — pages the
+      // runtime opened and pages the attached automation client opens behind
+      // our back (both surface as this context's pages).
+      const arm = (page: import("patchright").Page): void => armCloudflareSolver(page, { log });
+      for (const page of context.pages()) arm(page);
+      context.on("page", arm);
+    }
     // The automation client decides CDP-attach versus launching its own
     // browser from its first discovery of this endpoint, and never retries,
     // so the endpoint must verifiably serve before its URL is handed out.

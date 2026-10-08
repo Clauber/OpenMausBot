@@ -33,11 +33,17 @@ reports this host's platform.
   (`state/<session>-fingerprint.json`), and the page the bot read back
   reports the fingerprint's user agent — headed, on this Linux host, with no
   display, which also proves the automatic Xvfb path.
+- The Cloudflare auto-clicker (`browserEngine.stealth.cloudflare`, on by
+  default) clears a locally-mocked "verify you are human" interstitial — a
+  widget iframe whose URL contains challenges.cloudflare.com plus a checkbox
+  — without a bot tool call. No real Cloudflare traffic is involved.
 
 ## What it does not prove
 
-- Anti-bot service acceptance (Cloudflare et al.) — that is exactly the
-  kind of live, account-bearing traffic verification must never touch.
+- Acceptance by the real Cloudflare network: the mock proves the detection
+  and click machinery; whether a given site's Cloudflare clears a given
+  session depends on the identity and the requesting IP, and can only be
+  observed on live traffic.
 - The Desktop panel's stealth appearance; the recipe drives through the
   server's own integration, not the renderer.
 - Persistence of logins across a server restart (the profile directories
