@@ -461,6 +461,26 @@ export function toControllerEvents(event: unknown, out: Array<Record<string, unk
   }
 }
 
+const MAX_SPOKEN_WORDS = 2_000;
+
+function words(text: string): string[] {
+  return text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+}
+
+/** Whether the voice said a result: it streams its words one event at a
+ * time and says them in its own way ("it will" becomes "it'll", a lead-in
+ * is dropped), so the test is that most of the result's longer words came
+ * back, not that its text did. */
+export function heardBack(text: string, spokenSince: readonly string[]): boolean {
+  const all = words(text);
+  const telling = all.filter((word) => word.length >= 4);
+  const wanted = telling.length ? telling : all;
+  if (!wanted.length) return true;
+  const said = new Set(spokenSince);
+  const found = wanted.filter((word) => said.has(word)).length;
+  return found >= Math.ceil(wanted.length * 0.4);
+}
+
 /** Translates one controller command into the frame the browser writes into
  * the data channel. Spoken results ride the proven delegation.context.append;
  * everything else — status notes, prompts, directions — goes in as session
@@ -542,10 +562,12 @@ export function createCodexRelay(options: { callId: string; onClosed?(): void })
   /** Delegation results awaiting confirmation that the voice spoke them.
    * The provider silently drops a result when a context rollover swallows
    * its turn (seen live, 2026-10-08), so delivery retries until the
-   * result's own words come back as output transcript. */
-  const unconfirmed = new Set<string>();
+   * result's own words come back as output transcript. Each result maps to
+   * how many spoken words preceded its first write: only what the voice said
+   * afterwards can confirm it. */
+  const unconfirmed = new Map<string, number>();
   const timers = new Set<ReturnType<typeof setTimeout>>();
-  let spoken = "";
+  const spoken: string[] = [];
 
   const write = (encoded: string) => {
     if (!attached || !stream) return false;
@@ -586,15 +608,11 @@ export function createCodexRelay(options: { callId: string; onClosed?(): void })
    * heard back. Bounded: four attempts or the first sign the voice spoke. */
   const scheduleRetry = (entry: QueuedFrame, attempt: number) => {
     if (closed || attempt <= 0) return;
-    unconfirmed.add(entry.text);
+    if (!unconfirmed.has(entry.text)) unconfirmed.set(entry.text, spoken.length);
     const delay = attempt === 4 ? 4_500 : attempt === 3 ? 9_000 : 20_000;
     const timer = setTimeout(() => {
       timers.delete(timer);
       if (closed || !unconfirmed.has(entry.text)) return;
-      if (spoken.includes(entry.text.slice(0, 24).toLowerCase())) {
-        unconfirmed.delete(entry.text);
-        return;
-      }
       if (write(entry.encoded)) scheduleRetry(entry, attempt - 1);
     }, delay);
     timer.unref?.();
@@ -739,9 +757,14 @@ export function createCodexRelay(options: { callId: string; onClosed?(): void })
           } else if (v3.type === "output_transcript.added") {
             const item = v3.item as { text?: unknown } | undefined;
             if (typeof item?.text === "string") {
-              spoken += `${item.text.toLowerCase()} `;
-              for (const text of unconfirmed) {
-                if (spoken.includes(text.slice(0, 24).toLowerCase())) unconfirmed.delete(text);
+              spoken.push(...words(item.text));
+              if (spoken.length > MAX_SPOKEN_WORDS) {
+                const drop = spoken.length - MAX_SPOKEN_WORDS;
+                spoken.splice(0, drop);
+                for (const [text, mark] of unconfirmed) unconfirmed.set(text, Math.max(0, mark - drop));
+              }
+              for (const [text, mark] of unconfirmed) {
+                if (heardBack(text, spoken.slice(mark))) unconfirmed.delete(text);
               }
             }
           }

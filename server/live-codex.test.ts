@@ -557,6 +557,29 @@ describe("codex relay facade", () => {
     }
   });
 
+  it("counts a result as spoken when the voice says it word by word, in its own words", () => {
+    vi.useFakeTimers();
+    try {
+      const { relay } = relayWithFacade();
+      relay.bind("fp");
+      const res = new FakeSseResponse();
+      relay.openStream(res as never, "fp");
+      // said before the result went out: it confirms nothing
+      relay.up("fp", [JSON.stringify({ type: "output_transcript.added", item: { id: "o0", text: " degrees", type: "output_transcript" } })]);
+      facadeSend(relay, { type: "session.commentary.append", delegation_id: "d9", content: "The second part: it will be twenty one degrees this afternoon." });
+      const results = () => res.frames.filter((f) => f.startsWith("event:"))
+        .map((f) => JSON.parse(f.replace(/^event: codex\ndata: /, "").trim()) as Record<string, unknown>)
+        .filter((f) => f.type === "delegation.context.append");
+      // the provider streams one word per event, and paraphrases (seen live, 2026-10-08)
+      relay.up("fp", " It'll be twenty one degrees this afternoon.".split(/(?= )/).map((word, i) =>
+        JSON.stringify({ type: "output_transcript.added", item: { id: `o${i + 1}`, text: word, type: "output_transcript" } })));
+      vi.advanceTimersByTime(60_000);
+      expect(results()).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("sends a result straight through when no assistant turn is open", () => {
     const { relay } = relayWithFacade();
     relay.bind("fp");

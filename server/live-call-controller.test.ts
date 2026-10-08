@@ -33,6 +33,7 @@ const BOT = { botId: "bot1", botName: "Ada", threadId: "t1" };
 
 function setup(overrides: Partial<LiveCallDeps> = {}) {
   const listeners = new Set<(change: StoreChange) => void>();
+  const textListeners = new Set<(threadId: string, delta: string) => void>();
   const sockets: FakeSocket[] = [];
   const frames: Array<LiveCallState | null> = [];
   const logs: string[] = [];
@@ -53,6 +54,7 @@ function setup(overrides: Partial<LiveCallDeps> = {}) {
     openSocket: (url, key) => { const socket = new FakeSocket(url, key); sockets.push(socket); return socket; },
     attachUrl: (id) => `ws://fake/${id}/attach`,
     speakable: (text) => text.split(/(?<=[.!?])\s+/).filter(Boolean),
+    onBotText: (listener) => { textListeners.add(listener); return () => textListeners.delete(listener); },
     log: (line) => logs.push(line),
     now: () => Date.now(),
     ...overrides,
@@ -62,12 +64,14 @@ function setup(overrides: Partial<LiveCallDeps> = {}) {
   const message = (m: Partial<Message> & { id: string }) => emit({ type: "message", threadId: "t1", message: { role: "bot", kind: "text", ...m } as Message });
   const patch = (m: Partial<Message> & { id: string }) => emit({ type: "message.patch", threadId: "t1", message: { role: "bot", kind: "text", ...m } as Message });
   const setActivity = (next: LiveActivity) => { activity = next; emit({ type: "bot", botId: "bot1" }); };
+  /** The bot's reply as it streams, a piece at a time. */
+  const write = (...pieces: string[]) => { for (const piece of pieces) for (const listener of Array.from(textListeners)) listener("t1", piece); };
   const start = async () => {
     const result = await controller.start({ auth: owner, ...BOT, client: "desktop", sdp: "offer-sdp" });
     sockets.at(-1)!.open();
     return result;
   };
-  return { controller, deps, sockets, frames, logs, settings, queue, listeners, emit, message, patch, setActivity, start, socket: () => sockets.at(-1)! };
+  return { controller, deps, sockets, frames, logs, settings, queue, listeners, textListeners, emit, message, patch, setActivity, write, start, socket: () => sockets.at(-1)! };
 }
 
 beforeEach(() => vi.useFakeTimers());
@@ -507,6 +511,58 @@ describe("LiveCallController relay", () => {
     expect(commentary[0]).toMatchObject({ delegation_id: "del_1", content: "You have two new emails. One is from Sam." });
     expect(t.socket().appends("thinking").some((e) => String(e.content).includes("Reading your inbox"))).toBe(true);
     expect(JSON.stringify(t.socket().sent)).not.toContain("Let me look.");
+  });
+
+  describe("while the bot writes its answer", () => {
+    const said = (t: ReturnType<typeof setup>) => t.socket().appends("commentary").map((e) => e.content);
+    const ANSWER = "You have two new emails. One is from Sam about the launch. The other is from Kim. Kim asks to meet.";
+
+    it("speaks sentences as they arrive, then only what is left, in the delegation it answers", async () => {
+      const t = await live();
+      hear(t, "check my mail", 100);
+      await delegate(t, "del_1", 300);
+      t.write("You have two new emails. ", "One is from Sam about the launch. ", "The other is from Kim. ", "Kim asks");
+      await vi.advanceTimersByTimeAsync(0);
+      // the newest whole sentence waits: the next piece may still join it
+      expect(said(t)).toEqual(["You have two new emails.", "One is from Sam about the launch."]);
+      t.write(" to meet.");
+      t.message({ id: "b2", text: ANSWER, requestMessageId: "m1" });
+      t.patch({ id: "b2", text: ANSWER, requestMessageId: "m1", turnTerminal: true });
+      await vi.advanceTimersByTimeAsync(0);
+      // the rest goes in one append, as a whole answer would
+      expect(said(t)).toEqual(["You have two new emails.", "One is from Sam about the launch.", "The other is from Kim. Kim asks to meet."]);
+      expect(t.socket().appends("commentary").every((e) => e.delegation_id === "del_1")).toBe(true);
+    });
+
+    it("never speaks a one-line remark the bot makes before using a tool", async () => {
+      const t = await live();
+      hear(t, "check my mail", 100);
+      await delegate(t, "del_1", 300);
+      t.write("Let me look.");
+      t.message({ id: "b1", text: "Let me look.", requestMessageId: "m1" });
+      t.message({ id: "a1", kind: "activity", tool: { name: "gmail", spoken: "Reading your inbox" } });
+      t.write("You have two new emails.");
+      t.message({ id: "b2", text: "You have two new emails.", requestMessageId: "m1" });
+      t.patch({ id: "b2", text: "You have two new emails.", requestMessageId: "m1", turnTerminal: true });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(said(t)).toEqual(["You have two new emails."]);
+    });
+
+    it("streams nothing of a reply no one on the call asked for", async () => {
+      const t = await live();
+      t.write("You have two new emails. ", "One is from Sam about the launch. ", "The other is from Kim. ", "Kim");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(said(t)).toEqual([]);
+    });
+
+    it("holds back a code block until it is closed", async () => {
+      const t = await live();
+      hear(t, "how do I list files", 100);
+      await delegate(t, "del_1", 300);
+      t.write("Use ls. It lists the folder. Like this. ```sh\nls -la. echo done. echo more. ");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(said(t).some((line) => String(line).includes("echo"))).toBe(false);
+    });
   });
 
   it("rate-limits progress to one every 4 s", async () => {
