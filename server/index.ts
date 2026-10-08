@@ -7368,6 +7368,9 @@ async function localVmInventoryPayload() {
   return { instances, maxInstances: localVmMaxInstances(cfg), available: true, problem: null };
 }
 
+/** A Live call's controller hears the bot's reply text as it streams, so
+ * the voice can start on a long answer before the bot finishes writing it. */
+const liveBotTextListeners = new Set<(threadId: string, delta: string) => void>();
 bus.subscribe((event: RuntimeEvent) => {
   if (shouldIgnoreProviderEvent(event)) return;
   const localVmTarget = localVmThreadTargets.get(event.threadId);
@@ -7443,6 +7446,9 @@ bus.subscribe((event: RuntimeEvent) => {
     // The event bus's persistence redactor does not scrub its live event.
     const publicEvent = event.type === "request.opened" ? { ...event, command: undefined } : event;
     broadcast({ kind: "runtime", event: publicEvent });
+    if (event.type === "content.delta" && event.streamKind === "assistant_text" && liveBotTextListeners.size) {
+      for (const listener of liveBotTextListeners) listener(event.threadId, event.delta);
+    }
   }
   const routineRun = privateImageEvent ? null : (routines?.handleRuntimeEvent(event) ?? null);
   const ownerBot = store.botByThread(event.threadId);
@@ -15814,6 +15820,10 @@ const liveCalls = new LiveCallController({
     return codexAttachPseudoUrl(callId ?? sessionId);
   },
   speakable: (text) => toUtterances(text),
+  onBotText: (listener) => {
+    liveBotTextListeners.add(listener);
+    return () => liveBotTextListeners.delete(listener);
+  },
   log: (line) => console.log(line),
 });
 // A signed-out or revoked sign-in ends the call it started at once (the idle

@@ -81,8 +81,18 @@ export interface LiveCallDeps {
    * id; the API-key engine ignores it. */
   attachUrl(sessionId: string, callId?: string): string;
   speakable(text: string): string[];
+  /** The bot's reply text as it streams (assistant text deltas, any
+   * thread). Omitted: answers are spoken once the bot finishes them. */
+  onBotText?(listener: (threadId: string, delta: string) => void): () => void;
   log(line: string): void;
   now?(): number;
+}
+
+/** Streaming markdown up to its last unclosed code fence: a code block is
+ * only ever spoken (or skipped) whole. */
+export function closedMarkdown(text: string): string {
+  const fences = text.split("```").length - 1;
+  return fences % 2 === 0 ? text : text.slice(0, text.lastIndexOf("```"));
 }
 
 export class LiveCallBusyError extends Error {
@@ -159,11 +169,16 @@ interface Call {
   batches: Map<string, string[]>;
   drainBatch: string[] | null;
   spokenAnswers: Set<string>;
+  /** The reply text the bot is writing for the call: its current text item
+   * (`messageId` once that item became a message) and how many of its
+   * utterances the voice already has. */
+  writing: { text: string; spoken: number; messageId: string | null } | null;
   pendingEnd: LiveEndReason | null;
   timers: Set<Timer>;
   consentTimer: Timer | null;
   idleTimer: ReturnType<typeof setInterval> | null;
   unsubscribe: (() => void) | null;
+  unsubscribeText: (() => void) | null;
   closeWaiters: Array<() => void>;
   stats: { delegations: number; sentToBot: number; answers: number; approvals: number; notHeard: number; replies: number; seconds: number | null; errors: string[] };
 }
@@ -224,6 +239,9 @@ export class LiveCallController {
       call.lastActivity = this.deps.activity(input.botId, input.threadId);
       if (call.lastActivity === "working") this.beginWork(call);
       call.unsubscribe = this.deps.store.onChange((change) => this.onStoreChange(call, change));
+      call.unsubscribeText = this.deps.onBotText?.((threadId, delta) => {
+        if (threadId === call.state.threadId) this.soon(call, () => this.onBotText(call, delta));
+      }) ?? null;
       this.deps.log(`[live] call started bot=${input.botId} voice=${voice} client=${input.client}`);
       this.emit(call);
       // Before attach: a sideband that fails at once finishes the call, and
@@ -312,11 +330,13 @@ export class LiveCallController {
       batches: new Map(),
       drainBatch: null,
       spokenAnswers: new Set(),
+      writing: null,
       pendingEnd: null,
       timers: new Set(),
       consentTimer: null,
       idleTimer: null,
       unsubscribe: null,
+      unsubscribeText: null,
       closeWaiters: [],
       stats: { delegations: 0, sentToBot: 0, answers: 0, approvals: 0, notHeard: 0, replies: 0, seconds: null, errors: [] },
     };
@@ -404,6 +424,8 @@ export class LiveCallController {
     call.idleTimer = null;
     call.unsubscribe?.();
     call.unsubscribe = null;
+    call.unsubscribeText?.();
+    call.unsubscribeText = null;
     const socket = call.socket;
     call.socket = null;
     if (socket) {
@@ -688,7 +710,35 @@ export class LiveCallController {
       }
       return;
     }
+    if (type === "message" && message.role === "bot" && message.kind === "text" && call.writing && call.writing.messageId === null) {
+      call.writing.messageId = message.id;
+    }
     if (message.kind === "text" && message.turnTerminal && !call.spokenAnswers.has(message.id)) this.onAnswer(call, message);
+  }
+
+  /** The bot's reply as it streams. Only for a request made on the call: the
+   * voice speaks each finished sentence while the bot writes the next one,
+   * so a long answer starts at once instead of when the turn ends. The newest
+   * finished sentence always waits, which keeps a one-line remark before a
+   * tool ("Let me look.") unspoken, as before: only the turn's final answer
+   * is read. */
+  private onBotText(call: Call, delta: string): void {
+    if (call.state.status === "ended") return;
+    if (!call.pendingCall.size && !call.claimNextTerminal) {
+      call.writing = null;
+      return;
+    }
+    // A new text item after a finished one: the bot used a tool in between.
+    if (!call.writing || call.writing.messageId !== null) call.writing = { text: "", spoken: 0, messageId: null };
+    call.writing.text += delta;
+    const utterances = this.deps.speakable(closedMarkdown(call.writing.text));
+    // The last utterance may be unfinished, and the one before it may still
+    // absorb a short sentence that follows.
+    const ready = utterances.length - 2;
+    if (ready <= call.writing.spoken) return;
+    const chunks = commentaryChunks(utterances.slice(call.writing.spoken, ready));
+    call.writing.spoken = ready;
+    for (const chunk of chunks) this.append(call, "commentary", chunk, call.activeDelegation);
   }
 
   /** A line the caller typed in a client (every client sends a sendId with
@@ -738,7 +788,18 @@ export class LiveCallController {
       return;
     }
     const lead = !forCall && typed !== undefined ? [LIVE_COPY.typedAnswerLead(typed)] : [];
-    const utterances = this.deps.speakable(message.text ?? "");
+    // what the voice already said of this answer while the bot wrote it
+    const streamed = forCall && call.writing?.messageId === message.id ? call.writing.spoken : 0;
+    call.writing = null;
+    const utterances = this.deps.speakable(message.text ?? "").slice(streamed);
+    if (!utterances.length && streamed) {
+      call.spokenAnswers.add(message.id);
+      settle();
+      if (request === undefined || call.claimNextTerminal) call.pendingCall.clear();
+      call.claimNextTerminal = false;
+      call.stats.replies += 1;
+      return;
+    }
     if (!utterances.length) return;
     const chunks = commentaryChunks([...lead, ...utterances]);
     if (!chunks.length) return;
