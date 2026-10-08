@@ -10,6 +10,7 @@ import { normalizeImageGenerationUrl, type ImageGenerationConfig } from "../shar
 import { writeFileAtomic } from "./atomic.ts";
 import { newBotDefaultsSchema, type NewBotDefaults } from "./new-bot-defaults.ts";
 import { EFFORT_LEVELS, type EffortLevel, type LiveSettings } from "../shared/wire.ts";
+import { codexLiveConfigured } from "./live-codex.ts";
 import { isModelVariant, type InstanceConfigMap, type ModelSelection } from "./contracts.ts";
 import { PROVIDER_ICON_PRESETS, providerIconError } from "../shared/provider-icon.ts";
 import type { McpServerSpec } from "./contracts.ts";
@@ -535,9 +536,13 @@ const appConfigSchema = z.object({
   }).optional(),
   /** Live calls: an OpenAI project key for GPT-Live, kept apart from every
    * other OpenAI credential so a Live call never bills an image or engine key
-   * the user did not hand to it. `voice` is a GPT-Live built-in voice name. */
+   * the user did not hand to it. `voice` is a GPT-Live built-in voice name.
+   * `provider` picks the voice engine: "openai" bills the GPT-Live key;
+   * "codex" rides the local Codex CLI's ChatGPT sign-in over the app's own
+   * voice calls (server/live-codex.ts), no key involved. */
   live: z.object({
     key: optionalText,
+    provider: z.enum(["openai", "codex"]).optional(),
     voice: z.string().trim().max(40).regex(/^[a-z]*$/, "a Live voice is a lowercase built-in voice name").optional(),
     readTypedReplies: z.boolean().optional(),
     idleMinutes: z.number().int().min(1).max(60).optional(),
@@ -651,7 +656,7 @@ export interface AppConfig {
   /** The decision model; see the schema above and server/decider. */
   decider?: { enabled?: boolean; provider?: "jev" | "off"; key?: string; baseUrl?: string; jobs?: Partial<Record<DeciderJob, boolean>> };
   imageGen?: ImageGenerationConfig;
-  live?: { key?: string; voice?: string; readTypedReplies?: boolean; idleMinutes?: number };
+  live?: { key?: string; provider?: "openai" | "codex"; voice?: string; readTypedReplies?: boolean; idleMinutes?: number };
   profile?: { name?: string; email?: string; aboutMe?: string };
   rooms?: { turnTimeoutMinutes: number; handoffLifetimeMinutes?: number; handoffMinRunwayMinutes?: number; handoffHardCapMinutes?: number };
   threads?: { maxConcurrentPerBot: number; eventLogMaxBytes?: number; eventLogRetentionDays?: number };
@@ -822,8 +827,11 @@ export const LIVE_IDLE_MINUTES_DEFAULT = 5;
 /** Non-secret Live settings. The key only shows up as `configured`. */
 export function liveSettingsFor(cfg: AppConfig): LiveSettings {
   const minutes = cfg.live?.idleMinutes;
+  const provider = cfg.live?.provider === "codex" ? "codex" : "openai";
   return {
-    configured: Boolean(cfg.live?.key?.trim()),
+    configured: provider === "codex" ? codexLiveConfigured() : Boolean(cfg.live?.key?.trim()),
+    provider,
+    codexConfigured: codexLiveConfigured(),
     voice: cfg.live?.voice ?? "",
     readTypedReplies: cfg.live?.readTypedReplies ?? true,
     idleMinutes: Number.isInteger(minutes) && minutes! >= 1 && minutes! <= 60 ? minutes! : LIVE_IDLE_MINUTES_DEFAULT,

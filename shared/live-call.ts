@@ -182,3 +182,30 @@ export const LIVE_VOICE_OPTIONS: ReadonlyArray<{ id: string; label: string }> = 
   { id: "bossa", label: "Bossa — Brazilian Portuguese, feminine" },
   { id: "tempo", label: "Tempo — Brazilian Portuguese, masculine" },
 ];
+
+/** The gpt-live (V3) voices the codex engine's voice session accepts (as the
+ * probes observed; cove is what the ChatGPT app itself asks for). Mixing in
+ * a GPT-Live-only name is rejected as a 403 that looks like an entitlement
+ * problem, so the pickers keep the sets apart. */
+export const CODEX_LIVE_VOICE_OPTIONS: ReadonlyArray<{ id: string; label: string }> = [
+  { id: "cove", label: "Cove (default)" },
+  { id: "juniper", label: "Juniper" },
+  { id: "maple", label: "Maple" },
+  { id: "spruce", label: "Spruce" },
+  { id: "ember", label: "Ember" },
+  { id: "vale", label: "Vale" },
+  { id: "breeze", label: "Breeze" },
+  { id: "arbor", label: "Arbor" },
+  { id: "sol", label: "Sol" },
+];
+
+/** The engine a Live call uses, once the bot's own choice is folded in:
+ * the bot's explicit pick wins, "default" (or absent) follows the global
+ * Live provider, and anything unrecognized falls back to the key engine. */
+export function liveEngineFor(
+  globalProvider: string | undefined,
+  botEngine: string | undefined | null,
+): "openai" | "codex" | "none" {
+  const chosen = botEngine && botEngine !== "default" ? botEngine : globalProvider ?? "openai";
+  return chosen === "codex" || chosen === "none" ? chosen : "openai";
+}

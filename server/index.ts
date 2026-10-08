@@ -347,7 +347,9 @@ import * as tts from "./tts/index.ts";
 import { createDecider, deciderIncludedHere, deciderReady, deciderSavePatch, describeDecider } from "./decider/index.ts";
 import { decideRoomResponder, type RoomRoutingInput } from "./decider/room-routing.ts";
 import { createLiveSession, liveAttachUrl, LiveSessionError, type LiveBot, type LiveHistoryMessage } from "./live-call.ts";
+import { liveEngineFor } from "../shared/live-call.ts";
 import { LiveCallController, LiveCallSignedOutError, type LiveSocket } from "./live-call-controller.ts";
+import { CODEX_KEY_SENTINEL, codexAttachPseudoUrl, createCodexLiveSession, createCodexRelayRegistry, parseCodexAttachPseudoUrl } from "./live-codex.ts";
 import { decideToolPick } from "./decider/tool-pick.ts";
 import { decideWorkPlace, type WorkPlace } from "./decider/work-place.ts";
 import { narrateTool, toUtterances } from "./tts/speech-text.ts";
@@ -15729,6 +15731,17 @@ function liveHistoryFor(threadId: string): LiveHistoryMessage[] {
 function liveSignedIn(auth: RequestAuth): boolean {
   return auth.kind !== "session" || sessions.isLive(auth.session.id);
 }
+/** Codex-engine calls by id, so the live routes can find the relay the
+ * controller attached to. The controller runs one call at a time; the bound
+ * only guards a leak. */
+const codexRelays = createCodexRelayRegistry();
+
+/** The engine a call to this bot uses: the bot's own pick when it made one,
+ * else the global Live provider. */
+function liveEngineForBot(botId: string): "openai" | "codex" | "none" {
+  return liveEngineFor(cfg.live?.provider, store.bot(botId)?.callEngine);
+}
+
 const liveCalls = new LiveCallController({
   store,
   send: async ({ auth, botId, threadId, text }) => {
@@ -15764,11 +15777,42 @@ const liveCalls = new LiveCallController({
     return task.activity === "waiting-on-you" ? "waiting" : "working";
   },
   broadcast: (frame) => broadcast(frame, { adminOnly: true }),
-  settings: () => ({ key: cfg.live?.key ?? "", ...liveSettingsFor(cfg) }),
-  createSession: ({ key, sdp, botId, threadId, voice }) => createLiveSession({ key, sdp, voice, bot: liveBotFor(botId), history: liveHistoryFor(threadId) }),
-  // Node's WebSocket (undici) accepts headers in its second argument.
-  openSocket: (url, key) => new WebSocket(url, { headers: { authorization: `Bearer ${key}` } } as unknown as string[]) as unknown as LiveSocket,
-  attachUrl: (sessionId) => liveAttachUrl(sessionId),
+  // Per-bot engine: the bot's own pick may spend the GPT-Live key, ride the
+  // ChatGPT sign-in (the key becomes a sentinel; the credential comes from
+  // ~/.codex/auth.json at call time), or refuse calls entirely.
+  settings: (botId) => {
+    const base = liveSettingsFor(cfg);
+    const engine = liveEngineForBot(botId);
+    if (engine === "codex") return { ...base, provider: "codex", key: CODEX_KEY_SENTINEL };
+    if (engine === "none") return { ...base, provider: "openai", key: "" };
+    return { ...base, provider: "openai", key: cfg.live?.key ?? "" };
+  },
+  createSession: ({ key, sdp, botId, threadId, voice }) => {
+    if (liveEngineForBot(botId) === "codex") {
+      // The relay facade must exist before the controller attaches, so the
+      // attach URL already names it (create is idempotent).
+      return createCodexLiveSession({ sdp, voice, bot: liveBotFor(botId) }).then((session) => {
+        codexRelays.create(session.sessionId);
+        return session;
+      });
+    }
+    return createLiveSession({ key, sdp, voice, bot: liveBotFor(botId), history: liveHistoryFor(threadId) });
+  },
+  // A codex call's "sideband" is the browser's data channel, piped; the
+  // registry holds its facade under the call id the browser knows (see
+  // createLiveRoutes). The provider names the session "rtc_…", the harness's
+  // call id is a UUID: attach renames the relay to the id the routes see.
+  openSocket: (url, key) => {
+    const codexCallId = parseCodexAttachPseudoUrl(url);
+    if (codexCallId) return codexRelays.get(codexCallId)?.facade ?? codexRelays.create(codexCallId).facade;
+    // Node's WebSocket (undici) accepts headers in its second argument.
+    return new WebSocket(url, { headers: { authorization: `Bearer ${key}` } } as unknown as string[]) as unknown as LiveSocket;
+  },
+  attachUrl: (sessionId, callId) => {
+    if (!codexRelays.get(sessionId)) return liveAttachUrl(sessionId);
+    if (callId) codexRelays.rename(sessionId, callId);
+    return codexAttachPseudoUrl(callId ?? sessionId);
+  },
   speakable: (text) => toUtterances(text),
   log: (line) => console.log(line),
 });
@@ -15778,6 +15822,11 @@ const liveCalls = new LiveCallController({
 sessions.onSessionRevoked((sessionId) => liveCalls.sessionRevoked(sessionId));
 ROUTES.push(createLiveRoutes({
   calls: liveCalls,
+  relay: {
+    bind: (callId, fingerprint) => codexRelays.get(callId)?.bind(fingerprint) ?? false,
+    openStream: (callId, fingerprint, res) => codexRelays.get(callId)?.openStream(res, fingerprint) ?? false,
+    up: (callId, fingerprint, raws) => codexRelays.get(callId)?.up(fingerprint, raws) ?? null,
+  },
   resolveTarget: (botId, threadId) => {
     const bot = store.bot(botId);
     if (!bot) return null;
@@ -21199,6 +21248,14 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (body.voiceNotes !== undefined) {
         if (typeof body.voiceNotes !== "boolean") return json(res, 400, { error: "voiceNotes must be true or false" });
         patch.voiceNotes = body.voiceNotes;
+      }
+      // which voice engine a Live call to this bot spends (the GPT-Live key,
+      // the ChatGPT sign-in, none) is the same kind of owner decision.
+      if (body.callEngine !== undefined) {
+        if (body.callEngine !== null && !["default", "openai", "codex", "none"].includes(body.callEngine)) {
+          return json(res, 400, { error: "callEngine must be default, openai, codex, none, or null" });
+        }
+        patch.callEngine = body.callEngine === null || body.callEngine === "default" ? undefined : body.callEngine;
       }
       if (body.memoryEnabled !== undefined) {
         if (typeof body.memoryEnabled !== "boolean") return json(res, 400, { error: "memoryEnabled must be true or false" });
