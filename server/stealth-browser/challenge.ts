@@ -117,53 +117,84 @@ async function attemptClick(page: Page): Promise<boolean> {
   return clickFrameByCoordinates(page, frame);
 }
 
+/** Pages the solver itself opened (the shadow page is clean patchright —
+ * it must never get a watcher of its own). */
+const shadowPages = new WeakSet<Page>();
+
 /** One solver pass per page, armed on every main-frame navigation. All
  * failures are swallowed: a closed page, a vanished frame, or a checkbox
- * that will not take the click just end the pass. When the budget runs out
- * with the interstitial still up (Cloudflare keeps re-verifying), the page
- * is reloaded — a fresh challenge round clears for borderline sessions —
- * at most MAX_RELOADS times before the page is left alone. */
+ * that will not take the click just end the pass.
+ *
+ * The bot's page is a losing battlefield for the click: it carries the
+ * automation client's own CDP session (Runtime.enable and friends), which
+ * Cloudflare's challenge script detects and scores down — the click lands
+ * and the verification still loops. So after one failed round on the bot's
+ * page, the solver switches to a shadow page: opened in the same context by
+ * this process's clean patchright client, carrying no other client. The
+ * challenge clears there, cf_clearance lands in the shared profile, the
+ * shadow page closes, and the bot's page reloads into the cleared site. */
 const MAX_RELOADS = 2;
 const reloadCounts = new WeakMap<Page, number>();
 
 export function armCloudflareSolver(page: Page, options: ChallengeSolverOptions = {}): void {
+  if (shadowPages.has(page)) return;
   let running = false;
   let armed = false;
   const budgetMs = options.budgetMs ?? BUDGET_MS;
 
+  const solveOn = async (target: Page, deadline: number): Promise<boolean> => {
+    await sleep(randomBetween(FIRST_ATTEMPT_MIN_MS, FIRST_ATTEMPT_JITTER_MS));
+    let first = true;
+    while (Date.now() < deadline) {
+      if (target.isClosed()) return false;
+      if (!(await challengePresent(target).catch(() => false))) {
+        options.log?.(`stealth-browser: cloudflare challenge cleared${target === page ? "" : " (shadow page)"}`);
+        return true;
+      }
+      if (first) options.log?.(`stealth-browser: cloudflare challenge detected, auto-clicking${target === page ? "" : " (shadow page)"}`);
+      await attemptClick(target).catch(() => {});
+      first = false;
+      await sleep(randomBetween(RETRY_MIN_MS, RETRY_JITTER_MS));
+    }
+    return false;
+  };
+
   const run = async (): Promise<void> => {
     running = true;
     try {
-      const deadline = Date.now() + budgetMs;
-      await sleep(randomBetween(FIRST_ATTEMPT_MIN_MS, FIRST_ATTEMPT_JITTER_MS));
-      let first = true;
-      let clicked = false;
-      while (Date.now() < deadline) {
-        if (!page.isClosed()) {
-          if (!(await challengePresent(page).catch(() => false))) {
-            if (!first) options.log?.(`stealth-browser: cloudflare challenge cleared`);
-            return;
-          }
-          if (first) options.log?.(`stealth-browser: cloudflare challenge detected, auto-clicking`);
-          if (await attemptClick(page).catch(() => false)) clicked = true;
-        }
-        first = false;
-        await sleep(randomBetween(RETRY_MIN_MS, RETRY_JITTER_MS));
+      if (page.isClosed()) return;
+      if (!(await challengePresent(page).catch(() => false))) return;
+      options.log?.(`stealth-browser: cloudflare challenge detected, auto-clicking`);
+      // One honest round on the bot's own page: some challenges clear with
+      // a single click and no extra browser windows.
+      if (await solveOn(page, Date.now() + budgetMs)) return;
+
+      // The bot's page keeps re-verifying — its own CDP session is scored
+      // down. Move the fight to a clean shadow page in the same context:
+      // the clearance cookie it earns is the shared profile's.
+      if (page.isClosed()) return;
+      const reloads = reloadCounts.get(page) ?? 0;
+      if (reloads >= MAX_RELOADS) {
+        options.log?.(`stealth-browser: cloudflare challenge not cleared within budget`);
+        return;
       }
-      // The click was accepted (widget gone) but Cloudflare still shows the
-      // interstitial: its verification is looping. A reload starts a fresh
-      // challenge round, which borderline sessions clear on the second pass.
-      const stuck = await interstitialMarker(page).catch(() => false);
-      if (clicked && stuck && !page.isClosed()) {
-        const reloads = reloadCounts.get(page) ?? 0;
-        if (reloads < MAX_RELOADS) {
-          reloadCounts.set(page, reloads + 1);
-          options.log?.(`stealth-browser: cloudflare challenge looping, reloading the page (round ${reloads + 1} of ${MAX_RELOADS})`);
+      reloadCounts.set(page, reloads + 1);
+      const url = page.url();
+      if (!url || url === "about:blank") return;
+      const shadow = await page.context().newPage().catch(() => undefined);
+      if (!shadow) return;
+      shadowPages.add(shadow);
+      options.log?.(`stealth-browser: solving the challenge on a clean shadow page`);
+      try {
+        await shadow.goto(url, { waitUntil: "domcontentloaded" }).catch(() => {});
+        const solved = await solveOn(shadow, Date.now() + budgetMs);
+        if (solved && !page.isClosed()) {
+          options.log?.(`stealth-browser: reloading the bot's page into the cleared site (round ${reloads + 1} of ${MAX_RELOADS})`);
           await page.reload({ waitUntil: "domcontentloaded" }).catch(() => {});
-          return; // the navigation re-arms a fresh pass
         }
+      } finally {
+        await shadow.close().catch(() => {});
       }
-      options.log?.(`stealth-browser: cloudflare challenge not cleared within budget`);
     } catch {
       // the page died mid-solve; nothing to report
     } finally {
