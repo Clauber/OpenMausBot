@@ -71,10 +71,15 @@ export interface LiveCallDeps {
   personKey?(auth: RequestAuth): string | undefined;
   activity(botId: string, threadId: string): LiveActivity;
   broadcast(frame: { kind: "live.call"; botId: string; threadId: string; call: LiveCallState | null }): void;
-  settings(): { key: string; voice: string; readTypedReplies: boolean; idleMinutes: number };
+  /** The call's settings for this bot: which key it spends, and (from the
+   * engine pick) which voice engine carries it. */
+  settings(botId: string): { key: string; provider?: "openai" | "codex"; voice: string; readTypedReplies: boolean; idleMinutes: number };
   createSession(input: { key: string; sdp: string; botId: string; threadId: string; voice: string }): Promise<{ sessionId: string; sdp: string }>;
   openSocket(url: string, key: string): LiveSocket;
-  attachUrl(sessionId: string): string;
+  /** The socket URL for a session. `callId` (the controller's own call id)
+   * rides along for engines whose sideband is named by it, not the session
+   * id; the API-key engine ignores it. */
+  attachUrl(sessionId: string, callId?: string): string;
   speakable(text: string): string[];
   log(line: string): void;
   now?(): number;
@@ -187,11 +192,17 @@ export class LiveCallController {
   async start(input: { auth: RequestAuth; device?: string; botId: string; botName: string; threadId: string; client: LiveClient; sdp: string }): Promise<{ call: LiveCallState; sdp: string }> {
     if (this.call && this.call.state.status !== "ended") throw new LiveCallBusyError({ ...this.call.state });
     if (input.device && this.revokedDevices.has(input.device)) throw new LiveCallSignedOutError();
-    const settings = this.deps.settings();
+    const settings = this.deps.settings(input.botId);
     const key = settings.key.trim();
     if (!key) throw new LiveSessionError("Add an OpenAI API key to use Live calls.", 409);
+    const provider = settings.provider === "codex" ? "codex" : "openai";
+    // A codex call's data channel is piped through the harness by the
+    // desktop's media module; the phones do not carry that pipe yet.
+    if (provider === "codex" && input.client !== "desktop") {
+      throw new LiveSessionError("Codex voice calls run in the desktop app for now.", 400);
+    }
     const voice = liveVoice(settings.voice);
-    const call = this.newCall(input, key, voice);
+    const call = this.newCall(input, key, voice, provider);
     // Taken before the first await: a second start in the same tick is refused.
     this.call = call;
     let session: { sessionId: string; sdp: string };
@@ -266,9 +277,9 @@ export class LiveCallController {
 
   // ── lifecycle ────────────────────────────────────────────────────────
 
-  private newCall(input: { auth: RequestAuth; device?: string; botId: string; botName: string; threadId: string; client: LiveClient }, key: string, voice: string): Call {
+  private newCall(input: { auth: RequestAuth; device?: string; botId: string; botName: string; threadId: string; client: LiveClient }, key: string, voice: string, engine: "openai" | "codex"): Call {
     return {
-      state: { callId: randomUUID(), botId: input.botId, threadId: input.threadId, client: input.client, voice, startedAt: this.now(), status: "connecting" },
+      state: { callId: randomUUID(), botId: input.botId, threadId: input.threadId, client: input.client, voice, engine, startedAt: this.now(), status: "connecting" },
       auth: input.auth,
       device: input.device ?? null,
       personKey: this.deps.personKey?.(input.auth),
@@ -314,7 +325,7 @@ export class LiveCallController {
   private attach(call: Call): void {
     let socket: LiveSocket;
     try {
-      socket = this.deps.openSocket(this.deps.attachUrl(call.sessionId), call.key);
+      socket = this.deps.openSocket(this.deps.attachUrl(call.sessionId, call.state.callId), call.key);
     } catch {
       this.finish(call, "sideband-lost", "The call could not connect to OpenAI.");
       return;
@@ -430,7 +441,7 @@ export class LiveCallController {
       this.maybeStatus(call);
       return;
     }
-    const idleMs = this.deps.settings().idleMinutes * 60_000;
+    const idleMs = this.deps.settings(call.state.botId).idleMinutes * 60_000;
     if (this.now() - call.lastActivityAt >= idleMs) void this.hangUp(call, "idle");
   }
 
@@ -720,7 +731,7 @@ export class LiveCallController {
       }
     };
     if (!forCall && typed === undefined) return;
-    if (!forCall && !this.deps.settings().readTypedReplies) {
+    if (!forCall && !this.deps.settings(call.state.botId).readTypedReplies) {
       // Off means nothing about a typed exchange reaches OpenAI, not even as context.
       settle();
       call.spokenAnswers.add(message.id);
@@ -824,7 +835,7 @@ export class LiveCallController {
    * status notes). With typed replies off, only work on a spoken request:
    * the steps the bot takes for a typed message are about that exchange. */
   private mayNarrate(call: Call): boolean {
-    return this.deps.settings().readTypedReplies || call.pendingCall.size > 0 || call.claimNextTerminal;
+    return this.deps.settings(call.state.botId).readTypedReplies || call.pendingCall.size > 0 || call.claimNextTerminal;
   }
 
   // ── plumbing ─────────────────────────────────────────────────────────

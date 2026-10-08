@@ -443,6 +443,9 @@ export interface Bot {
   voice?: string;
   /** whether this bot may send voice notes (on unless switched off) */
   voiceNotes?: boolean;
+  /** which engine a Live call to this bot uses (default: the global Live
+   * provider; none: no Live calls, spoken replies only) */
+  callEngine?: "default" | "openai" | "codex" | "none";
   /** whether this bot uses native memory (on unless switched off) */
   memoryEnabled?: boolean;
   pinned?: boolean;
