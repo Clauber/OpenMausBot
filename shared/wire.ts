@@ -300,6 +300,11 @@ export interface WireBot {
   /** Whether this bot may send voice notes. Absent/true = allowed; false
    * hides the tool and refuses the route even with a voice configured. */
   voiceNotes?: boolean;
+  /** Which voice engine a Live call to this bot uses. Absent/"default"
+   * follows the global Live provider; "openai" forces the GPT-Live key,
+   * "codex" forces the Codex CLI's ChatGPT sign-in, and "none" refuses Live
+   * calls so the phone button always starts a spoken-replies call. */
+  callEngine?: "default" | "openai" | "codex" | "none";
   /** Whether this bot uses native memory. Absent/true = enabled. */
   memoryEnabled?: boolean;
   /** Queue direct-chat messages behind outstanding delegated work. */
@@ -572,6 +577,10 @@ export interface LiveCallState {
   threadId: string;
   client: LiveClient;
   voice: string;
+  /** Which voice engine the call runs on: the GPT-Live key ("openai"), or
+   * "codex" — the ChatGPT sign-in, whose data channel is relayed through the
+   * server. Clients use it to know how to carry the call's events. */
+  engine?: "openai" | "codex";
   /** epoch ms when the session was created */
   startedAt: number;
   status: LiveCallStatus;
@@ -583,6 +592,12 @@ export interface LiveCallState {
 /** Non-secret Live settings, as GET /api/config and PATCH /api/live/settings report them. */
 export interface LiveSettings {
   configured: boolean;
+  /** Which voice engine Live calls use: "openai" bills the GPT-Live key;
+   * "codex" rides the local Codex CLI's ChatGPT sign-in (no key). */
+  provider: "openai" | "codex";
+  /** Whether a usable Codex sign-in exists on this computer, whatever the
+   * provider — so the engine pickers can offer it honestly. */
+  codexConfigured: boolean;
   voice: string;
   readTypedReplies: boolean;
   idleMinutes: number;

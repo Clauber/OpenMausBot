@@ -4,6 +4,15 @@
 // bot is asked, what the voice is told, approvals, idle hang-up — runs on the
 // harness (server/live-call-controller.ts). This module never sends appends:
 // its data channel may only send session.close.
+//
+// Two engines, one media path. On the OpenAI-key engine the harness holds the
+// session's sideband itself and this window's data channel only mirrors
+// events. On the codex engine (call.engine === "codex") there is no
+// server-side sideband: this window's data channel is the session's only
+// event channel, so the window pipes it — raw frames up (POST
+// /api/live/call/relay), the server's appends down (the same path's SSE
+// stream, written back into the channel). The server decides everything; the
+// pipe carries bytes.
 import { useSyncExternalStore } from "react";
 import type { LiveCallState, LiveEndReason } from "../../shared/wire";
 import { api, ApiError } from "@/state/store";
@@ -54,6 +63,9 @@ export interface LiveMediaDeps {
   iceTimeoutMs: number;
   /** what this window is: the desktop app's own page, a server's page in it, or a browser */
   capabilities(): DesktopCapabilities;
+  /** Opens the codex relay's down stream (the browser's EventSource).
+   * Undefined when this window has no EventSource at all. */
+  openEventSource?(url: string): { addEventListener(type: string, listener: (event: { data?: unknown }) => void): void; close(): void } | undefined;
 }
 
 const IDLE: LiveMediaState = {
@@ -67,6 +79,12 @@ const ENDED_NOTICE_MS = 4_000;
 const SERVER_CLOSE_GRACE_MS = 3_000;
 /** How long the audio may take to connect once OpenAI's answer is applied. */
 export const MEDIA_CONNECT_TIMEOUT_MS = 20_000;
+/** Codex relay: how long up-frames may batch, and how many flush at once.
+ * Delegation dispatch waits ~0.7 s anyway; this adds at most a fraction. */
+const RELAY_FLUSH_MS = 40;
+const RELAY_BATCH = 16;
+/** The largest number of unrelayed frames held while the harness is busy. */
+const RELAY_MAX_BUFFER = 400;
 
 /** This window has no microphone or WebRTC: trying again cannot help. */
 class LiveUnsupportedError extends Error {}
@@ -92,6 +110,10 @@ const defaults: LiveMediaDeps = {
   },
   iceTimeoutMs: 10_000,
   capabilities: desktopCapabilitiesNow,
+  openEventSource: (url) => {
+    if (typeof EventSource === "undefined") return undefined;
+    return new EventSource(url);
+  },
 };
 let deps: LiveMediaDeps = defaults;
 
@@ -104,6 +126,10 @@ let heardTimer: ReturnType<typeof setTimeout> | null = null;
 let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 let closeTimer: ReturnType<typeof setTimeout> | null = null;
 let connectTimer: ReturnType<typeof setTimeout> | null = null;
+/** The codex relay: raw frames batch up through here, and its SSE stream
+ * writes the server's appends back into the data channel. */
+let relayPump: ((raw: string) => void) | null = null;
+let relaySource: { close(): void } | null = null;
 /** Stops waiting for the click that lets blocked audio play. */
 let stopGestureWait: (() => void) | null = null;
 /** The last call state the harness reported, even before this window knew the call's id. */
@@ -148,11 +174,19 @@ export function resetLiveMedia(): void {
   serverAttached = false;
 }
 
-export function applyCaption(current: { caption: string; heard: string }, event: { type?: unknown; delta?: unknown }): { caption: string; heard: string } {
-  const delta = typeof event.delta === "string" ? event.delta : "";
-  if (event.type === "session.output_transcript.delta") return { caption: (current.caption + delta).slice(-CAPTION_CHARS), heard: "" };
-  if (event.type === "session.input_transcript.delta") return { caption: current.caption, heard: (current.heard + delta).slice(-HEARD_CHARS) };
+export function applyCaption(current: { caption: string; heard: string }, event: { type?: unknown; delta?: unknown; item?: unknown }): { caption: string; heard: string } {
+  // The codex engine's V3 events carry the words in item.text, one fragment
+  // each; the key engine's mirrors carry them in delta.
+  const delta = typeof event.delta === "string" ? event.delta : itemText(event.item);
+  if (event.type === "session.output_transcript.delta" || event.type === "output_transcript.added") return { caption: (current.caption + delta).slice(-CAPTION_CHARS), heard: "" };
+  if (event.type === "session.input_transcript.delta" || event.type === "input_transcript.added") return { caption: current.caption, heard: (current.heard + delta).slice(-HEARD_CHARS) };
   return current;
+}
+
+function itemText(item: unknown): string {
+  if (!item || typeof item !== "object") return "";
+  const text = (item as { text?: unknown }).text;
+  return typeof text === "string" ? text : "";
 }
 
 export function endNotice(reason: LiveEndReason | undefined): { text: string; dropped: boolean } {
@@ -181,6 +215,57 @@ function micBlockedNotice(capabilities: DesktopCapabilities, cloudHome: boolean)
     case "desktop-app-required": return t("call.live.micBlockedBrowser");
     default: return t("call.live.micBlocked");
   }
+}
+
+/** Pipes this window's data channel through the harness for a codex call:
+ * raw frames up in small batches, the server's appends down into the channel.
+ * Any failure stays quiet — the harness sees a dropped relay as a lost call
+ * and ends it, which reaches this window through the ordinary call state. */
+function startCodexRelay(mine: number, callId: string) {
+  let buffer: string[] = [];
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  let stopped = false;
+  const flush = () => {
+    flushTimer = null;
+    const batch = buffer;
+    buffer = [];
+    if (stopped || !batch.length) return;
+    void deps.request("/api/live/call/relay", {
+      method: "POST",
+      body: JSON.stringify({ callId, events: batch }),
+      timeoutMs: 8_000,
+    }).catch(() => undefined);
+  };
+  relayPump = (raw) => {
+    if (stopped) return;
+    buffer.push(raw);
+    if (buffer.length > RELAY_MAX_BUFFER) {
+      // A window this far behind is not carrying the call any more; the
+      // harness's attach/idle timers end it.
+      stopped = true;
+      return;
+    }
+    if (buffer.length >= RELAY_BATCH) flush();
+    else flushTimer ??= setTimeout(flush, RELAY_FLUSH_MS);
+  };
+  const source = deps.openEventSource?.(`/api/live/call/relay?callId=${encodeURIComponent(callId)}`);
+  if (!source) return;
+  relaySource = source;
+  source.addEventListener("codex", (event) => {
+    if (mine !== generation || stopped) return;
+    try {
+      const frame = JSON.parse(String(event.data)) as unknown;
+      if (frame && typeof frame === "object" && channel?.readyState === "open") channel.send(JSON.stringify(frame));
+    } catch { /* a half-written frame is not ours to fix */ }
+  });
+}
+
+function stopCodexRelay() {
+  relayPump = null;
+  if (relaySource) {
+    try { relaySource.close(); } catch { /* closing anyway */ }
+  }
+  relaySource = null;
 }
 
 export async function startLiveCall(target: {
@@ -224,7 +309,10 @@ export async function startLiveCall(target: {
       if (mine === generation) goLiveWhenReady();
     };
     events.onmessage = (event) => {
-      if (mine === generation) onChannelMessage(event.data);
+      if (mine !== generation) return;
+      const raw = typeof event.data === "string" ? event.data : String(event.data);
+      onChannelMessage(raw);
+      relayPump?.(raw);
     };
     await connection.setLocalDescription(await connection.createOffer());
     await iceGathered(connection, deps.iceTimeoutMs);
@@ -250,6 +338,7 @@ export async function startLiveCall(target: {
     // already ended); it was ignored then because the id was not known yet.
     if (seen?.callId === result.call.callId) applyServerCall(seen);
     if (mine !== generation) return;
+    if (result.call.engine === "codex") startCodexRelay(mine, result.call.callId);
     await connection.setRemoteDescription({ type: "answer", sdp: result.transport.sdp });
     // hung up (or a newer call began) while the answer was applied: its wait is not ours
     if (mine !== generation) return;
@@ -453,10 +542,10 @@ async function endOnServer(callId: string): Promise<void> {
   await deps.request("/api/live/call/end", { method: "POST", body: JSON.stringify({ callId }), timeoutMs: 8_000 }).catch(() => undefined);
 }
 
-function onChannelMessage(raw: unknown) {
-  let event: { type?: unknown; delta?: unknown };
+function onChannelMessage(raw: string) {
+  let event: { type?: unknown; delta?: unknown; item?: unknown };
   try {
-    event = JSON.parse(String(raw)) as { type?: unknown; delta?: unknown };
+    event = JSON.parse(raw) as { type?: unknown; delta?: unknown; item?: unknown };
   } catch {
     return;
   }
@@ -472,7 +561,7 @@ function onChannelMessage(raw: unknown) {
   const next = applyCaption(state, event);
   if (next.caption === state.caption && next.heard === state.heard) return;
   set(next);
-  if (event.type === "session.input_transcript.delta") {
+  if (event.type === "session.input_transcript.delta" || event.type === "input_transcript.added") {
     if (heardTimer) clearTimeout(heardTimer);
     heardTimer = setTimeout(() => set({ heard: "" }), HEARD_CLEAR_MS);
   }
@@ -525,6 +614,7 @@ function release() {
   heardTimer = closeTimer = noticeTimer = connectTimer = null;
   stopGestureWait?.();
   stopGestureWait = null;
+  stopCodexRelay();
   stopCapturing();
   try { channel?.close(); } catch { /* already closed */ }
   channel = null;
