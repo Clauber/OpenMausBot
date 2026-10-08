@@ -94,7 +94,7 @@ import { CitationSelectionToolbar, SentCitations } from "./CitationUI";
 
 import { SpeakButton } from "./SpeakButton";
 import { CallOverlay } from "./CallView";
-import { LiveCallBar } from "./LiveCallBar";
+import { LiveCallBar, LiveCallOverlay } from "./LiveCallBar";
 import { LiveCallChip } from "./LiveCallPill";
 import { effectivePlace, toolPlace, type EffectivePlace } from "@/lib/place";
 import { cn } from "@/lib/cn";
@@ -1226,6 +1226,8 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
     <main className="relative flex h-full min-w-0 flex-1 flex-col bg-app">
       {/* A take-turns call covers the thread while the bot is on the line */}
       <CallOverlay bot={bot} />
+      {/* so does a Live call, until Show chat folds it into the call bar */}
+      <LiveCallOverlay bot={bot} />
       {/* The transcript scrolls on under the header (and the banners that
           hang from it), which is liquid glass tinted with the chat's own
           background, and under the composer, which already floats. */}

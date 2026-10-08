@@ -3,7 +3,7 @@ import { hangUpRemoteCall, liveCallBarView, liveLineHeldElsewhere } from "./Live
 import type { LiveMediaState } from "@/lib/live-call-media";
 
 const bot = { id: "b1", threadId: "t1", name: "Ada" };
-const idle: LiveMediaState = { phase: "idle", callId: null, botId: null, threadId: null, startedAt: null, muted: false, caption: "", heard: "", notice: null, needsKey: false, busyWith: null, canRetry: false, hangingUp: false };
+const idle: LiveMediaState = { phase: "idle", callId: null, botId: null, threadId: null, startedAt: null, muted: false, caption: "", heard: "", notice: null, needsKey: false, busyWith: null, canRetry: false, hangingUp: false, minimized: false };
 
 describe("liveCallBarView", () => {
   it("shows nothing without a call on this chat", () => {
@@ -12,7 +12,7 @@ describe("liveCallBarView", () => {
   });
   it("shows the timer, caption and mute state for this window's call", () => {
     const view = liveCallBarView({ bot, media: { ...idle, phase: "live", callId: "c", botId: "b1", threadId: "t1", startedAt: 1_000, caption: "Hello there", heard: "hi", muted: true }, server: null, now: 66_000 });
-    expect(view).toEqual({ kind: "local", title: "Live with Ada · 1:05", caption: "Hello there", heard: "hi", muted: true, ending: false, hint: null });
+    expect(view).toEqual({ kind: "local", title: "Live with Ada · 1:05", caption: "Hello there", heard: "hi", muted: true, ending: false, hint: null, minimized: false });
   });
   it("shows a hint while the call runs, when the window blocked its audio", () => {
     const media: LiveMediaState = { ...idle, phase: "live", callId: "c", botId: "b1", threadId: "t1", startedAt: 0, notice: "Click anywhere in the window to hear the call." };

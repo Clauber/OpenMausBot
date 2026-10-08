@@ -52,6 +52,9 @@ export interface LiveMediaState {
    * other end (another device hung up, the computer ended the call) keeps
    * the call's title while it ends, then says why. */
   hangingUp: boolean;
+  /** the person folded the call into the bar above the composer to watch the
+   * chat; every call opens full screen */
+  minimized: boolean;
 }
 
 export interface LiveMediaDeps {
@@ -70,7 +73,7 @@ export interface LiveMediaDeps {
 
 const IDLE: LiveMediaState = {
   phase: "idle", callId: null, botId: null, threadId: null, startedAt: null, muted: false,
-  caption: "", heard: "", notice: null, needsKey: false, busyWith: null, canRetry: false, hangingUp: false,
+  caption: "", heard: "", notice: null, needsKey: false, busyWith: null, canRetry: false, hangingUp: false, minimized: false,
 };
 const CAPTION_CHARS = 240;
 const HEARD_CHARS = 160;
@@ -435,6 +438,10 @@ export async function hangUpLiveCall(): Promise<void> {
 export function setLiveMuted(muted: boolean): void {
   for (const track of microphone?.getAudioTracks() ?? []) track.enabled = !muted;
   set({ muted });
+}
+
+export function setLiveMinimized(minimized: boolean): void {
+  set({ minimized });
 }
 
 export type LiveCallShortcut = "mute" | "hangUp";
