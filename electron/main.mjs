@@ -3485,11 +3485,13 @@ app.whenReady().then(async () => {
   // local UI only; privileged capabilities (camera, geolocation, USB, MIDI,
   // serial) stay off. Client mode's loopback relay is the local UI. The
   // person's own Cloud, open in this window, also gets the microphone (only
-  // that) for a Live call: it is theirs alone. No other server does.
+  // that) for a Live call: it is theirs alone. So does a server they added
+  // and opened here. No other server does.
   const appPermissions = appPermissionHandlers({
     rendererOrigin,
     mainContents: () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null),
     cloudHomeOrigin: () => desktopRemoteAccess ? null : cloudAccount?.homeTarget()?.origin ?? null,
+    serverOrigin: () => desktopRemoteAccess ? null : activeEnvironment(environmentsState)?.origin ?? null,
   });
   session.defaultSession.setPermissionRequestHandler(appPermissions.request);
   session.defaultSession.setPermissionCheckHandler(appPermissions.check);
