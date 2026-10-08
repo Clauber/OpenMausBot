@@ -2469,3 +2469,67 @@ describe("live call state", () => {
     expect(liveCallFromFrame({ kind: "live.call", call: { status: "live" } })).toBeNull();
   });
 });
+
+describe("file viewer panel", () => {
+  const tab = { id: "t1\u0000m1\u0000/report.md", path: "/report.md", name: "report.md", threadId: "t1", messageId: "m1" };
+  const other = { ...tab, id: "t1\u0000m1\u0000/notes.txt", path: "/notes.txt", name: "notes.txt" };
+
+  it("starts closed with no tabs", () => {
+    expect(initialState.fileViewerOpen).toBe(false);
+    expect(initialState.fileViewerTabs).toEqual([]);
+    expect(initialState.fileViewerActiveTab).toBeNull();
+  });
+
+  it("openFileViewerTab opens the panel, focuses the tab and closes the other side panels", () => {
+    const withPanels = { ...initialState, computerOpen: true, inspectorOpen: true, activityOpen: true, settingsOpen: true, appSettingsOpen: true };
+    const next = reducer(withPanels, { type: "openFileViewerTab", tab });
+    expect(next.fileViewerOpen).toBe(true);
+    expect(next.fileViewerTabs).toEqual([tab]);
+    expect(next.fileViewerActiveTab).toBe(tab.id);
+    expect(next.computerOpen).toBe(false);
+    expect(next.inspectorOpen).toBe(false);
+    expect(next.activityOpen).toBe(false);
+    expect(next.settingsOpen).toBe(false);
+    expect(next.appSettingsOpen).toBe(false);
+  });
+
+  it("re-opening a file refreshes its tab in place instead of duplicating it", () => {
+    const renamed = { ...tab, name: "report (fixed).md" };
+    const open = reducer(initialState, { type: "openFileViewerTab", tab });
+    const next = reducer(open, { type: "openFileViewerTab", tab: renamed });
+    expect(next.fileViewerTabs).toEqual([renamed]);
+    expect(next.fileViewerActiveTab).toBe(renamed.id);
+  });
+
+  it("appends further tabs, switches between them, and keeps the panel open when a tab closes", () => {
+    let state = reducer(initialState, { type: "openFileViewerTab", tab });
+    state = reducer(state, { type: "openFileViewerTab", tab: other });
+    expect(state.fileViewerTabs).toEqual([tab, other]);
+    expect(state.fileViewerActiveTab).toBe(other.id);
+    state = reducer(state, { type: "setFileViewerTab", id: tab.id });
+    expect(state.fileViewerActiveTab).toBe(tab.id);
+    state = reducer(state, { type: "closeFileViewerTab", id: tab.id });
+    expect(state.fileViewerTabs).toEqual([other]);
+    expect(state.fileViewerActiveTab).toBe(other.id);
+    expect(state.fileViewerOpen).toBe(true);
+  });
+
+  it("closing the active tab activates the neighboring tab, and closing the last tab closes the panel", () => {
+    let state = reducer(initialState, { type: "openFileViewerTab", tab });
+    state = reducer(state, { type: "openFileViewerTab", tab: other });
+    state = reducer(state, { type: "closeFileViewerTab", id: other.id });
+    expect(state.fileViewerActiveTab).toBe(tab.id);
+    state = reducer(state, { type: "closeFileViewerTab", id: tab.id });
+    expect(state.fileViewerTabs).toEqual([]);
+    expect(state.fileViewerActiveTab).toBeNull();
+    expect(state.fileViewerOpen).toBe(false);
+  });
+
+  it("opening the inspector or the computer closes the viewer", () => {
+    const open = reducer(initialState, { type: "openFileViewerTab", tab });
+    expect(reducer(open, { type: "toggleInspector", open: true }).fileViewerOpen).toBe(false);
+    expect(reducer(open, { type: "toggleComputer", open: true }).fileViewerOpen).toBe(false);
+    expect(reducer(open, { type: "toggleActivity", open: true }).fileViewerOpen).toBe(false);
+    expect(reducer(open, { type: "toggleAppSettings", open: true }).fileViewerOpen).toBe(false);
+  });
+});
