@@ -23,6 +23,8 @@ import {
   type FileViewerTab,
 } from "@/lib/file-viewer";
 import { useStore } from "@/state/store";
+import { ChatMarkdown, CodeBlock } from "./ChatMarkdown";
+import { fileLanguage, filePreviewKind, sandboxedHtml } from "@/lib/file-preview";
 import { useCaptionChrome } from "./DesktopCapabilities";
 import { requestMessageFile, useLocalFileSave } from "./AttachmentPreview";
 
@@ -79,6 +81,9 @@ async function readTextBounded(
 function FileViewerContent({ tab }: { tab: FileViewerTab }) {
   const [state, setState] = useState<ContentState>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
+  const [source, setSource] = useState(false);
+  const previewKind = filePreviewKind(tab.path);
+  const renders = previewKind === "markdown" || previewKind === "html";
 
   useEffect(() => {
     const controller = new AbortController();
@@ -103,7 +108,7 @@ function FileViewerContent({ tab }: { tab: FileViewerTab }) {
           });
           return;
         }
-        if (kind === "image" || kind === "pdf") {
+        if (kind === "image" || kind === "pdf" || kind === "audio" || kind === "video") {
           const blob = await response.blob();
           if (controller.signal.aborted) return;
           setState({
@@ -162,7 +167,17 @@ function FileViewerContent({ tab }: { tab: FileViewerTab }) {
             {t("attach.viewer.truncated")}
           </div>
         )}
-        <pre dir="ltr" className="min-h-0 flex-1 overflow-auto p-4 text-left font-mono text-[12.5px] leading-relaxed whitespace-pre text-ink">{content.text}</pre>
+        {renders && <div className="shrink-0 border-b border-hairline/30 px-4 py-2">
+          <button type="button" aria-pressed={source} onClick={() => setSource((shown) => !shown)}
+            className="rounded-md px-2 py-1 text-[12px] text-accent hover:bg-raised">
+            {t(source ? "attach.viewer.showRendered" : "attach.viewer.showSource")}
+          </button>
+        </div>}
+        {!source && previewKind === "html" && !content.truncated
+          ? <iframe title={tab.name} sandbox="allow-scripts" srcDoc={sandboxedHtml(content.text ?? "")} className="min-h-0 flex-1 border-0 bg-white" />
+          : !source && previewKind === "markdown"
+          ? <div className="min-h-0 flex-1 overflow-auto p-4"><ChatMarkdown text={content.text ?? ""} /></div>
+          : <div dir="ltr" className="min-h-0 flex-1 overflow-auto p-4"><CodeBlock lang={fileLanguage(tab.path)} code={content.text ?? ""} /></div>}
       </div>
     );
   }
@@ -175,6 +190,12 @@ function FileViewerContent({ tab }: { tab: FileViewerTab }) {
   }
   if (content.kind === "pdf" && content.blobUrl) {
     return <iframe src={content.blobUrl} title={tab.name} className="min-h-0 flex-1 border-0 bg-white" />;
+  }
+  if (content.kind === "video" && content.blobUrl) {
+    return <div className="flex min-h-0 flex-1 items-center justify-center p-4"><video controls preload="metadata" src={content.blobUrl} aria-label={tab.name} className="max-h-full max-w-full" /></div>;
+  }
+  if (content.kind === "audio" && content.blobUrl) {
+    return <div className="flex min-h-0 flex-1 items-center justify-center p-4"><audio controls preload="metadata" src={content.blobUrl} aria-label={tab.name} /></div>;
   }
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center text-ink-secondary">
