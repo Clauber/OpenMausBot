@@ -1393,8 +1393,8 @@
   "mcp.editAria": "Modifier {name}",
   "mcp.removeAria": "Supprimer {name}",
   "mcp.probe.connected": "Connecté",
-  "mcp.probe.toolsOne": "· 1 outil : {names}",
-  "mcp.probe.toolsMany": "· {count} outils : {names}",
+  "mcp.probe.toolsOne": "· 1 outil",
+  "mcp.probe.toolsMany": "· {count} outils",
   "mcp.probe.noTools": "· aucun outil annoncé",
   "engineSetup.chatgpt.description": "Utilisez votre forfait ChatGPT pour les requêtes IA éligibles dans OpenMausBot. Il est distinct d'OMB Cloud et de la facturation de l'API.",
   "engineSetup.chatgpt.welcomeBody": "Les requêtes IA éligibles dans OpenMausBot utilisent votre forfait ChatGPT. Gérez l'utilisation et l'accès dans les paramètres de ChatGPT. Votre forfait ChatGPT est distinct d'OMB Cloud.",
@@ -1489,5 +1489,6 @@
   "computer.phase.showPendingBoat": "Auto a trouvé un ordinateur cloud existant qui n'est pas prêt. Il n'a pas été modifié.",
   "computer.badge.autoBoat": "boat cloud · Auto · lecture seule",
   "computer.addBoatKey": "Ajoutez une clé d'API Boat pour donner un ordinateur cloud à ce bot — il démarre ici même.",
-  "call.live.disclosureCloud": "Un appel Live envoie votre voix à OpenAI, ainsi que les messages récents de la conversation, les réponses du bot et les détails de toute approbation qu'il demande. La clé OpenAI reste sur votre Cloud."
+  "call.live.disclosureCloud": "Un appel Live envoie votre voix à OpenAI, ainsi que les messages récents de la conversation, les réponses du bot et les détails de toute approbation qu'il demande. La clé OpenAI reste sur votre Cloud.",
+  "mcp.probe.filter": "Filtrer les outils"
 }

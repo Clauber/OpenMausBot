@@ -1395,8 +1395,8 @@
   "mcp.editAria": "{name} を編集",
   "mcp.removeAria": "{name} を削除",
   "mcp.probe.connected": "接続しました",
-  "mcp.probe.toolsOne": "· ツール 1 個: {names}",
-  "mcp.probe.toolsMany": "· ツール {count} 個: {names}",
+  "mcp.probe.toolsOne": "· ツール 1 個",
+  "mcp.probe.toolsMany": "· ツール {count} 個",
   "mcp.probe.noTools": "· 提供されたツールはありません",
   "engineSetup.chatgpt.description": "OpenMausBot の対象となる AI リクエストに ChatGPT のプランを使います。これは OMB Cloud や API の課金とは別です。",
   "engineSetup.chatgpt.welcomeBody": "OpenMausBot の対象となる AI リクエストには ChatGPT のプランが使われます。利用状況とアクセスは ChatGPT の設定で管理してください。ChatGPT のプランは OMB Cloud とは別です。",
@@ -1491,5 +1491,6 @@
   "computer.phase.showPendingBoat": "自動が準備できていない既存のクラウドコンピューターを見つけました。変更していません。",
   "computer.badge.autoBoat": "クラウドボート · 自動 · 読み取り専用",
   "computer.addBoatKey": "Boat の API キーを追加すると、このボットにクラウドコンピューターが用意されます。ここで起動します。",
-  "call.live.disclosureCloud": "ライブ通話では、音声に加えて、チャットの最近のメッセージ、ボットの回答、ボットが求める承認の詳細が OpenAI に送信されます。OpenAI キーはお使いの Cloud に保存されたままです。"
+  "call.live.disclosureCloud": "ライブ通話では、音声に加えて、チャットの最近のメッセージ、ボットの回答、ボットが求める承認の詳細が OpenAI に送信されます。OpenAI キーはお使いの Cloud に保存されたままです。",
+  "mcp.probe.filter": "ツールを絞り込む"
 }

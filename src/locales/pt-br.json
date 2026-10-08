@@ -1406,8 +1406,8 @@
   "mcp.editAria": "Editar {name}",
   "mcp.removeAria": "Remover {name}",
   "mcp.probe.connected": "Conectado",
-  "mcp.probe.toolsOne": "· 1 ferramenta: {names}",
-  "mcp.probe.toolsMany": "· {count} ferramentas: {names}",
+  "mcp.probe.toolsOne": "· 1 ferramenta",
+  "mcp.probe.toolsMany": "· {count} ferramentas",
   "mcp.probe.noTools": "· nenhuma ferramenta anunciada",
   "engineSetup.chatgpt.description": "Use seu plano do ChatGPT para solicitações de IA elegíveis no OpenMausBot. Ele é separado do OMB Cloud e da cobrança da API.",
   "engineSetup.chatgpt.welcomeBody": "As solicitações de IA elegíveis no OpenMausBot usam seu plano do ChatGPT. Gerencie o uso e o acesso nas configurações do ChatGPT. Seu plano do ChatGPT é separado do OMB Cloud.",
@@ -1503,5 +1503,6 @@
   "computer.phase.showPendingBoat": "O Automático encontrou um computador na nuvem que não está pronto. Ele não foi alterado.",
   "computer.badge.autoBoat": "boat na nuvem · Automático · somente leitura",
   "computer.addBoatKey": "Adicione uma chave de API do Boat para dar um computador na nuvem a este bot — ele sobe aqui mesmo.",
-  "call.live.disclosureCloud": "Uma chamada Live envia sua voz para a OpenAI, junto com as mensagens recentes do chat, as respostas do bot e os detalhes de qualquer aprovação que ele solicitar. A chave da OpenAI permanece no seu Cloud."
+  "call.live.disclosureCloud": "Uma chamada Live envia sua voz para a OpenAI, junto com as mensagens recentes do chat, as respostas do bot e os detalhes de qualquer aprovação que ele solicitar. A chave da OpenAI permanece no seu Cloud.",
+  "mcp.probe.filter": "Filtrar ferramentas"
 }

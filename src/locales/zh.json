@@ -2102,8 +2102,8 @@
   "mcp.editAria": "编辑 {name}",
   "mcp.removeAria": "移除 {name}",
   "mcp.probe.connected": "已连接",
-  "mcp.probe.toolsOne": "· 1 个工具：{names}",
-  "mcp.probe.toolsMany": "· {count} 个工具：{names}",
+  "mcp.probe.toolsOne": "· 1 个工具",
+  "mcp.probe.toolsMany": "· {count} 个工具",
   "mcp.probe.noTools": "· 未声明任何工具",
   "mcp.transport.stdio": "运行指令",
   "mcp.transport.remote": "连接至 URL",
@@ -2435,5 +2435,6 @@
   "computer.phase.showPendingBoat": "自动找到了一台尚未就绪的云电脑。它没有被更改。",
   "computer.badge.autoBoat": "云 boat · 自动 · 只读",
   "computer.addBoatKey": "添加 Boat API 密钥即可为此机器人提供云电脑——它就在这里启动。",
-  "call.live.disclosureCloud": "实时通话会将你的语音连同此聊天的近期消息、机器人的回复以及其请求审批的详细信息一并发送给 OpenAI。OpenAI 密钥始终保存在你的 Cloud 上。"
+  "call.live.disclosureCloud": "实时通话会将你的语音连同此聊天的近期消息、机器人的回复以及其请求审批的详细信息一并发送给 OpenAI。OpenAI 密钥始终保存在你的 Cloud 上。",
+  "mcp.probe.filter": "筛选工具"
 }

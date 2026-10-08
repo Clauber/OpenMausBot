@@ -1393,8 +1393,8 @@
   "mcp.editAria": "{name} संपादित करें",
   "mcp.removeAria": "{name} हटाएँ",
   "mcp.probe.connected": "जुड़ गया",
-  "mcp.probe.toolsOne": "· 1 टूल: {names}",
-  "mcp.probe.toolsMany": "· {count} टूल: {names}",
+  "mcp.probe.toolsOne": "· 1 टूल",
+  "mcp.probe.toolsMany": "· {count} टूल",
   "mcp.probe.noTools": "· कोई टूल घोषित नहीं",
   "engineSetup.chatgpt.description": "OpenMausBot में योग्य AI अनुरोधों के लिए अपने ChatGPT प्लान का इस्तेमाल करें। यह OMB Cloud और API बिलिंग से अलग है।",
   "engineSetup.chatgpt.welcomeBody": "OpenMausBot में योग्य AI अनुरोध आपके ChatGPT प्लान का इस्तेमाल करते हैं। इस्तेमाल और पहुँच को ChatGPT सेटिंग्स में प्रबंधित करें। आपका ChatGPT प्लान OMB Cloud से अलग है।",
@@ -1489,5 +1489,6 @@
   "computer.phase.showPendingBoat": "ऑटो को एक मौजूदा क्लाउड कंप्यूटर मिला जो तैयार नहीं है। उसे बदला नहीं गया।",
   "computer.badge.autoBoat": "क्लाउड बोट · ऑटो · केवल-पठन",
   "computer.addBoatKey": "इस बॉट को क्लाउड कंप्यूटर देने के लिए Boat API कुंजी जोड़ें — वह यहीं शुरू हो जाता है।",
-  "call.live.disclosureCloud": "Live कॉल आपकी आवाज़ को OpenAI पर भेजती है, साथ ही चैट के हाल के संदेश, बॉट के जवाब और उसके द्वारा माँगी गई किसी भी स्वीकृति का विवरण भी भेजती है। OpenAI कुंजी आपके Cloud पर ही रहती है।"
+  "call.live.disclosureCloud": "Live कॉल आपकी आवाज़ को OpenAI पर भेजती है, साथ ही चैट के हाल के संदेश, बॉट के जवाब और उसके द्वारा माँगी गई किसी भी स्वीकृति का विवरण भी भेजती है। OpenAI कुंजी आपके Cloud पर ही रहती है।",
+  "mcp.probe.filter": "टूल फ़िल्टर करें"
 }
