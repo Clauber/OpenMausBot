@@ -133,7 +133,12 @@ async function attachBrowserLevelInjection(context: BrowserContext, debugPort: n
     return;
   }
   const socket = new WebSocket(wsUrl);
-  socket.addEventListener("close", () => log?.(`stealth-browser: session "${session}" identity injection socket closed`));
+  socket.addEventListener("close", () => {
+    // The next sweep re-installs on every page target: a fresh socket knows
+    // nothing about what the old one already registered.
+    installed.clear();
+    log?.(`stealth-browser: session "${session}" identity injection socket closed`);
+  });
   socket.addEventListener("error", () => log?.(`stealth-browser: session "${session}" identity injection socket errored`));
   await new Promise<void>((resolve, reject) => {
     socket.onopen = () => resolve();
@@ -142,6 +147,11 @@ async function attachBrowserLevelInjection(context: BrowserContext, debugPort: n
   const installed = new Set<string>();
   const installOnTarget = async (sessionId: string, targetId: string): Promise<void> => {
     if (installed.has(targetId)) return;
+    // Pin the viewport to the daemon's expected 1280x720: the Browser
+    // panel's click mapping trusts the stream metadata, and a window-sized
+    // viewport (which varies with browser chrome) desyncs it — clicks land
+    // offset and a person's takeover input appears to do nothing.
+    await send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false }, sessionId).catch(() => {});
     const add = await send("Page.addScriptToEvaluateOnNewDocument", { source: script, runImmediately: true }, sessionId);
     if (add && typeof add === "object" && "error" in (add as Record<string, unknown>)) {
       log?.(`stealth-browser: identity install rejected on ${targetId.slice(0, 8)}: ${JSON.stringify((add as Record<string, unknown>).error)}`);
@@ -164,6 +174,7 @@ async function attachBrowserLevelInjection(context: BrowserContext, debugPort: n
           if (attached && "error" in attached) log?.(`stealth-browser: attach rejected on ${targetId.slice(0, 8)}: ${JSON.stringify(attached.error)}`);
           continue;
         }
+        await send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false }, attached.sessionId).catch(() => {});
         const add = await send("Page.addScriptToEvaluateOnNewDocument", { source: script, runImmediately: true }, attached.sessionId);
         if (add && typeof add === "object" && "error" in (add as Record<string, unknown>)) {
           log?.(`stealth-browser: identity install rejected on ${targetId.slice(0, 8)}: ${JSON.stringify((add as Record<string, unknown>).error)}`);
@@ -381,12 +392,16 @@ export function createStealthRuntime(options: StealthRuntimeOptions): StealthRun
       const display = await ensureDisplay(env, log);
       if (display) launchEnv.DISPLAY = display;
     }
-    const screen = fingerprint.screen as { width: number; height: number };
+    // The window is sized so the page viewport lands on the daemon's
+    // assumed 1280x720: the Browser panel maps clicks through the stream's
+    // metadata, and a viewport that differs from it (the browser chrome eats
+    // an ~87px band in headed windows) desyncs every click a person makes
+    // during takeover — input appears to do nothing.
     const chromeArgs = [
       ...BROWSER_ARGS,
       `--remote-debugging-port=${debugPort}`,
       `--user-data-dir=${directory}`,
-      `--window-size=${screen.width},${screen.height}`,
+      "--window-size=1280,807",
       "--no-first-run",
       "--no-default-browser-check",
       ...(headed ? [] : ["--headless=new"]),
