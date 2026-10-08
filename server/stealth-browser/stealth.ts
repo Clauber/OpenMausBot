@@ -16,14 +16,10 @@
 export const BROWSER_ARGS = [
   "--disable-blink-features=AutomationControlled",
   "--no-sandbox",
-  "--disable-setuid-sandbox",
-  "--disable-dev-shm-usage",
-  "--disable-features=IsolateOrigins,site-per-process",
   "--disable-webrtc-hw-encoding",
   "--disable-webrtc-hw-decoding",
   "--enforce-webrtc-ip-permission-check",
   "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-  "--lang=en-US,en",
 ];
 
 type PatchrightModule = typeof import("patchright");

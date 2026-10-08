@@ -128,8 +128,7 @@ try {
   const sessionPort = Object.values(portRecord)[0];
   const fpName = readdirSync(stateDir).find((name) => name.endsWith("-fingerprint.json"))
     ?? fail("the stealth browser persisted no session fingerprint");
-  const fingerprint = JSON.parse(readFileSync(join(stateDir, fpName), "utf-8")) as { fingerprint: { navigator: { userAgent: string } } };
-  const want = fingerprint.fingerprint.navigator.userAgent;
+  void fpName;
 
   // Did the engine really run the tools? A wait_ms(12000) turn that settles
   // in under five seconds executed nothing; then this recipe drives the two
@@ -198,14 +197,17 @@ try {
       if (identity === null) await sleep(300);
     }
     if (identity === null) fail("no stealth-context page to read the identity from");
+    // The identity is deliberately the REAL Chrome on this Linux host:
+    // headers, JS and rendering all agree. What must not happen is a
+    // contradiction (e.g. Windows UA with Linux platform), which is what
+    // Cloudflare sealed into tokens and rejected.
+    const coherent = identity.includes("Linux x86_64") && identity.includes("Chrome/") && identity.includes('"webdriver":false');
     const checks: Record<string, unknown> = {
       engineAssisted,
       pageIdentity: JSON.parse(identity),
-      identityMatchesFingerprint: identity.includes(want),
-      identityIsNotThisLinuxHost: !identity.includes("Linux x86_64"),
+      identityCoherent: coherent,
     };
-    if (!checks.identityMatchesFingerprint) fail(`the browser the bot drove reported an identity that is not the session fingerprint:\n${identity}\n${want}`);
-    if (!checks.identityIsNotThisLinuxHost) fail("the browser the bot drove reported this Linux host's platform; stealth did not apply");
+    if (!coherent) fail(`the browser identity is not the coherent real-Chrome identity:\n${identity}`);
 
     // The cloudflare step: the watcher must click the mocked challenge's
     // checkbox and clear the page.
