@@ -4,6 +4,7 @@
 //
 //   pnpm build:server && pnpm exec vite build && node scripts/build-npm-package.mjs
 //   cd release/npm && npm pack        # or npm publish --access public
+import { execSync } from "node:child_process";
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -50,7 +51,16 @@ writeFileSync(
       license: "Apache-2.0",
       type: "module",
       bin: { openmausbot: "cli.js" },
-      files: ["cli.js", "dist-server", "dist", "skills", "enterprise", "LICENSE", "README.md"],
+      files: ["cli.js", "dist-server", "dist", "skills", "enterprise", "node_modules", "LICENSE", "README.md"],
+      // The stealth browser stack cannot be inlined into dist-server (it
+      // resolves its own package layout at runtime); declared here so an npm
+      // install brings it along, and pre-installed below so the packed
+      // tarball is self-contained even for an extraction-style deploy.
+      dependencies: {
+        patchright: app.dependencies.patchright,
+        "fingerprint-generator": app.dependencies["fingerprint-generator"],
+        "fingerprint-injector": app.dependencies["fingerprint-injector"],
+      },
       engines: { node: ">=24" },
       repository: { type: "git", url: "https://github.com/milind-soni/OpenMausBot.git" },
       homepage: "https://github.com/milind-soni/OpenMausBot#readme",
@@ -60,6 +70,9 @@ writeFileSync(
     2,
   ) + "\n",
 );
+
+console.log("installing the stealth browser dependencies into the package…");
+execSync("npm install --omit=dev --no-audit --no-fund", { cwd: out, stdio: "inherit" });
 
 writeFileSync(
   join(out, "README.md"),

@@ -136,6 +136,11 @@ The [live browser fixture](browser-live.md) mounts the real Browser panel with
 an explicitly selected native engine and Chrome in a disposable home, covering
 watching, takeover, input, and profile switching.
 
+The [built-in stealth browser fixture](browser-stealth.md) drives a real bot
+turn through the fingerprinted Chrome the server launches itself
+(`browserEngine.stealth`) and proves the identity the page sees is the
+session's fingerprint, not the host's.
+
 The [Local VM resume fixture](local-vm-resume.md) checks idle stop, restart
 recovery, guarded resume and the stopped-to-ready Computer panel flow.
 

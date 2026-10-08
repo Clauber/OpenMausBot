@@ -100,11 +100,24 @@ const vpsConfigSchema = z.object({
  * instead of agent-browser spawning its own (#1396). Deliberately a
  * server-owned config field, not an env-var passthrough: the ambient
  * process environment must never redirect a bot's browser
- * (server/browser-live.test.ts pins this guarantee down). */
+ * (server/browser-live.test.ts pins this guarantee down).
+ *
+ * `stealth` instead runs LEGION's own fingerprinted browser
+ * (server/stealth-browser/) and supplies the attach target itself; while it
+ * is enabled, attachCdpUrl is ignored rather than raced. */
+const browserEngineStealthSchema = z.object({
+  enabled: z.boolean().optional(),
+  /** Headed Chrome under an automatic Xvfb display on headless Linux hosts;
+   * headless Chrome fingerprints differently, so this only turns off for a
+   * host that cannot run Xvfb. */
+  headed: z.boolean().optional(),
+  debugPortBase: z.number().int().min(1024).max(65000).optional(),
+});
 const browserEngineConfigSchema = z.object({
   attachCdpUrl: z.string().trim().max(2048).refine((value) => value === "" || isValidCdpTarget(value), {
     message: "browserEngine.attachCdpUrl must be a CDP port (1-65535) or an http(s)/ws(s) URL",
   }).optional(),
+  stealth: browserEngineStealthSchema.optional(),
   stealthUrl: z.string().trim().max(2048).refine((value) => value === "" || isValidStealthUrl(value), {
     message: "browserEngine.stealthUrl must be an http(s) URL of a stealth-browser service",
   }).optional(),
@@ -657,9 +670,12 @@ export interface AppConfig {
   /** CDP target of a Chrome the operator already has running (a bare port,
    * e.g. "9333", or an http(s)/ws(s) URL). When set, a bot's browser
    * attaches to it instead of agent-browser spawning its own (#1396).
-   * stealthUrl: a stealth-browser service; each bot's persistent browser
-   * becomes its own headed stealth Chrome there, attached over CDP. */
-  browserEngine?: { attachCdpUrl?: string; stealthUrl?: string };
+   * stealth: LEGION's built-in fingerprinted browser (server/stealth-browser/),
+   * which supplies its own attach target. stealthUrl: an external
+   * stealth-browser service; each bot's persistent browser becomes its own
+   * headed stealth Chrome there, attached over CDP. The built-in runtime
+   * wins when both are configured. */
+  browserEngine?: { attachCdpUrl?: string; stealth?: { enabled?: boolean; headed?: boolean; debugPortBase?: number }; stealthUrl?: string };
   instances?: InstanceConfigMap;
 }
 export type BrowserProfile = z.output<typeof browserProfileSchema> & {
@@ -777,6 +793,19 @@ export function vpsSshAlias(cfg: AppConfig): string | null {
  * second, cheap guarantee rather than trusting a hand-edited config.json. */
 export function browserEngineAttachCdpUrl(cfg: AppConfig): string | null {
   return isValidCdpTarget(cfg.browserEngine?.attachCdpUrl) ? cfg.browserEngine.attachCdpUrl : null;
+}
+
+/** The built-in stealth browser supplies its own attach target; an operator's
+ * attachCdpUrl is ignored while it runs, never raced against it. */
+export function browserStealthEnabled(cfg: AppConfig): boolean {
+  return cfg.browserEngine?.stealth?.enabled === true;
+}
+
+export function browserStealthOptions(cfg: AppConfig): { headed: boolean; debugPortBase: number } {
+  return {
+    headed: cfg.browserEngine?.stealth?.headed !== false,
+    debugPortBase: cfg.browserEngine?.stealth?.debugPortBase ?? 9500,
+  };
 }
 
 /** Same read-and-revalidate shape as browserEngineAttachCdpUrl. */
