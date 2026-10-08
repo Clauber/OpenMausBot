@@ -3,6 +3,7 @@
  * from the client's hand-maintained mirrors (src/lib/routines.ts) so the
  * frame union and every client consumer share one home; the client file
  * re-exports these under the same names. */
+import type { RoutinePreCheck, RoutinePreCheckResult } from "./routine-precheck.ts";
 import type { RoutineCronSchedule } from "./routine-schedule.ts";
 
 export interface RoutineIntervalWindow {
@@ -69,7 +70,8 @@ export type RoutineRunStatus =
   | "completed"
   | "failed"
   | "cancelled"
-  | "missed";
+  | "missed"
+  | "skipped";
 
 /** The statuses both failure indicators count: a run that went wrong and has
  * not been acknowledged. One home so the sidebar dot, the errors pill, the
@@ -88,6 +90,7 @@ export interface Routine {
   id: string;
   name: string;
   prompt: string;
+  preCheck?: RoutinePreCheck;
   target: RoutineTarget;
   botId: string;
   groupId?: string;
@@ -114,6 +117,8 @@ export interface RoutineRun {
   routineId: string;
   routineName: string;
   prompt?: string;
+  preCheck?: RoutinePreCheck;
+  preCheckResult?: RoutinePreCheckResult;
   durationMinutes?: number;
   timeoutMinutes?: number;
   attachments?: RoutineContextAttachment[];
@@ -148,6 +153,7 @@ export interface RoutineRun {
 export interface RoutineInput {
   name: string;
   prompt: string;
+  preCheck?: RoutinePreCheck | null;
   target?: RoutineTarget;
   botId: string;
   groupId?: string | null;

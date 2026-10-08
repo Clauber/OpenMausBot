@@ -788,7 +788,11 @@ function prepareRestore(dataDir: string, id: string, manifest: Manifest): string
   }
   changeJson("routines.json", (value) => {
     if (!record(value)) throw new Error("Invalid routine definitions in workspace backup.");
-    if (Array.isArray(value.routines)) for (const routine of value.routines) if (record(routine)) routine.enabled = false;
+    if (Array.isArray(value.routines)) for (const routine of value.routines) if (record(routine)) {
+      routine.enabled = false;
+      // Executable authority does not transfer through an imported backup.
+      delete routine.preCheck;
+    }
     if (Array.isArray(value.runs)) for (const run of value.runs) {
       if (record(run) && ["queued", "running", "waiting"].includes(String(run.status))) {
         run.status = "failed";

@@ -2,6 +2,6 @@
 // Settings. Each job's question and default live in server/decider/jobs.ts
 // (room routing's in room-routing.ts).
 
-export type DeciderJob = "roomRouting" | "toolPick" | "workPlace" | "browserClick";
+export type DeciderJob = "roomRouting" | "toolPick" | "workPlace" | "browserClick" | "routineWake";
 /** In the order Settings lists them. */
-export const DECIDER_JOBS: readonly DeciderJob[] = ["roomRouting", "toolPick", "workPlace", "browserClick"];
+export const DECIDER_JOBS: readonly DeciderJob[] = ["roomRouting", "toolPick", "workPlace", "browserClick", "routineWake"];
