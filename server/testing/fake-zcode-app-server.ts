@@ -196,6 +196,8 @@ process.stdin.on("data", (chunk) => {
     if (msg.method === undefined) continue;
 
     dump.calls.push({ id: msg.id, method: msg.method, params: msg.params });
+    // A rejected request can make the driver stop this process immediately.
+    writeDump();
     switch (msg.method) {
       case "session/create":
         reply(msg.id, sessionResult("sess_fake_1", msg.params?.mode, msg.params));
@@ -272,6 +274,5 @@ process.stdin.on("data", (chunk) => {
       default:
         fail(msg.id, -32601, `Unsupported server request: ${msg.method}`);
     }
-    writeDump();
   }
 });
