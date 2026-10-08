@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   composerSlashTrigger,
   goalTextFromComposer,
+  isStopComposerCommand,
   replaceComposerSlashTrigger,
   type ComposerSlashCommandId,
 } from "./composer-commands";
@@ -38,5 +39,15 @@ describe("composer slash commands", () => {
     expect(
       replaceComposerSlashTrigger("/se", { query: "se", start: 0, end: 3 }, "/setup "),
     ).toEqual({ text: "/setup ", caret: 7 });
+  });
+
+  it("recognizes a bare /stop and nothing else as the stop command", () => {
+    expect(isStopComposerCommand("/stop")).toBe(true);
+    expect(isStopComposerCommand("/STOP")).toBe(true);
+    expect(isStopComposerCommand("  /stop  ")).toBe(true);
+    expect(isStopComposerCommand("/stop now")).toBe(false);
+    expect(isStopComposerCommand("/stops")).toBe(false);
+    expect(isStopComposerCommand("please /stop")).toBe(false);
+    expect(isStopComposerCommand("")).toBe(false);
   });
 });

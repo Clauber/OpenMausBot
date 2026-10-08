@@ -74,6 +74,7 @@ import { serializeThreadRefs, threadTokenFromPaste, threadTokenSpacing } from "@
 import {
   composerSlashTrigger,
   goalTextFromComposer,
+  isStopComposerCommand,
   replaceComposerSlashTrigger,
   type ComposerSlashCommand,
 } from "@/lib/composer-commands";
@@ -318,6 +319,7 @@ export function Composer({
           )?.capabilities?.agentsMcp,
       );
     const available: ComposerSlashCommand[] = [];
+    if (busy) available.push({ id: "stop", label: "/stop", description: t("composer.command.stopDesc") });
     if (bot || (group && !group.dm)) available.push({
       id: "goal",
       label: "/goal",
@@ -347,7 +349,7 @@ export function Composer({
         command.id.startsWith(query) ||
         command.description.toLowerCase().includes(query),
     );
-  }, [slash, dismissedSlashAt, group, members, bot, state.config, state.instances, locale]);
+  }, [slash, dismissedSlashAt, group, members, bot, busy, state.config, state.instances, locale]);
   const commandPickerOpen = commandCandidates.length > 0;
 
   // Tag another bot; the agent reaches it via ask_bot.
@@ -397,6 +399,13 @@ export function Composer({
 
   const pickCommand = (command: ComposerSlashCommand) => {
     if (!slash) return;
+    if (command.id === "stop") {
+      setDismissedSlashAt(slash.start);
+      interruptTurn();
+      setText("");
+      setAttachments([]);
+      return;
+    }
     const replacement = command.id === "learn" ? "/learn " : command.id === "setup" ? "/setup " : !group ? "/goal " : "";
     const next = replaceComposerSlashTrigger(text, slash, replacement);
     editText(next.text);
@@ -614,6 +623,14 @@ export function Composer({
   };
   const send = () => {
     if (locked || attachmentPending) return;
+    // `/stop` is the Stop button typed: it ends the running turn and never
+    // reaches the model or the transcript, exactly like the header control.
+    if (isStopComposerCommand(text)) {
+      interruptTurn();
+      setText("");
+      setAttachments([]);
+      return;
+    }
     if (
       attachments.some((attachment) => attachment.kind === "image") &&
       !imageTargetsSupport(effectiveText, effectiveChannelMode)

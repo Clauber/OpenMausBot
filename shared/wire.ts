@@ -307,6 +307,8 @@ export interface WireBot {
   callEngine?: "default" | "openai" | "codex" | "none";
   /** Whether this bot uses native memory. Absent/true = enabled. */
   memoryEnabled?: boolean;
+  /** Store this bot's reasoning with settled replies when opted in. */
+  includeThinking?: boolean;
   /** Queue direct-chat messages behind outstanding delegated work. */
   parkDirectMessages?: boolean;
   /** true after an edit/branch-switch rewound the visible conversation. */
@@ -402,6 +404,10 @@ export interface WireMessage {
   role: "bot" | "user";
   kind: "text" | "options" | "activity" | "screen" | "connector" | "secret" | "routine.run" | "goal.run" | "digest" | "compaction";
   text?: string;
+  /** The harness reasoning that led to this bot text, stored only when the
+   * bot has includeThinking. Redacted like the text; renderers that do not
+   * know the field ignore it. */
+  thinking?: string;
   digest?: TurnDigest;
   compaction?: {
     summary: string;

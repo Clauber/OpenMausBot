@@ -5953,6 +5953,14 @@ function requestBehavior(value: unknown): "allow" | "deny" | "answer" | null {
 // the last settled assistant text per thread, so a "finished" notification
 // can carry what the bot actually said
 const lastReply = new Map<string, string>();
+/** Reasoning deltas accumulated for the turn in flight on threads whose bot
+ * has includeThinking. Drained onto each settled text message (the thinking
+ * that led to it) and reset at turn boundaries; never stored when the option
+ * is off, which is also what bounds this map to opted-in threads. */
+const turnThinkingByThread = new Map<string, string>();
+/** Stored thinking is a tail, not the whole stream: a long reasoning turn
+ * must not write megabytes into the durable transcript. */
+const MAX_STORED_THINKING_CHARS = 16_000;
 /** the model each thread's provider session announced in session.started,
  * so a fallback notice can name the model Auto is unavailable for */
 const sessionModelByThread = new Map<string, string>();
@@ -7500,6 +7508,7 @@ bus.subscribe((event: RuntimeEvent) => {
   switch (event.type) {
     case "turn.started":
       turnStartedAt.set(event.threadId, Date.now());
+      turnThinkingByThread.delete(event.threadId);
       break;
     case "session.started":
       if (bot && event.sessionId && event.providerInstanceId) {
@@ -7510,7 +7519,11 @@ bus.subscribe((event: RuntimeEvent) => {
     case "item.completed":
       if (event.itemType === "assistant_text") {
         const text = event.text;
-        pushMessage({ role: "bot", kind: "text", text, turnId: event.turnId });
+        // Include thinking drains here: the reasoning accumulated since the
+        // last text item is exactly the thinking that led to this reply.
+        const thinking = bot?.includeThinking ? turnThinkingByThread.get(event.threadId) : undefined;
+        if (thinking) turnThinkingByThread.delete(event.threadId);
+        pushMessage({ role: "bot", kind: "text", text, ...(thinking ? { thinking } : {}), turnId: event.turnId });
         // kept so "finished" can say what it finished with, rather than
         // just that something ended
         lastReply.set(event.threadId, text);
@@ -7582,6 +7595,12 @@ bus.subscribe((event: RuntimeEvent) => {
           turnId: liveTurnId,
         });
         if (event.itemId) toolMessageByItem.set(`${event.threadId}:${event.itemId}`, message.id);
+      }
+      break;
+    case "content.delta":
+      if (event.streamKind === "reasoning_text" && bot?.includeThinking && event.delta && !goalCoordinatorTurn && !ambiguousCoordinatorText) {
+        const thinking = `${turnThinkingByThread.get(event.threadId) ?? ""}${event.delta}`;
+        turnThinkingByThread.set(event.threadId, thinking.slice(-MAX_STORED_THINKING_CHARS));
       }
       break;
     case "request.opened": {
@@ -7898,6 +7917,10 @@ bus.subscribe((event: RuntimeEvent) => {
       }
       const reply = lastReply.get(event.threadId) ?? "";
       lastReply.delete(event.threadId);
+      // Reasoning that never fed a settled text item (reasoning-only turns,
+      // interrupts, coordinator elisions) is dropped with the turn; it must
+      // not leak into the next turn's first reply.
+      turnThinkingByThread.delete(event.threadId);
       // A run that broke — not one the person stopped, and not a routine's,
       // which reports through its own failure path — is the Chief's to see.
       // A lazy computer-claim rejection already reported its failure and
@@ -21421,6 +21444,13 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           return json(res, 409, { error: "stop this bot's turn before changing its memory setting" });
         }
         patch.memoryEnabled = body.memoryEnabled;
+      }
+      // Fold the harness's reasoning stream into this bot's settled replies.
+      // Unlike memory this is safe to flip mid-turn: the fold reads the flag
+      // per event, so the next reasoning delta is stored or dropped as-is.
+      if (body.includeThinking !== undefined) {
+        if (typeof body.includeThinking !== "boolean") return json(res, 400, { error: "includeThinking must be true or false" });
+        patch.includeThinking = body.includeThinking;
       }
       // which of those apps' tools this bot may call (connector grants 1/5:
       // data model only — enforcement lands with slice 2). null returns the

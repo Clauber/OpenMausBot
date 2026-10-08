@@ -163,6 +163,9 @@ export interface Message {
   role: "bot" | "user";
   kind: "text" | "options" | "activity" | "screen" | "connector" | "secret" | "routine.run" | "goal.run" | "digest" | "compaction";
   text?: string;
+  /** The harness reasoning that led to this bot text, present only when the
+   * bot has includeThinking. */
+  thinking?: string;
   /** digest messages: what the turn did, rendered in `text` and structured here. */
   digest?: TurnDigest;
   compaction?: import("../../shared/wire").WireMessage["compaction"];
@@ -449,6 +452,8 @@ export interface Bot {
   callEngine?: "default" | "openai" | "codex" | "none";
   /** whether this bot uses native memory (on unless switched off) */
   memoryEnabled?: boolean;
+  /** Store reasoning with settled replies (off by default). */
+  includeThinking?: boolean;
   pinned?: boolean;
   hidden?: boolean;
   /** Sidebar section this bot renders under; absent = unsectioned. */

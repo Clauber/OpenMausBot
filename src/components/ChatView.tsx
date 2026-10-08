@@ -604,6 +604,10 @@ const Bubble = memo(function Bubble({
                 </div>
               )}
               <AttachmentGallery images={generatedPaths} files={linkedFiles} message={{ threadId, messageId: message.id }} className={text ? undefined : "mb-0"} eager={eagerAttachments} />
+              {message.thinking && <details className="mb-2 rounded-lg border border-hairline/40 bg-inset/25 px-3 py-2">
+                <summary className="cursor-pointer text-[11.5px] font-medium text-ink-secondary">{t("chat.thinking")}</summary>
+                <div className="mt-1.5 max-h-72 overflow-auto whitespace-pre-wrap text-[12.5px] text-ink-secondary">{message.thinking}</div>
+              </details>}
               {viewRaw && text ? (
                 <div data-citation-source={message.id} data-citation-owner-type="bot" data-citation-owner={botId} data-citation-thread={threadId}><RawMarkdownView text={text} /></div>
               ) : text ? (
