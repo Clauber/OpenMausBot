@@ -3596,5 +3596,7 @@
   "terminal.disconnected": "The shell has exited.",
   "terminal.refused": "The server refused the terminal: {reason}",
   "decider.jobs.routineGate": "Routine script results",
-  "decider.jobs.routineGateDetail": "Ask whether an approved script’s output needs the bot; without a decision, the bot runs."
+  "decider.jobs.routineGateDetail": "Ask whether an approved script’s output needs the bot; without a decision, the bot runs.",
+  "attach.viewer.showSource": "Show source",
+  "attach.viewer.showRendered": "Show rendered file"
 }
