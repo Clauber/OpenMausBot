@@ -3598,5 +3598,7 @@
   "decider.jobs.routineGate": "Routine script results",
   "decider.jobs.routineGateDetail": "Ask whether an approved script’s output needs the bot; without a decision, the bot runs.",
   "attach.viewer.showSource": "Show source",
-  "attach.viewer.showRendered": "Show rendered file"
+  "attach.viewer.showRendered": "Show rendered file",
+  "routines.results.own": "Use a thread named after this routine",
+  "routines.results.default": "Use the default results destination"
 }
