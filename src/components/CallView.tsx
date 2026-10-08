@@ -21,6 +21,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { AudioLines, Check, ChevronDown, Loader2, Phone, PhoneOff, X } from "lucide-react";
 
 import { useStore, visibleMessages, type Bot } from "@/state/store";
+import { liveEngineFor } from "../../shared/live-call";
 import { cn } from "@/lib/cn";
 import { useMenuMotion } from "./MenuMotion";
 import { currentCall, deferCallCleanup, endCall, startCall, useOnCall } from "@/lib/call";
@@ -51,6 +52,10 @@ const CALL_ENDPOINT_MS = 850;
 export type CallButtonPlacement = "header" | "composer";
 
 export function CallButton({ bot, placement = "header" }: { bot: Bot; placement?: CallButtonPlacement }) {
+  // The bot's own call engine can take Live calls away entirely ("none"):
+  // the phone button then always starts a spoken-replies call.
+  const { state } = useStore();
+  const liveEnabled = liveEngineFor(state.config?.live?.provider, bot.callEngine) !== "none";
   return (
     <CallTargetButton
       placement={placement}
@@ -60,7 +65,7 @@ export function CallButton({ bot, placement = "header" }: { bot: Bot; placement?
       voices={[bot.voice]}
       setupBotId={bot.id}
       requireExplicitVoices={false}
-      liveCapable
+      liveCapable={liveEnabled}
       onStart={(mode) => track("call_started", { driver: bot.modelSelection?.instanceId, mode })}
     />
   );
@@ -129,7 +134,12 @@ export function CallTargetButton({
   const turnsReady = capabilitiesReady && supported && voiceReady;
   const unavailable = !active && !liveElsewhere && !liveMode && !turnsReady;
   const voiceSetupRequired = capabilitiesReady && supported && !voiceReady;
-  const liveConfigured = Boolean(state.config?.live?.configured);
+  // Which engine a Live call to this target would use decides what "ready"
+  // means: the codex engine needs a codex sign-in instead of the key.
+  const liveEngine = liveEngineFor(state.config?.live?.provider, state.bots.find((candidate) => candidate.id === targetId)?.callEngine);
+  const liveConfigured = liveEngine === "codex"
+    ? Boolean(state.config?.live?.codexConfigured)
+    : Boolean(state.config?.live?.configured);
   // On the person's Cloud, the Live key is saved there, not on this computer.
   const cloudHome = state.config?.cloudHome === true;
   const [helpOpen, setHelpOpen] = useState(false);
