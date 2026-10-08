@@ -104,6 +104,10 @@ Jev is, and the bot gets the likeliest candidates instead.
 With the switch off, or no key, the tool is not offered at all. A person
 taking over the browser while Jev decides stops the click.
 
+
+**Whether a routine script's output needs the bot.** A routine approved to run
+as *Script + Jev* asks once per run; see [routine-execution.md](routine-execution.md).
+
 ## It fails open
 
 The decision model never blocks or delays a turn beyond its short budget.
