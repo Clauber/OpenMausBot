@@ -5607,6 +5607,7 @@ const terminal = createTerminalRoutes();
 function closeSessionStreams(sessionId: string): void {
   browserLive.closeForOwner(sessionId);
   desktopViewer.closeForOwner(sessionId);
+  terminal.closeForOwner(sessionId);
   for (const client of sseClients) {
     if (client.sessionId !== sessionId) continue;
     sseClients.delete(client);

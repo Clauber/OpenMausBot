@@ -57,7 +57,7 @@ export function createTerminalRoutes(deps: {
   const cwd = deps.cwd ?? homedir;
   const maxSessions = deps.maxSessions ?? MAX_SESSIONS;
 
-  interface Session { pty: IPty; socket: WebSocket }
+  interface Session { pty: IPty; socket: WebSocket; owner: string }
   const sessions = new Set<Session>();
   const upgrades = new Map<IncomingMessage, { socket: Socket; head: Buffer; release: () => void; close: () => void }>();
   const relay = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 });
@@ -101,7 +101,7 @@ export function createTerminalRoutes(deps: {
     if (session.socket.readyState === WebSocket.OPEN) session.socket.close(1000);
   }
 
-  function spawnSession(pty: PtyModule, socket: WebSocket): Session | null {
+  function spawnSession(pty: PtyModule, socket: WebSocket, owner: string): Session | null {
     let session: Session;
     try {
       session = {
@@ -113,6 +113,7 @@ export function createTerminalRoutes(deps: {
           env: { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor" } as Record<string, string>,
         }),
         socket,
+        owner,
       };
     } catch {
       return null;
@@ -171,7 +172,7 @@ export function createTerminalRoutes(deps: {
     upgrades.delete(req);
     upgrade.release();
     relay.handleUpgrade(req, upgrade.socket, upgrade.head, (socket) => {
-      const session = spawnSession(pty, socket);
+      const session = spawnSession(pty, socket, auth.kind === "session" ? auth.session.id : "loopback");
       if (!session) socket.close(1011, "The shell could not start.");
     });
   };
@@ -186,6 +187,9 @@ export function createTerminalRoutes(deps: {
       // removes the entry it was handed.
       for (const session of sessions) forget(session);
       for (const upgrade of upgrades.values()) upgrade.close();
+    },
+    closeForOwner(owner: string): void {
+      for (const session of sessions) if (session.owner === owner) forget(session);
     },
     liveSessions(): number {
       return sessions.size;
