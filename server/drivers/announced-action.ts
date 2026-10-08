@@ -9,8 +9,7 @@
 export function announcesAction(text: string): boolean {
   const reply = text.trim();
   if (!reply || reply.length > 400 || reply.includes("?")) return false;
-  return /(?:[:\u2014\u2013]|\.\.\.|\u2026)$/.test(reply) ||
-    /^(?:checking|let me|i'll|i will|i'm going to|i am going to|opening|pulling|looking|searching|navigating|reading|fetching|loading|now (?:i'll|let me|opening|checking|pulling|reading)|next,? (?:i'll|i will|i'm going to|i am going to|let me|we'll|we will))\b/i.test(reply);
+  return /^(?:checking|let me|i'll|i will|i'm going to|i am going to|opening|pulling|looking|searching|navigating|reading|fetching|loading|now (?:i'll|let me|opening|checking|pulling|reading)|next,? (?:i'll|i will|i'm going to|i am going to|let me|we'll|we will))\b/i.test(reply);
 }
 
 export const NUDGE_ANNOUNCED_ACTION = "You said what you would do next but called no tool. Do it now with your tools, or reply with your final answer if nothing is left to do.";
