@@ -89,6 +89,44 @@ const RELAY_MAX_BUFFER = 400;
 /** This window has no microphone or WebRTC: trying again cannot help. */
 class LiveUnsupportedError extends Error {}
 
+/** The person never answered the microphone prompt. Awaiting a permission
+ * decision otherwise hangs the call bar at "Connecting…" forever (seen live,
+ * 2026-10-08): browsers keep an unnoticed address-bar prompt open, and an
+ * app window may deny silently. */
+class MicWaitTimeoutError extends Error {}
+
+/** How long we wait for the microphone before saying so, and before giving
+ * up on the prompt entirely. */
+const MIC_WAIT_NOTICE_MS = 6_000;
+const MIC_WAIT_GIVE_UP_MS = 25_000;
+
+/** Waits for the microphone, but keeps the call bar honest: after a few
+ * seconds it says what the window is waiting for, and after half a minute it
+ * stops the attempt with instructions instead of hanging. */
+function withMicWait(mine: number, pending: Promise<MediaStream>): Promise<MediaStream> {
+  return new Promise<MediaStream>((resolve, reject) => {
+    const noticeTimer = setTimeout(() => {
+      if (mine === generation && state.phase === "starting") set({ notice: t("call.live.micWaiting") });
+    }, MIC_WAIT_NOTICE_MS);
+    const giveUpTimer = setTimeout(() => {
+      reject(new MicWaitTimeoutError("the microphone prompt was not answered"));
+    }, MIC_WAIT_GIVE_UP_MS);
+    pending.then(
+      (stream) => {
+        clearTimeout(noticeTimer);
+        clearTimeout(giveUpTimer);
+        if (mine === generation && state.notice === t("call.live.micWaiting")) set({ notice: null });
+        resolve(stream);
+      },
+      (error: unknown) => {
+        clearTimeout(noticeTimer);
+        clearTimeout(giveUpTimer);
+        reject(error);
+      },
+    );
+  });
+}
+
 let audio: HTMLAudioElement | null = null;
 const defaults: LiveMediaDeps = {
   getUserMedia: (constraints) => {
@@ -281,7 +319,7 @@ export async function startLiveCall(target: {
   set({ ...IDLE, phase: "starting", botId: target.botId, threadId: target.threadId });
   startCall(target.botId);
   try {
-    const stream = await deps.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    const stream = await withMicWait(mine, deps.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }));
     if (mine !== generation) return void stream.getTracks().forEach((track) => track.stop());
     microphone = stream;
     // Mute can be pressed while the call connects.
@@ -357,6 +395,12 @@ export async function startLiveCall(target: {
     release();
     if (body?.needsKey) return set({ ...IDLE, needsKey: true, botId: target.botId, threadId: target.threadId });
     if (body?.activeCall) return set({ ...IDLE, phase: "failed", botId: target.botId, threadId: target.threadId, busyWith: body.activeCall, notice: busyText(body.activeCall) });
+    // The person never answered the microphone prompt: saying so beats
+    // hanging at "Connecting…" forever, and trying again is fair — they can
+    // approve it and press Try again.
+    if (error instanceof MicWaitTimeoutError) {
+      return set({ ...IDLE, phase: "failed", botId: target.botId, threadId: target.threadId, canRetry: true, notice: t("call.live.micTimeout") });
+    }
     // No microphone at all is not a permission: no setting supplies one.
     const missing = error instanceof DOMException && error.name === "NotFoundError";
     const blocked = missing || (error instanceof DOMException && error.name === "NotAllowedError");

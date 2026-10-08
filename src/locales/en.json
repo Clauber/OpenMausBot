@@ -3421,6 +3421,8 @@
   "call.live.micBlocked": "The microphone is blocked. Allow microphone access for this app in your computer's privacy settings, then try again.",
   "call.live.micBlockedBrowser": "The microphone is blocked. Allow it for this site in your browser, then try again.",
   "call.live.micMissing": "No microphone was found. Connect one, then try again.",
+  "call.live.micWaiting": "Waiting for the microphone — approve the prompt (check the address bar).",
+  "call.live.micTimeout": "The microphone was never allowed. Approve the microphone prompt, then try again. In the desktop app, the microphone works only on your own Cloud — use a browser window for this server.",
   "call.live.micServerPage": "The desktop app doesn't let a server's page use your microphone. Open this server in your web browser to make a Live call.",
   "call.live.unsupported": "Live calls need microphone and WebRTC support, which this window does not have.",
   "call.live.noOffer": "The call could not start: no connection offer.",
