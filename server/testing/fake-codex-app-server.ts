@@ -600,7 +600,7 @@ process.stdin.on("data", (chunk) => {
           const text = announceTurns === 1
             ? "Now let me verify the build passes."
             : mode === "announce-twice" && announceTurns === 2
-              ? "Still just announcing. round 2 got: " + promptText
+              ? "Now let me check the logs. round 2 got: " + promptText
               : announceTurns === 2
                 ? "done — received: " + promptText
                 : "unexpected extra turn: " + promptText;

@@ -17,6 +17,7 @@ import type { ProviderInstance, RuntimeEvent } from "../contracts.ts";
 import { recordEvents, type EventRecorder } from "../testing/events.ts";
 import { ZcodeDriver, zcodeAllowOption, zcodeCatalogFromSnapshot, zcodeConfigModels, zcodeMergePersonalConfigs, zcodeMcpServerParam, zcodeModelId, zcodeParseModelId, zcodePermissionMode, zcodeRequestSummary, zcodeWorkspaceRef } from "./zcode.ts";
 import { removeTempDir } from "../testing/cleanup.ts";
+import { CONTINUATION_NUDGE } from "./announced-action.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-zcode-app-server.ts");
 
@@ -195,18 +196,6 @@ describe("ZcodeDriver turns (fake app-server)", () => {
     removeTempDir(scratch);
   });
 
-  it.each(["announce", "announce-twice"])("continues an announced action once in the native session (%s)", async (mode) => {
-    const dump = newDump();
-    await create({ mode });
-    const { turnId } = await instance.adapter.sendTurn({ threadId: "announcement", text: "Fixture", cwd: scratch, system: "You are a fixture bot." });
-    expect(await recorder.until(event => event.type === "turn.completed" && event.turnId === turnId)).toMatchObject({ ok: true });
-    const calls = JSON.parse(readFileSync(dump, "utf8")).calls;
-    const prompts = calls.filter((call: { method: string }) => call.method === "session/send");
-    expect(prompts).toHaveLength(2);
-    expect(prompts[1].params.sessionId).toBe(prompts[0].params.sessionId);
-    expect(prompts[1].params.content).toContain("Continue now with your tools.");
-  });
-
   it("drives the create → subscribe → send handshake and normalizes the scripted turn", async () => {
     const dump = newDump();
     await create();
@@ -239,6 +228,41 @@ describe("ZcodeDriver turns (fake app-server)", () => {
     expect(recorder.events).toContainEqual(expect.objectContaining({ type: "item.completed", itemType: "tool", itemId: "call_1", ok: true }));
     expect(recorder.events).toContainEqual(expect.objectContaining({ type: "item.completed", itemType: "tool", itemId: "call_2", ok: false, output: expect.stringContaining("no such file") }));
     expect(recorder.events).toContainEqual(expect.objectContaining({ type: "item.completed", itemType: "assistant_text", text: "Hello" }));
+  });
+
+  it.each([undefined, "sess_old"])("continues an announced action in the same session (cursor %s)", async (resumeCursor) => {
+    const dump = newDump();
+    await create({ mode: "announce" });
+    const { turnId } = await instance.adapter.sendTurn({
+      threadId: "announce", text: "Run the tests", resumeCursor, approvalMode: "full", model: "zai-fake/glm-5.3-flash$max",
+    });
+    const completed = await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
+    expect(completed).toMatchObject({ ok: true, usage: { input: 200, output: 14, cachedInput: 80 } });
+    const { calls } = JSON.parse(readFileSync(dump, "utf8"));
+    const sends = calls.filter((call: { method: string }) => call.method === "session/send");
+    expect(sends).toHaveLength(2);
+    expect(sends[1].params).toEqual({ sessionId: sends[0].params.sessionId, content: CONTINUATION_NUDGE });
+    expect(calls.filter((call: { method: string }) => call.method === "session/setMode")).toHaveLength(1);
+    expect(calls.filter((call: { method: string }) => call.method === "session/setModel")).toHaveLength(1);
+    expect(recorder.events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+    expect(recorder.events).toContainEqual(expect.objectContaining({ type: "item.completed", text: `Done — received: ${CONTINUATION_NUDGE}` }));
+  });
+
+  it.each([
+    ["announce-twice", 2, true, null],
+    ["announce-cancelled", 1, true, "interrupted"],
+    ["reply-question", 1, true, null],
+    ["reply-long", 1, true, null],
+    ["announce-rejected", 2, false, "continuation_failed"],
+  ])("bounds or skips continuation for %s", async (mode, sends, ok, stopReason) => {
+    const dump = newDump();
+    await create({ mode: mode as string });
+    const { turnId } = await instance.adapter.sendTurn({ threadId: "bounded", text: "Run the tests" });
+    const completed = await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
+    expect(completed).toMatchObject({ ok, stopReason });
+    const { calls } = JSON.parse(readFileSync(dump, "utf8"));
+    expect(calls.filter((call: { method: string }) => call.method === "session/send")).toHaveLength(sends);
+    expect(recorder.events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
   });
 
   it("resumes into the cursor's native session and reasserts the turn's mode", async () => {

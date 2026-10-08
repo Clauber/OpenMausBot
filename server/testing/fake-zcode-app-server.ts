@@ -49,7 +49,6 @@ const reply = (id: unknown, result: unknown) => send({ id, result });
 const fail = (id: unknown, code: number, message: string) => send({ id, error: { code, message } });
 
 let nextSeq = 1;
-let promptCount = 0;
 // Wire shape (verified against a live app-server): the discriminator is
 // params.type and the member data rides params.payload — the schema union's
 // members describe the payload, not a type-tagged payload object.
@@ -144,6 +143,7 @@ const userInputRequest = (id: string) =>
   });
 
 let nextRequestId = 100;
+let sentTurns = 0;
 // The model registry the fake serves in catalog mode: one model that
 // requires a reasoning level, matching the real headless registry's shape.
 const FAKE_MODELS = [
@@ -235,10 +235,22 @@ process.stdin.on("data", (chunk) => {
         reply(msg.id, {});
         break;
       case "session/send": {
+        sentTurns += 1;
+        if (mode === "announce-rejected" && sentTurns === 2) {
+          fail(msg.id, -32603, "synthetic continuation rejection");
+          break;
+        }
         reply(msg.id, { accepted: true, inputId: "in-1" });
-        promptCount++;
-        if ((mode === "announce" && promptCount === 1) || mode === "announce-twice") {
-          setTimeout(() => event("turn.completed", { response: "Now let me run the build.", resultType: "success" }), 20);
+        if (mode.startsWith("announce") || mode === "reply-question" || mode === "reply-long") {
+          const response = mode === "reply-question" ? "Now let me run the tests?"
+            : mode === "reply-long" ? "Now let me run the tests. " + "Finished work. ".repeat(40)
+            : sentTurns === 1 || mode === "announce-twice" ? "Now let me run the tests."
+            : `Done — received: ${msg.params?.content}`;
+          const resultType = mode === "announce-cancelled" ? "cancelled" : "success";
+          setTimeout(() => event("turn.completed", {
+            response, resultType,
+            usage: { inputTokens: 100, outputTokens: 7, cacheReadTokens: 40 },
+          }), 20);
           break;
         }
         if (mode === "exit-mid-turn") {

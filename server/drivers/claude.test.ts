@@ -502,7 +502,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     await create("fix the build", {
       FAKE_CLAUDE_REPLIES: JSON.stringify([
         "Now let me verify the build passes.",
-        "Still just announcing. Now let me check the logs.",
+        "Now let me check the logs.",
       ]),
       FAKE_CLAUDE_PROMPTS: prompts,
     });

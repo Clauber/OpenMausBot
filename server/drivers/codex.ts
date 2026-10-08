@@ -1399,7 +1399,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             // nudge the person would otherwise have to type. Usage keeps
             // accumulating against this turn's baseline, and the
             // continuation's own turn/completed settles below.
-            if (t.status === "completed" && !state.settled && !stopRequested && !state.nudged &&
+            if (t.status === "completed" && !state.lastError && !state.settled && !stopRequested && !state.nudged &&
                 codexThreadId && state.lastText && announcesAction(state.lastText)) {
               state.nudged = true;
               startingNativeTurn = true;
