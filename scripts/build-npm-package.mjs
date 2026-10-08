@@ -61,6 +61,8 @@ writeFileSync(
         "fingerprint-generator": app.dependencies["fingerprint-generator"],
         "fingerprint-injector": app.dependencies["fingerprint-injector"],
       },
+      optionalDependencies: { "node-pty": app.optionalDependencies["node-pty"] },
+      bundledDependencies: ["patchright", "fingerprint-generator", "fingerprint-injector", "node-pty"],
       engines: { node: ">=24" },
       repository: { type: "git", url: "https://github.com/milind-soni/OpenMausBot.git" },
       homepage: "https://github.com/milind-soni/OpenMausBot#readme",
