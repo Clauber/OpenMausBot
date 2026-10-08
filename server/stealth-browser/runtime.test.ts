@@ -101,13 +101,17 @@ describe("stealth browser runtime", () => {
   });
 
   describe("evasion script", () => {
-    it("is deterministic per session and spoofs the fingerprint's OS surface", async () => {
+    it("is deterministic per session and stays minimal", async () => {
       const fingerprint = await loadOrCreateFingerprint(stateDir, "bot-a");
       const once = buildEvasionScript(fingerprint, "bot-a");
       expect(buildEvasionScript(fingerprint, "bot-a")).toBe(once);
-      expect(once).toContain("WEBGL_VENDOR");
-      expect(once).toContain("FontFaceSet");
-      expect(once).toContain("RTCPeerConnection");
+      expect(once).toContain("canvasNoiseOffsets");
+      expect(once).toContain("getFloatFrequencyData");
+      expect(once).toContain("[native code]");
+      // The measurable patches that made Cloudflare loop forever are gone.
+      expect(once).not.toContain("WEBGL_VENDOR");
+      expect(once).not.toContain("FontFaceSet");
+      expect(once).not.toContain("RTCPeerConnection");
       // A different session seeds the canvas/audio noise differently.
       expect(buildEvasionScript(fingerprint, "bot-b")).not.toBe(once);
     });
