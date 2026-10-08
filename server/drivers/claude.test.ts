@@ -471,6 +471,49 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(existsSync(dump)).toBe(false);
   });
 
+  it("keeps going after an announced next step without a person typing continue", async () => {
+    const prompts = join(scratch, "prompts.jsonl");
+    await create("fix the build", {
+      FAKE_CLAUDE_REPLIES: JSON.stringify([
+        "Now let me verify the build passes.",
+        "All checks pass — done.",
+      ]),
+      FAKE_CLAUDE_PROMPTS: prompts,
+    });
+    await instance.adapter.sendTurn({ threadId: "t-claude-nudge", text: "fix the build" });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    expect(recorder.events.at(-1)).toMatchObject({ type: "turn.completed", ok: true });
+    const texts = recorder.events
+      .filter((e) => e.type === "item.completed" && (e as { itemType?: string }).itemType === "assistant_text")
+      .map((e) => (e as { text?: string }).text ?? "");
+    // Round one's announcement is its own row; the nudge round's answer follows.
+    expect(texts).toContain("Now let me verify the build passes.");
+    expect(texts.at(-1)).toBe("All checks pass — done.");
+    // Exactly two stdin messages reached the CLI: the prompt and the nudge.
+    const sent = readFileSync(prompts, "utf8").trim().split("\n")
+      .map((line) => JSON.parse(line) as { message?: { content?: unknown } });
+    expect(sent).toHaveLength(2);
+    expect(sent[1]!.message!.content).toContain("You announced your next step but ended the turn");
+  });
+
+  it("nudges at most once per turn", async () => {
+    const prompts = join(scratch, "prompts-twice.jsonl");
+    await create("fix the build", {
+      FAKE_CLAUDE_REPLIES: JSON.stringify([
+        "Now let me verify the build passes.",
+        "Now let me check the logs.",
+      ]),
+      FAKE_CLAUDE_PROMPTS: prompts,
+    });
+    await instance.adapter.sendTurn({ threadId: "t-claude-nudge-twice", text: "fix the build" });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    expect(recorder.events.at(-1)).toMatchObject({ type: "turn.completed", ok: true });
+    const sent = readFileSync(prompts, "utf8").trim().split("\n");
+    expect(sent).toHaveLength(2);
+  });
+
   afterEach(async () => {
     delete process.env.FAKE_CLAUDE_MODE;
     delete process.env.FAKE_CLAUDE_AUTO_UNAVAILABLE_MODELS;

@@ -40,6 +40,7 @@ import { commandSummary, toolDetailPreview } from "../tool-summary.ts";
 import { gateServer } from "../mcp-gate-config.ts";
 import { canUseMcpServer } from "../../shared/tool-scope.ts";
 import { assertToolScopeSupported } from "../../shared/tool-scope-support.ts";
+import { announcesAction, CONTINUATION_NUDGE } from "./announced-action.ts";
 import type { ApprovalMode } from "../../shared/approval-mode.ts";
 
 // session/create alone takes 7–9 s on a healthy host, longer while other
@@ -707,6 +708,8 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
         settled: false,
         lastText: "",
         sawStreamDelta: false,
+        nudged: false,
+        stopRequested: false,
         usage: undefined as { input: number; output: number; cachedInput?: number } | undefined,
         toolInputs: new Map<string, unknown>(),
         startedTools: new Set<string>(),
@@ -762,6 +765,7 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
       };
 
       const stop = async (): Promise<boolean> => {
+        state.stopRequested = true;
         if (!state.settled && sessionId && child.exitCode === null && child.signalCode === null) {
           try {
             await request("session/stop", { sessionId }, 3_000);
@@ -931,10 +935,24 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
               const input = typeof usage.inputTokens === "number" ? usage.inputTokens : 0;
               const output = typeof usage.outputTokens === "number" ? usage.outputTokens : 0;
               state.usage = {
-                input,
-                output,
-                ...(typeof usage.cacheReadTokens === "number" ? { cachedInput: usage.cacheReadTokens } : {}),
+                input: (state.usage?.input ?? 0) + input,
+                output: (state.usage?.output ?? 0) + output,
+                ...(typeof usage.cacheReadTokens === "number" || state.usage?.cachedInput !== undefined
+                  ? { cachedInput: (state.usage?.cachedInput ?? 0) + (typeof usage.cacheReadTokens === "number" ? usage.cacheReadTokens : 0) }
+                  : {}),
               };
+            }
+            if (payload.resultType === "success" && !state.settled && !state.stopRequested && !abandoned &&
+                !state.nudged && sessionId && announcesAction(response)) {
+              state.nudged = true;
+              // Keep the same native session, mode, model, and MCP grants.
+              // Only the continuation's completion closes the harness turn.
+              void request("session/send", { sessionId, content: CONTINUATION_NUDGE }).catch((error) => {
+                if (state.settled || abandoned || state.stopRequested) return;
+                emit({ ...base(threadId, turnId), type: "runtime.error", message: `zcode continuation failed: ${String(error)}` });
+                void settle(false, "continuation_failed");
+              });
+              break;
             }
             void settle(true, payload.resultType === "cancelled" ? "interrupted" : null);
             break;
