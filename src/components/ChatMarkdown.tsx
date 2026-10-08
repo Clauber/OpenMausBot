@@ -20,6 +20,8 @@ import rehypeKatex from "rehype-katex";
 import { fromMarkdown, type Options as MarkdownParseOptions } from "mdast-util-from-markdown";
 import { Check, Copy, Download, LoaderCircle, RotateCcw, WrapText } from "lucide-react";
 import { remarkMentions, type MentionPeer } from "@/lib/mentions";
+import { attachmentBasename } from "@/lib/composer-attachments";
+import { fileViewerTabId, useFileViewerOpener } from "@/lib/file-viewer";
 
 import {
   countLines,
@@ -573,6 +575,16 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
   );
 }
 
+function reactNodeText(node: ReactNode): string {
+  if (typeof node === "string") return node;
+  if (typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(reactNodeText).join("");
+  if (node && typeof node === "object" && "props" in node) {
+    return reactNodeText((node as { props?: { children?: ReactNode } }).props?.children);
+  }
+  return "";
+}
+
 // A bot handing over a file it created renders as a button, not an anchor.
 // Two reasons the href is dropped rather than merely preventDefault()ed:
 // an absolute path in an href resolves against the page origin, so the link
@@ -582,8 +594,30 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
 // process' containment check.
 function LocalFileLink({ filePath, children, message }: { filePath: string; children?: ReactNode; message?: MessageAttachmentContext }) {
   const save = useLocalFileSave(filePath, undefined, message);
+  const openViewer = useFileViewerOpener();
   if (!message) {
     return <span title="Unavailable legacy file reference" className="break-words text-ink-secondary">{children}</span>;
+  }
+  // With the viewer mounted a click opens a preview tab; the link's own text
+  // becomes the tab name when the bot gave it a readable one.
+  if (openViewer) {
+    const name = reactNodeText(children).trim() || attachmentBasename(filePath);
+    return (
+      <button
+        type="button"
+        dir="ltr"
+        onClick={() => openViewer({
+          id: fileViewerTabId(message.threadId, message.messageId, filePath),
+          path: filePath,
+          name,
+          threadId: message.threadId,
+          messageId: message.messageId,
+        })}
+        className="inline-flex items-center gap-1 break-words text-start text-accent underline decoration-accent/40 hover:decoration-accent [unicode-bidi:isolate]"
+      >
+        {children}
+      </button>
+    );
   }
   const label = save.state === "saving"
     ? "Saving…"
