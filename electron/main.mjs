@@ -2653,6 +2653,31 @@ ipcMain.handle("perm:request-mic", localOnly("perm:request-mic", async () => {
   }
 }));
 
+/** One explanation at a time: a call retrying getUserMedia must not stack
+ * dialogs. */
+let microphoneDeniedOpen = false;
+async function explainMicrophoneDenied() {
+  if (microphoneDeniedOpen || !nativeActions.applePrivacySettings) return;
+  microphoneDeniedOpen = true;
+  try {
+    const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+    const options = {
+      type: "warning",
+      buttons: ["Open System Settings", "Not Now"],
+      defaultId: 0,
+      cancelId: 1,
+      message: "OpenMausBot can't use the microphone",
+      detail: "Turn on OpenMausBot in System Settings › Privacy & Security › Microphone, then start the call again.",
+    };
+    const { response } = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options);
+    if (response === 0) await shell.openExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone");
+  } catch (error) {
+    slog(`microphone permission explanation failed: ${error?.message ?? error}`);
+  } finally {
+    microphoneDeniedOpen = false;
+  }
+}
+
 // macOS never re-prompts a denied permission — the only path is System
 // Settings; deep-link straight to the right privacy pane.
 ipcMain.handle("perm:open-settings", localOnly("perm:open-settings", (_event, pane) => {
@@ -3492,6 +3517,15 @@ app.whenReady().then(async () => {
     mainContents: () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null),
     cloudHomeOrigin: () => desktopRemoteAccess ? null : cloudAccount?.homeTarget()?.origin ?? null,
     serverOrigin: () => desktopRemoteAccess ? null : activeEnvironment(environmentsState)?.origin ?? null,
+    // macOS must allow the app the microphone too: ask when undecided, and
+    // when refused say where to allow it, since macOS never asks twice.
+    systemMicrophone: {
+      status: () => nativeActions.appleMediaPermissions
+        ? systemPreferences.getMediaAccessStatus?.("microphone") ?? "unknown"
+        : "unsupported",
+      ask: () => systemPreferences.askForMediaAccess("microphone"),
+      denied: () => void explainMicrophoneDenied(),
+    },
   });
   session.defaultSession.setPermissionRequestHandler(appPermissions.request);
   session.defaultSession.setPermissionCheckHandler(appPermissions.check);

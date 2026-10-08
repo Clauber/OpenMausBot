@@ -1,22 +1,25 @@
-// The Live call bar: above the composer of the chat the call belongs to, so
+// The Live call's face. A call opens full screen over the chat it belongs to
+// (LiveCallOverlay); Show chat folds it into the bar above the composer, so
 // the person watches the bot work while they talk. The call itself (media)
-// lives app-wide in src/lib/live-call-media.ts; this is only its face.
+// lives app-wide in src/lib/live-call-media.ts.
 import { useEffect, useRef, useState } from "react";
-import { Mic, MicOff, PhoneOff, RotateCcw, Settings, X } from "lucide-react";
+import { Maximize2, Mic, MicOff, Minimize2, PhoneOff, RotateCcw, Settings, X } from "lucide-react";
 
 import { t } from "@/lib/i18n";
 import { isMacPlatform } from "@/lib/keyboard-shortcuts";
 import {
-  dismissLiveNotice, hangUpLiveCall, isLiveCallRunning, liveCallChord, setLiveMuted, startLiveCall, useLiveMedia, type LiveMediaState,
+  dismissLiveNotice, hangUpLiveCall, isLiveCallRunning, liveCallChord, setLiveMinimized, setLiveMuted, startLiveCall, useLiveMedia,
+  type LiveMediaState,
 } from "@/lib/live-call-media";
 import { api, liveCallFromFrame, nextLiveCallLookup, useStore, type Action, type Bot } from "@/state/store";
 import { cn } from "@/lib/cn";
 import type { LiveCallState, LiveClient } from "../../shared/wire";
+import { BotAvatar } from "./Avatar";
 import { LiveCallSettings } from "./LiveCallSettings";
 
 export type LiveCallBarView =
   /** `hint`: a note while the call runs (the window blocked its audio) */
-  | { kind: "local"; title: string; caption: string; heard: string; muted: boolean; ending: boolean; hint: string | null }
+  | { kind: "local"; title: string; caption: string; heard: string; muted: boolean; ending: boolean; hint: string | null; minimized: boolean }
   /** a phone (or another window) holds this bot's call */
   | { kind: "remote"; title: string; callId: string }
   | { kind: "notice"; text: string; retry: boolean };
@@ -56,6 +59,7 @@ export function liveCallBarView({ bot, media, server, now }: {
       muted: media.muted,
       ending: media.phase === "ending",
       hint: media.notice,
+      minimized: media.minimized,
     };
   }
   // Not "ending": a call this window just hung up is briefly still ending on
@@ -102,7 +106,9 @@ export async function hangUpRemoteCall(
   }
 }
 
-export function LiveCallBar({ bot }: { bot: Bot }) {
+/** The call's view for this chat, its clock ticking while the call runs, and
+ * the settings popover that closes on any click outside `rootRef`. */
+function useLiveCallFace(bot: Bot) {
   const { state, dispatch } = useStore();
   const media = useLiveMedia();
   const [now, setNow] = useState(() => Date.now());
@@ -132,7 +138,111 @@ export function LiveCallBar({ bot }: { bot: Bot }) {
     return () => document.removeEventListener("pointerdown", close);
   }, [settingsOpen]);
 
-  if (!view) return null;
+  return { state, dispatch, view, settingsOpen, setSettingsOpen, rootRef, gearRef };
+}
+
+/** A running call, full screen over its chat: the bot, what is being said,
+ * and the call's controls. */
+export function LiveCallOverlay({ bot }: { bot: Bot }) {
+  const { view, settingsOpen, setSettingsOpen, rootRef, gearRef } = useLiveCallFace(bot);
+  if (view?.kind !== "local" || view.minimized) return null;
+  const spoken = view.heard || view.caption;
+  const isMac = isMacPlatform();
+  const muteLabel = view.muted ? t("call.live.unmute") : t("call.live.mute");
+  const muteChord = liveCallChord("mute", isMac);
+  const hangUpChord = liveCallChord("hangUp", isMac);
+  const round = "flex size-14 items-center justify-center rounded-full transition-colors";
+  return (
+    <div
+      ref={rootRef}
+      role="region"
+      aria-label={t("call.live.with", { name: bot.name })}
+      className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-6 bg-app/95 px-6 backdrop-blur-sm"
+    >
+      {/* top left: the header's top-right menu opens on hover, and folding
+          the call there would leave the pointer on it */}
+      <button
+        type="button"
+        aria-label={t("call.live.showChat")}
+        className="absolute left-5 top-5 flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink"
+        onClick={() => setLiveMinimized(true)}
+      >
+        <Minimize2 size={15} /> {t("call.live.showChat")}
+      </button>
+
+      <BotAvatar bot={bot} state={bot.busy ? "working" : "listening"} size={220} animated trackPointer />
+
+      <div className="flex flex-col items-center gap-1.5 text-center">
+        <div className="text-[20px] font-medium text-ink">{bot.name}</div>
+        <div className="flex items-center gap-2 text-[13.5px] tabular-nums text-ink-secondary">
+          <span className="size-2 shrink-0 animate-pulse rounded-full bg-success" aria-hidden />
+          {view.title}
+        </div>
+      </div>
+
+      {/* the newest words, the person's while they speak, else the voice's */}
+      <div className={cn("min-h-[3.5rem] max-w-[560px] text-center text-[15px] leading-relaxed", view.heard ? "text-ink-secondary" : "text-ink")}>
+        {spoken}
+      </div>
+      {view.hint && <div role="status" className="max-w-[460px] text-center text-[12.5px] text-warning">{view.hint}</div>}
+
+      <div className="relative flex items-center gap-4">
+        <button
+          ref={gearRef}
+          type="button"
+          aria-label={t("call.live.settings")}
+          aria-expanded={settingsOpen}
+          aria-haspopup="dialog"
+          className={cn(round, "bg-raised hover:bg-raised-hover", settingsOpen ? "text-ink" : "text-ink-secondary hover:text-ink")}
+          onClick={() => setSettingsOpen((open) => !open)}
+        >
+          <Settings size={20} />
+        </button>
+        <button
+          type="button"
+          aria-pressed={view.muted}
+          aria-label={muteLabel}
+          aria-keyshortcuts={muteChord.aria}
+          title={`${muteLabel} (${muteChord.text})`}
+          className={cn(round, view.muted ? "bg-ink text-app" : "bg-raised text-ink hover:bg-raised-hover")}
+          onClick={() => setLiveMuted(!view.muted)}
+        >
+          {view.muted ? <MicOff size={20} /> : <Mic size={20} />}
+        </button>
+        <button
+          type="button"
+          disabled={view.ending}
+          aria-label={t("call.live.hangUp")}
+          aria-keyshortcuts={hangUpChord.aria}
+          title={`${t("call.live.hangUp")} (${hangUpChord.text})`}
+          className={cn(round, "bg-danger text-white hover:brightness-110 disabled:opacity-60")}
+          onClick={() => void hangUpLiveCall()}
+        >
+          <PhoneOff size={20} />
+        </button>
+        {settingsOpen && (
+          <div className="absolute bottom-full left-1/2 z-40 mb-3 -translate-x-1/2">
+            <LiveCallSettings
+              onClose={() => {
+                setSettingsOpen(false);
+                gearRef.current?.focus();
+              }}
+            />
+          </div>
+        )}
+      </div>
+
+      <div className="text-[11.5px] text-ink-tertiary">
+        {t("call.live.overlayHint", { mute: muteChord.text, hangUp: hangUpChord.text })}
+      </div>
+    </div>
+  );
+}
+
+export function LiveCallBar({ bot }: { bot: Bot }) {
+  const { state, dispatch, view, settingsOpen, setSettingsOpen, rootRef, gearRef } = useLiveCallFace(bot);
+  // full screen, the overlay carries the controls
+  if (!view || (view.kind === "local" && !view.minimized)) return null;
   const button = "flex h-8 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[12.5px] font-medium transition-colors";
   // lines up with the composer below it. The composer dock lets clicks
   // through to the transcript; the bar itself takes them.
@@ -205,6 +315,15 @@ export function LiveCallBar({ bot }: { bot: Bot }) {
       </span>
       {view.hint && <span role="status" className="order-last w-full min-w-0 truncate text-[11.5px] text-warning" title={view.hint}>{view.hint}</span>}
       <span className="ml-auto flex shrink-0 items-center gap-1">
+        <button
+          type="button"
+          aria-label={t("call.live.fullScreen")}
+          title={t("call.live.fullScreen")}
+          className={cn(button, "text-ink-secondary hover:text-ink")}
+          onClick={() => setLiveMinimized(false)}
+        >
+          <Maximize2 className="size-3.5" />
+        </button>
         <button
           ref={gearRef}
           type="button"

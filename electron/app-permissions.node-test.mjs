@@ -230,3 +230,71 @@ test("the app installs these handlers, with the Cloud the sign-in verified", () 
   assert.match(main, /cloudHomeOrigin: \(\) => desktopRemoteAccess \? null : cloudAccount\?\.homeTarget\(\)\?\.origin \?\? null/);
   assert.match(main, /serverOrigin: \(\) => desktopRemoteAccess \? null : activeEnvironment\(environmentsState\)\?\.origin \?\? null/);
 });
+
+// ── This Mac's own microphone permission ──
+// The page's grant is only half of it: macOS must let the app hear the
+// microphone too. A request the policy allows asks macOS first: an
+// undecided permission shows the system prompt, a refused one offers System
+// Settings (macOS never prompts twice), and the page hears the answer.
+function micFixture(status, { asks = true } = {}) {
+  const calls = { ask: 0, denied: 0 };
+  const systemMicrophone = {
+    status: () => status,
+    ask: async () => { calls.ask += 1; return asks; },
+    denied: () => { calls.denied += 1; },
+  };
+  const main = { getURL: () => LOCAL_PAGE };
+  const handlers = appPermissionHandlers({
+    rendererOrigin: () => LOCAL_ORIGIN,
+    mainContents: () => main,
+    cloudHomeOrigin: () => null,
+    systemMicrophone,
+  });
+  const ask = (permission, details) => new Promise((resolve) => {
+    handlers.request(main, permission, resolve, { requestingUrl: LOCAL_PAGE, isMainFrame: true, ...details });
+  });
+  return { calls, ask };
+}
+
+test("a microphone macOS already allows is granted without a prompt", async () => {
+  const { calls, ask } = micFixture("granted");
+  assert.equal(await ask("media", { mediaTypes: ["audio"] }), true);
+  assert.deepEqual(calls, { ask: 0, denied: 0 });
+});
+
+test("an undecided microphone shows the macOS prompt and passes its answer on", async () => {
+  const yes = micFixture("not-determined", { asks: true });
+  assert.equal(await yes.ask("media", { mediaTypes: ["audio"] }), true);
+  assert.equal(yes.calls.ask, 1);
+  const no = micFixture("not-determined", { asks: false });
+  assert.equal(await no.ask("media", { mediaTypes: ["audio"] }), false);
+  assert.equal(no.calls.denied, 1, "a refusal at the prompt says where to change it");
+});
+
+test("a refused microphone is refused, and points to System Settings", async () => {
+  for (const status of ["denied", "restricted"]) {
+    const { calls, ask } = micFixture(status);
+    assert.equal(await ask("media", { mediaTypes: ["audio"] }), false, status);
+    assert.deepEqual(calls, { ask: 0, denied: 1 }, status);
+  }
+});
+
+test("only microphone requests ask macOS; screen capture and the rest do not", async () => {
+  const { calls, ask } = micFixture("denied");
+  assert.equal(await ask("media", { mediaTypes: [] }), true, "guarded display capture");
+  assert.equal(await ask("notifications", {}), true);
+  assert.equal(await ask("media", { mediaTypes: ["video"] }), false);
+  assert.deepEqual(calls, { ask: 0, denied: 0 });
+});
+
+test("off macOS (status unsupported) the page's grant alone decides", async () => {
+  const { calls, ask } = micFixture("unsupported");
+  assert.equal(await ask("media", { mediaTypes: ["audio"] }), true);
+  assert.deepEqual(calls, { ask: 0, denied: 0 });
+});
+
+test("the app asks macOS through the system preferences it already uses", () => {
+  const main = readFileSync(new URL("./main.mjs", import.meta.url), "utf8");
+  assert.match(main, /systemMicrophone: \{/);
+  assert.match(main, /askForMediaAccess\("microphone"\)/);
+});
