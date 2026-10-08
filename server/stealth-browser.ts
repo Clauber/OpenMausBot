@@ -45,7 +45,6 @@ export class StealthAttachments {
   private now: () => number;
   private readonly known = new Map<string, string>();
   private readonly failedAt = new Map<string, number>();
-
   constructor(resolve: (base: string, session: string) => Promise<string> = stealthBrowserCdpUrl, now: () => number = () => Date.now()) {
     this.resolve = resolve;
     this.now = now;

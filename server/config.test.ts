@@ -493,14 +493,15 @@ describe("configuration boundaries", () => {
 
   it("parses browserEngine.stealth and defaults the built-in stealth options conservatively", () => {
     expect(browserStealthEnabled({})).toBe(false);
-    expect(browserStealthOptions({})).toEqual({ headed: true, debugPortBase: 9500 });
+    expect(browserStealthOptions({})).toEqual({ headed: true, debugPortBase: 9500, cloudflare: true });
     const configured = { browserEngine: { stealth: { enabled: true, headed: false, debugPortBase: 9700 } } };
     expect(parseStoredConfig(configured)).toEqual(configured);
     expect(parseConfigPatch(configured)).toEqual(configured);
     expect(browserStealthEnabled(configured)).toBe(true);
-    expect(browserStealthOptions(configured)).toEqual({ headed: false, debugPortBase: 9700 });
+    expect(browserStealthOptions(configured)).toEqual({ headed: false, debugPortBase: 9700, cloudflare: true });
     // Partial settings keep their documented defaults.
-    expect(browserStealthOptions({ browserEngine: { stealth: { enabled: true } } })).toEqual({ headed: true, debugPortBase: 9500 });
+    expect(browserStealthOptions({ browserEngine: { stealth: { enabled: true } } })).toEqual({ headed: true, debugPortBase: 9500, cloudflare: true });
+    expect(browserStealthOptions({ browserEngine: { stealth: { cloudflare: false } } })).toEqual({ headed: true, debugPortBase: 9500, cloudflare: false });
     // Bad shapes are rejected, not ignored. Unknown keys strip silently, the
     // same convention as attachCdpUrl: browserEngine is a hand-edited,
     // server-owned section, so one stray key must not lose the whole file.
