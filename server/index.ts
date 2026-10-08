@@ -453,6 +453,8 @@ import { LocalVmSeatPool, type LocalVmSeatHolder } from "./local-vm-seat-pool.ts
 import { RepeatDetector, callKey } from "./repeat-detector.ts";
 import { redactSecretsInText } from "./redact.ts";
 import * as vps from "./vps-computer.ts";
+import { quietPreCheckRun } from "./routine-precheck.ts";
+import { decideRoutineWake } from "./decider/routine-wake.ts";
 import { RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
 import { CalendarCallManager, type CalendarCall } from "./calendar-calls.ts";
 import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
@@ -1135,7 +1137,7 @@ function cloudRoutineRunIsOwners(run: RoutineRun | null | undefined, botId: stri
   if (!run || run.threadId !== threadId || store.taskByThread(botId, threadId)?.routineRunId !== run.id || !cloudRoutineAuthors) return false;
   const routine = routines?.listRoutines().find((candidate) => candidate.id === run.routineId);
   return Boolean(routine) && cloudRoutineAuthors.authored(run.routineId, {
-    ...routine!, prompt: run.prompt, target: run.target, botId: run.botId, groupId: run.groupId, attachments: run.attachments, runOn: run.runOn,
+    ...routine!, prompt: run.prompt, target: run.target, botId: run.botId, groupId: run.groupId, attachments: run.attachments, runOn: run.runOn, preCheck: run.preCheck,
   }) === true;
 }
 
@@ -1151,11 +1153,11 @@ function cloudOwnerApplied(action: string, routineId: string | undefined, wasOwn
 /** What the owner saw on a card that proposed a routine, and what a routine
  * runs, in the same terms (everything its fingerprint covers except an
  * interval's anchor, which only moves when it runs). */
-function approvalShape(shape: { prompt?: string; botId?: string; runOn?: string; schedule?: unknown; target?: string; groupId?: string | null; attachments?: { id: string; path: string }[] }): string {
+function approvalShape(shape: { prompt?: string; botId?: string; runOn?: string; schedule?: unknown; target?: string; groupId?: string | null; attachments?: { id: string; path: string }[]; preCheck?: unknown }): string {
   const schedule = shape.schedule && typeof shape.schedule === "object" ? { ...(shape.schedule as Record<string, unknown>) } : null;
   if (schedule) delete schedule.anchorAt;
   return JSON.stringify([shape.prompt ?? "", shape.botId ?? "", shape.runOn ?? "maus", schedule, shape.target ?? "bot", shape.groupId ?? null,
-    (shape.attachments ?? []).map((attachment) => [attachment.id, attachment.path])]);
+    (shape.attachments ?? []).map((attachment) => [attachment.id, attachment.path]), ...(shape.preCheck ? [shape.preCheck] : [])]);
 }
 
 /** Who opens a routine's results conversation on a Cloud home: the writer
@@ -11050,6 +11052,7 @@ function routineRunFallbackText(card: NonNullable<Message["routineRun"]>): strin
  * including restart recovery, patches the existing run id instead of adding
  * another chat message. */
 function syncRoutineRunToSource(run: RoutineRun): string | null {
+  if (quietPreCheckRun(run)) return null;
   const source = routineSourceOwner(run);
   if (!source) {
     const execution = run.threadId ? store.taskByThread(run.botId, run.threadId) : null;
@@ -11178,6 +11181,9 @@ _loadPending();
 
 routines = new RoutineManager({
   emit: broadcast,
+  decideWake: (prompt, items, signal) => deciderReady(cfg, "routineWake")
+    ? decideRoutineWake(decider, prompt, items, signal)
+    : Promise.resolve({ skip: false, reason: "disabled" }),
   hasPendingDelegations: (threadId) => pendingThreads().includes(threadId) ||
     [...delegationWatch.values()].some((watch) => watch.sourceThreadId === threadId) ||
     pendingDelegationWakes.has(threadId),
@@ -11344,7 +11350,7 @@ if (CLOUD_HOME && CLOUD_OWNER_KEY && cloudRoutineAuthors) {
           if (answerer && line.card?.answered === "allow" && request?.operation.action === "create" && request.resultId) {
             const definition = request.operation.routine;
             approvals.push([request.resultId, answerer, approvalShape({ prompt: definition.instructions, botId: request.operation.forBot?.botId ?? request.botId,
-              runOn: definition.runOn, schedule: asSchedule(definition.schedule, 0) })]);
+              runOn: definition.runOn, schedule: asSchedule(definition.schedule, 0), preCheck: definition.preCheck })]);
           }
         }
       }
@@ -11935,6 +11941,7 @@ const agentRoutine = (
     name: safeName,
     instructions: safeInstructions.slice(0, 2_000),
     instructionsTruncated: safeInstructions.length > 2_000,
+    preCheck: routine.preCheck ? JSON.parse(redactSecretsInText(JSON.stringify(routine.preCheck))) : undefined,
     continuity: routine.continuity === true,
     overlap: routine.overlap ?? "skip",
     skippedRuns: routine.skippedRuns ?? 0,

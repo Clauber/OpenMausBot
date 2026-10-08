@@ -602,6 +602,7 @@ export function EventEditor({
     || routineTarget === "room-goal"
     || attachments.length > 0
     || runOn === "cloud"
+    || Boolean(existingRoutine?.preCheck)
     || timeoutMinutes != null
     || overlap === "queue");
 
@@ -821,7 +822,7 @@ export function EventEditor({
   const runLimitControls = kind === "routine" && (
                 <details className="rounded-xl border border-hairline/40 bg-inset/40 px-3 py-2.5">
                   <summary className="cursor-pointer select-none text-[11.5px] font-medium text-ink-secondary hover:text-ink">
-                    Advanced · {timeoutMinutes == null ? "no run limit" : `${durationLabel(timeoutMinutes)} run limit`}
+                    Advanced · {timeoutMinutes == null ? "no run limit" : `${durationLabel(timeoutMinutes)} run limit`}{existingRoutine?.preCheck ? " · pre-check" : ""}
                   </summary>
                   <div className="mt-3 border-t border-hairline/35 pt-3">
                     <label className="flex flex-wrap items-center gap-2 text-[12px] text-ink">
@@ -832,6 +833,11 @@ export function EventEditor({
                       </select>
                     </label>
                     <div className="mt-1.5 text-[10.5px] leading-relaxed text-ink-secondary">Optional. The clock starts when work actually begins and does not control how often the routine starts.</div>
+                    {existingRoutine?.preCheck && <div className="mt-3 text-[11px] text-ink-secondary" aria-label="Routine pre-check">
+                      <p className="font-medium text-ink">Local pre-check · {existingRoutine.preCheck.timeoutMs ?? 30_000} ms timeout</p>
+                      <pre className="mt-1 whitespace-pre-wrap break-all rounded-lg bg-panel p-2 font-mono text-[10.5px]">{JSON.stringify({ command: existingRoutine.preCheck.command, args: existingRoutine.preCheck.args ?? [] }, null, 2)}</pre>
+                      <p className="mt-1.5 leading-relaxed">Empty or confidently irrelevant items skip scheduled runs. Run now bypasses this check. Other edits preserve it; change or remove it through a reviewed routine proposal or the routine API.</p>
+                    </div>}
                     {recurrence !== "none" && <div className="mt-3">
                       <label className="flex flex-wrap items-center gap-2 text-[12px] text-ink">
                         <span>{t("routines.overlapLabel")}</span>

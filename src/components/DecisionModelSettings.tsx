@@ -51,6 +51,7 @@ const JOB_TEXT: Record<DeciderJob, { title: LocaleKey; detail: LocaleKey }> = {
   roomRouting: { title: "decider.jobs.roomRouting", detail: "decider.jobs.roomRoutingDetail" },
   toolPick: { title: "decider.jobs.toolPick", detail: "decider.jobs.toolPickDetail" },
   workPlace: { title: "decider.jobs.workPlace", detail: "decider.jobs.workPlaceDetail" },
+  routineWake: { title: "decider.jobs.routineWake", detail: "decider.jobs.routineWakeDetail" },
   browserClick: { title: "decider.jobs.browserClick", detail: "decider.jobs.browserClickDetail" },
 };
 

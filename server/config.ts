@@ -535,6 +535,7 @@ const appConfigSchema = z.object({
       toolPick: z.boolean().optional(),
       workPlace: z.boolean().optional(),
       browserClick: z.boolean().optional(),
+      routineWake: z.boolean().optional(),
     }).optional(),
   }).optional(),
   /** Live calls: an OpenAI project key for GPT-Live, kept apart from every

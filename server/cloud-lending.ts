@@ -101,7 +101,7 @@ function answeredByPerson(card: Card | undefined): boolean {
 }
 
 type RoutineShape = {
-  prompt?: string; target?: unknown; botId?: string; groupId?: string; attachments?: { id: string; path: string }[];
+  prompt?: string; target?: unknown; botId?: string; groupId?: string; attachments?: { id: string; path: string }[]; preCheck?: unknown;
   schedule?: unknown; runOn?: string;
 };
 
@@ -114,7 +114,7 @@ export function routineFingerprint(routine: RoutineShape): string {
   const attachments = (routine.attachments ?? []).map(attachment => [attachment.id, attachment.path]);
   return createHash("sha256").update(JSON.stringify([
     routine.prompt ?? "", routine.target ?? null, routine.botId ?? "", routine.groupId ?? null, attachments,
-    routine.schedule ?? null, routine.runOn ?? null,
+    routine.schedule ?? null, routine.runOn ?? null, ...(routine.preCheck ? [routine.preCheck] : []),
   ])).digest("hex");
 }
 

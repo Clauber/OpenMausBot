@@ -8,6 +8,7 @@
  * app restart without asking the model to interpret the request again.
  */
 
+import type { RoutinePreCheck } from "./routine-precheck.ts";
 import type { RoutineCronSchedule } from "./routine-schedule.ts";
 
 export type RoutineRequestRunOn = "maus" | "cloud";
@@ -50,6 +51,7 @@ export type RoutineRequestScheduleChanges =
 export interface RoutineRequestDefinition {
   name: string;
   instructions: string;
+  preCheck?: RoutinePreCheck;
   schedule: RoutineRequestSchedule;
   runOn: RoutineRequestRunOn;
   /** Legacy calendar/display length. It does not stop an active run. */
@@ -66,11 +68,12 @@ export interface RoutineRequestDefinition {
 }
 
 export type RoutineRequestChanges =
-  & Omit<Partial<RoutineRequestDefinition>, "schedule" | "timeoutMinutes">
+  & Omit<Partial<RoutineRequestDefinition>, "schedule" | "timeoutMinutes" | "preCheck">
   & {
     schedule?: RoutineRequestScheduleChanges;
     /** `null` removes an existing safety cap. */
     timeoutMinutes?: number | null;
+    preCheck?: RoutinePreCheck | null;
   };
 
 /** Another bot in the proposer's section that this proposal targets: a
