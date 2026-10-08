@@ -38,9 +38,18 @@ export async function stealthBrowserCdpUrl(baseUrl: string, session: string, opt
  * to the managed browser and back. Profile ports are fixed by the service, so
  * the remembered address stays right across its restarts. */
 export class StealthAttachments {
+  // Plain fields with explicit assignment: the harness runs under
+  // --experimental-strip-types, which refuses accessibility modifiers on
+  // fields and constructor parameter properties.
+  private resolve: (base: string, session: string) => Promise<string>;
+  private now: () => number;
   private readonly known = new Map<string, string>();
   private readonly failedAt = new Map<string, number>();
-  constructor(private readonly resolve: (base: string, session: string) => Promise<string> = stealthBrowserCdpUrl, private readonly now = () => Date.now()) {}
+
+  constructor(resolve: (base: string, session: string) => Promise<string> = stealthBrowserCdpUrl, now: () => number = () => Date.now()) {
+    this.resolve = resolve;
+    this.now = now;
+  }
 
   /** The CDP address, or null when this session has never reached the service. */
   async attachUrl(base: string, session: string, warn: (message: string) => void = console.warn): Promise<string | null> {
