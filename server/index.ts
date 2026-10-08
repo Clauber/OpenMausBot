@@ -495,6 +495,10 @@ import { createTeamManifest, parseTeamManifest } from "./team-manifest.ts";
 import { readThreadEvents } from "./thread-events.ts";
 import { TeamMemory, TEAM_MEMORY_KINDS, type TeamMemoryKind } from "./team-memory.ts";
 import { describeTool, readBotActivity } from "./activity.ts";
+import {
+  chatCompletionReviewer, ESCALATION_THRESHOLD, ESCALATION_TIMEOUT_MS, escalationInstructions, escalationState, reviewRoutine,
+  runRoutineScript, type ReviewModel,
+} from "./routine-execution.ts";
 import { OutboundCounts } from "./outbound-counts.ts";
 import { OutboundRequestService } from "./outbound-requests.ts";
 import { DEFAULT_OUTBOUND_POLICY, connectorCallsIn, normalizeOutboundPolicy, outboundCallsIn } from "../shared/outbound.ts";
@@ -11052,6 +11056,59 @@ function routineRunFallbackText(card: NonNullable<Message["routineRun"]>): strin
 /** Upsert one durable lifecycle card per run. Replaying the same transition,
  * including restart recovery, patches the existing run id instead of adding
  * another chat message. */
+/** Who proposes how a routine runs: `routineReview` in config.json, else the
+ * OpenAI-compatible endpoint, else the routine bot's own engine. */
+function routineReviewer(botId: string): ReviewModel | null {
+  const own = cfg.routineReview;
+  if (own?.enabled === false) return null;
+  const baseUrl = own?.baseUrl?.trim() || cfg.openaiCompat?.url?.trim();
+  const key = own?.key?.trim() || (own?.baseUrl?.trim() ? "" : cfg.openaiCompat?.key?.trim());
+  const model = own?.model?.trim() || cfg.openaiCompat?.model?.trim();
+  if (baseUrl && key && model) return chatCompletionReviewer({ baseUrl, key, model });
+  const bot = store.bot(botId);
+  const instance = bot ? registry.get(bot.modelSelection.instanceId) : undefined;
+  if (!bot || !instance?.generateText || policyModelRefusal(instance)) return null;
+  const generate = instance.generateText.bind(instance);
+  return { id: bot.modelSelection.model || bot.modelSelection.instanceId, generate: (prompt, signal) => generate(prompt, { signal }) };
+}
+
+/** Ask the reviewer how a routine should run, store its plan, and say so
+ * where the routine was asked for. Never throws: no plan means the bot runs. */
+async function reviewRoutineExecution(routineId: string): Promise<void> {
+  const routine = routines?.listRoutines().find((candidate) => candidate.id === routineId);
+  if (!routine || routine.target !== "bot" || routine.reviewing) return;
+  const reviewer = routineReviewer(routine.botId);
+  if (!reviewer) return;
+  routines!.setReviewing(routineId, true);
+  try {
+    const plan = await reviewRoutine({
+      name: routine.name,
+      prompt: routine.prompt,
+      schedule: JSON.stringify(routine.schedule),
+      hasAttachments: Boolean(routine.attachments?.length),
+    }, reviewer, { now: Date.now });
+    const stored = plan ? routines!.setExecutionPlan(routineId, plan) : null;
+    if (stored?.execution && stored.execution.mode !== "llm") {
+      const source = routineSourceOwner(stored);
+      if (source) {
+        const how = stored.execution.mode === "script"
+          ? "a Python script, with no AI model on each run"
+          : "a Python script, waking me only when the decision model says the output needs me";
+        store.appendMessage(source.threadId, {
+          role: "bot",
+          kind: "text",
+          text: `“${stored.name}” can run as ${how}. ${stored.execution.rationale}\n\nIt keeps running as a normal bot turn until you approve the script in Automations.`,
+          ...(source.group ? { from: { botId: source.bot.id, name: source.bot.name, color: source.bot.color } } : {}),
+        });
+      }
+    }
+  } catch (error) {
+    console.warn(`[routines] review of ${routineId} failed: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    routines!.setReviewing(routineId, false);
+  }
+}
+
 function syncRoutineRunToSource(run: RoutineRun): string | null {
   if (quietPreCheckRun(run)) return null;
   const source = routineSourceOwner(run);
@@ -11287,6 +11344,35 @@ routines = new RoutineManager({
   },
   interruptGoal: interruptRoutineGroupGoal,
   onRunChanged: syncRoutineRunToSource,
+  runScript: (run, script, timeoutMs, signal) => {
+    const previous = routines?.listRuns().filter((other) => other.routineId === run.routineId && other.id !== run.id && other.status === "completed")
+      .reduce((latest, other) => Math.max(latest, other.finishedAt ?? 0), 0);
+    return runRoutineScript(script, {
+      stateDir: join(DATA_DIR, "routine-state", run.routineId),
+      timeoutMs,
+      signal,
+      env: {
+        OMB_ROUTINE_ID: run.routineId,
+        OMB_ROUTINE_NAME: run.routineName,
+        OMB_ROUTINE_LAST_RUN_AT: previous ? String(previous) : "",
+      },
+    });
+  },
+  needsBot: async (run, escalateWhen, output) => {
+    // Without the decision model the bot runs, exactly as before.
+    if (!deciderReady(cfg, "routineGate")) return { escalate: true };
+    const answer = await decider.yesNo(
+      "routineGate",
+      escalationState(run.routineName, run.prompt ?? "", output),
+      escalationInstructions(escalateWhen),
+      { timeoutMs: ESCALATION_TIMEOUT_MS },
+    );
+    return answer.ok ? { escalate: answer.answers.p >= ESCALATION_THRESHOLD, p: answer.answers.p } : { escalate: true };
+  },
+  postScriptReport: (_botId, threadId, text) => {
+    store.appendMessage(threadId, { role: "bot", kind: "text", text });
+  },
+  onNeedsReview: (routine) => void reviewRoutineExecution(routine.id),
   onRunFailed: (run) => {
     if (run.threadId) {
       pendingDelegationWakes.delete(run.threadId);
@@ -19028,6 +19114,26 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     // awake: a run in flight, or a routine due within the hour.
     if (path === "/api/routines/wake" && method === "GET") {
       return json(res, 200, routines!.wakeHold());
+    }
+    const executionMatch = path.match(/^\/api\/routines\/([\w-]+)\/execution\/(review|approve|use-bot)$/);
+    if (executionMatch && method === "POST") {
+      const [, id, action] = executionMatch;
+      const routine = routines!.listRoutines().find((candidate) => candidate.id === id);
+      if (!routine || !routineVisible(routine, visible)) return json(res, 404, { error: "no such routine" });
+      if (action === "review") {
+        if (routine.target !== "bot") return json(res, 409, { error: "only a bot's routine can run as a script" });
+        if (!routineReviewer(routine.botId)) return json(res, 409, { error: "no reviewer model is available for this routine" });
+        void reviewRoutineExecution(routine.id);
+        return json(res, 202, { routine: { ...routine, reviewing: true } });
+      }
+      if (action === "approve") {
+        const body = await readBody(req);
+        const scriptHash = body && typeof body === "object" ? (body as { scriptHash?: unknown }).scriptHash : undefined;
+        const approved = typeof scriptHash === "string" ? routines!.approveExecution(routine.id, scriptHash) : null;
+        return approved ? json(res, 200, { routine: approved }) : json(res, 409, { error: "this script changed or no longer matches the routine — review it again" });
+      }
+      const chosen = routines!.useBotForRuns(routine.id);
+      return chosen ? json(res, 200, { routine: chosen }) : json(res, 404, { error: "no such routine" });
     }
     let routineMatch = path.match(/^\/api\/routines\/([\w-]+)\/run$/);
     if (routineMatch && method === "POST") {

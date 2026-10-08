@@ -23,7 +23,7 @@
 import type { DeciderJob } from "./types.ts";
 
 interface ContractBase {
-  job: Exclude<DeciderJob, "roomRouting">;
+  job: Exclude<DeciderJob, "roomRouting" | "routineGate">;
   /** The state keys a request may carry; `required` must all be present. */
   stateKeys: readonly string[];
   required: readonly string[];
@@ -117,7 +117,7 @@ export const ROUTINE_WAKE: SingleContract = {
   timeoutMs: 1_500,
 };
 
-export const JOB_CONTRACTS: Readonly<Record<Exclude<DeciderJob, "roomRouting">, JobContract>> = {
+export const JOB_CONTRACTS: Readonly<Record<Exclude<DeciderJob, "roomRouting" | "routineGate">, JobContract>> = {
   toolPick: TOOL_PICK,
   workPlace: WORK_PLACE,
   browserClick: BROWSER_CLICK,

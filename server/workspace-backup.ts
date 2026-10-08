@@ -792,6 +792,7 @@ function prepareRestore(dataDir: string, id: string, manifest: Manifest): string
       routine.enabled = false;
       // Executable authority does not transfer through an imported backup.
       delete routine.preCheck;
+      delete routine.execution;
     }
     if (Array.isArray(value.runs)) for (const run of value.runs) {
       if (record(run) && ["queued", "running", "waiting"].includes(String(run.status))) {

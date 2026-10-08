@@ -12,7 +12,12 @@ import { redactSecretsInText } from "./redact.ts";
 import type { GroupGoalRunStatus } from "../shared/group-goal-run.ts";
 import type { RoutineRequestOperation } from "../shared/routine-request.ts";
 import { normalizeCronSchedule, nextCronRuns, type RoutineCronSchedule } from "../shared/routine-schedule.ts";
-import { isRoutineProblemRun, ROUTINE_DEFAULT_RESULTS_THREAD, ROUTINE_OWN_RESULTS_THREAD } from "../shared/routines.ts";
+import {
+  isRoutineProblemRun, ROUTINE_DEFAULT_RESULTS_THREAD, ROUTINE_OWN_RESULTS_THREAD, type RoutineExecutionPlan, type RoutineRunExecutor,
+} from "../shared/routines.ts";
+import {
+  activeScriptPlan, DEFAULT_SCRIPT_TIMEOUT_MS, escalationPrompt, loadExecutionPlan, scriptReport, sha256, type ScriptResult,
+} from "./routine-execution.ts";
 import { ROUTINE_PARTS, type PartPair, type RoutinePart } from "./package-parts.ts";
 
 export interface RoutineIntervalWindow {
@@ -113,6 +118,10 @@ export interface Routine {
   sourceThreadId?: string;
   /** Stable visible report destination; execution still gets a fresh task. */
   resultsThreadId?: string;
+  /** How runs execute (server/routine-execution.ts). Missing: the bot runs. */
+  execution?: RoutineExecutionPlan;
+  /** Derived: a reviewer is looking at it now. Never persisted. */
+  reviewing?: boolean;
   /** Server-private: added from the organization's library. Never on the
    * wire (routineWithHealth drops it); packageStamps() reads it. */
   installedPackage?: RoutinePackageStamp;
@@ -193,6 +202,8 @@ export interface RoutineRun {
   output?: string;
   /** Human-readable reason the detached execution is waiting. */
   attention?: string;
+  executor?: RoutineRunExecutor;
+  escalationP?: number;
   error?: string;
   cost?: number | null;
   denials?: string[];
@@ -336,6 +347,15 @@ export interface RoutineManagerOptions {
   /** A successful provider turn is intermediate while its peer work or
    * queued continuation still belongs to this detached execution. */
   hasPendingDelegations?: (threadId: string) => boolean;
+  /** Runs an approved routine script. Without it every run is a bot turn. */
+  runScript?: (run: RoutineRun, script: string, timeoutMs: number, signal: AbortSignal) => Promise<ScriptResult>;
+  /** For script-jev: does this output need the bot? `p` is the decision
+   * model's probability; escalate when it could not answer. */
+  needsBot?: (run: RoutineRun, escalateWhen: string, output: string) => Promise<{ escalate: boolean; p?: number }>;
+  /** Puts a script run's report in its task as the bot's message. */
+  postScriptReport?: (botId: string, threadId: string, text: string) => void;
+  /** A routine was created, or its instructions changed: review how it runs. */
+  onNeedsReview?: (routine: Routine) => void;
 }
 
 const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
@@ -472,6 +492,7 @@ function cloneRoutine(routine: Routine): Routine {
     schedule: cloneSchedule(routine.schedule),
     attachments: cloneAttachments(routine.attachments),
     preCheck: routine.preCheck ? structuredClone(routine.preCheck) : undefined,
+    ...(routine.execution ? { execution: { ...routine.execution } } : {}),
   };
 }
 
@@ -810,6 +831,10 @@ export class RoutineManager {
   private ticking = false;
   private stopped = false;
   private readonly preCheckControllers = new Map<string, AbortController>();
+  /** Routines a reviewer is reading now. */
+  private readonly reviewing = new Set<string>();
+  /** Live script runs, so Stop and the run limit can kill them. */
+  private readonly scriptRuns = new Map<string, AbortController>();
 
   constructor(options: RoutineManagerOptions) {
     this.options = options;
@@ -837,9 +862,12 @@ export class RoutineManager {
               skippedRuns: Number.isSafeInteger(routine.skippedRuns) && routine.skippedRuns! > 0 ? routine.skippedRuns : undefined,
               lastSkippedAt: Number.isSafeInteger(routine.lastSkippedAt) && routine.lastSkippedAt! >= 0 && routine.lastSkippedAt! <= MAX_DATE_MS ? routine.lastSkippedAt : undefined,
               installedPackage: loadInstalledPackage(routine.installedPackage),
+              execution: loadExecutionPlan(routine.execution),
             };
             if (loaded.timeoutMinutes === undefined) delete loaded.timeoutMinutes;
             if (loaded.installedPackage === undefined) delete loaded.installedPackage;
+            if (loaded.execution === undefined) delete loaded.execution;
+            delete loaded.reviewing;
             delete loaded.failureStreak;
             return [loaded];
           })
@@ -932,7 +960,11 @@ export class RoutineManager {
     const success = outcomes.findIndex(run => run.status === "completed");
     const failures = success < 0 ? outcomes.length : success;
     const { installedPackage: _installedPackage, ...visible } = cloneRoutine(routine);
-    return { ...visible, ...(failures ? { failureStreak: failures } : {}) };
+    return {
+      ...visible,
+      ...(failures ? { failureStreak: failures } : {}),
+      ...(this.reviewing.has(routine.id) ? { reviewing: true } : {}),
+    };
   }
 
   /** Routines added from the organization's library, with their stamps. */
@@ -1091,6 +1123,7 @@ export class RoutineManager {
       if (request) this.rememberRoutineRequest(request, routine.id, at);
     }, discardResults);
     this.emitRoutine(routine);
+    if (routine.target === "bot") this.options.onNeedsReview?.(this.routineWithHealth(routine));
     return this.routineWithHealth(routine);
   }
 
@@ -1135,6 +1168,7 @@ export class RoutineManager {
     if (clean.schedule.type === "interval" && clean.enabled && nextRunAt === null) {
       throw new Error("This interval has no future runs. Choose a later end date or turn it off.");
     }
+    const promptChanged = clean.prompt !== routine.prompt;
     const destination = { ...routine, ...clean };
     if (destination.botId !== routine.botId) delete destination.resultsThreadId;
     const discardResults = this.applyResultsInput(destination, patch.resultsThreadId);
@@ -1151,6 +1185,8 @@ export class RoutineManager {
       // rather than false, so switching continuity off has to delete it.
       if (!clean.continuity) delete routine.continuity;
       if (clean.overlap !== "queue") delete routine.overlap;
+      // A plan, and any approval, is for the instructions it was written for.
+      if (routine.execution && routine.execution.promptHash !== sha256(routine.prompt)) delete routine.execution;
       if (Object.hasOwn(patch, "timeoutMinutes") && patch.timeoutMinutes == null) {
         delete routine.timeoutMinutes;
       }
@@ -1168,6 +1204,7 @@ export class RoutineManager {
     }, discardResults);
     for (const run of cancelledRuns) this.emitRun(run);
     this.emitRoutine(routine);
+    if (promptChanged && routine.target === "bot") this.options.onNeedsReview?.(this.routineWithHealth(routine));
     return this.routineWithHealth(routine);
   }
 
@@ -1410,6 +1447,7 @@ export class RoutineManager {
     run.finishedAt = this.now();
     this.save();
     this.emitRun(run);
+    this.scriptRuns.get(run.id)?.abort();
     if (run.threadId) {
       if (run.target === "room-goal" && run.groupId) {
         await this.options.interruptGoal?.(run.groupId, run.threadId).catch(() => {});
@@ -1464,6 +1502,7 @@ export class RoutineManager {
   stop() {
     this.stopped = true;
     for (const controller of this.preCheckControllers.values()) controller.abort();
+    for (const controller of this.scriptRuns.values()) controller.abort();
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
   }
@@ -1484,6 +1523,7 @@ export class RoutineManager {
         const detail = `Stopped after reaching the ${run.timeoutMinutes}-minute run limit`;
         if (run.target === "room-goal") run.goalStatus = "limit-reached";
         this.failRun(run, detail);
+        this.scriptRuns.get(run.id)?.abort();
         if (!threadId) continue;
         if (run.target === "room-goal" && run.groupId) {
           await this.options.interruptGoal?.(run.groupId, threadId, {
@@ -1719,6 +1759,12 @@ export class RoutineManager {
             continue;
           }
           const triggerSource = run.triggerSource ?? (run.manual ? "manual" : "schedule");
+          const scriptPlan = this.scriptPlanFor(run, prompt);
+          if (scriptPlan) {
+            // Detached: a script can take minutes and must not hold the tick.
+            void this.executeScriptRun(run, task.threadId, scriptPlan, prompt, triggerSource);
+            continue;
+          }
           if (run.target === "room-goal") {
             if (!run.groupId || !this.options.startGoal) {
               this.failThread(task.threadId, "Room goal routines are unavailable");
@@ -1858,6 +1904,137 @@ export class RoutineManager {
     }
     queueMicrotask(() => void this.tick());
     return cloneRun(run);
+  }
+
+  /** The approved script this run executes instead of a bot turn, or null.
+   * Only a bot routine whose run carries the definition's exact
+   * instructions, with no attachments for the bot to read. */
+  private scriptPlanFor(run: RoutineRun, prompt: string) {
+    if (run.target !== "bot" || !this.options.runScript || run.attachments?.length) return null;
+    const definition = this.routines.find((routine) => routine.id === run.routineId);
+    if (!definition || definition.prompt !== prompt) return null;
+    const plan = activeScriptPlan(definition.execution, prompt);
+    return plan ? { ...plan } : null;
+  }
+
+  private async executeScriptRun(
+    run: RoutineRun,
+    threadId: string,
+    plan: NonNullable<ReturnType<RoutineManager["scriptPlanFor"]>>,
+    prompt: string,
+    triggerSource: RoutineRunTrigger,
+  ): Promise<void> {
+    const live = () => !this.stopped && !controller.signal.aborted && run.threadId === threadId && run.status === "running";
+    const controller = new AbortController();
+    this.scriptRuns.set(run.id, controller);
+    run.executor = "script";
+    this.save();
+    this.emitRun(run);
+    const timeoutMs = run.timeoutMinutes != null ? run.timeoutMinutes * 60_000 : DEFAULT_SCRIPT_TIMEOUT_MS;
+    let result: ScriptResult;
+    try {
+      result = await this.options.runScript!(cloneRun(run), plan.script, timeoutMs, controller.signal);
+    } catch (error) {
+      result = { ok: false, exitCode: null, stdout: "", stderr: error instanceof Error ? error.message : String(error), timedOut: false };
+    } finally {
+      this.scriptRuns.delete(run.id);
+    }
+    if (!live()) return;
+    const report = scriptReport(result, timeoutMs);
+    this.options.postScriptReport?.(run.botId, threadId, report);
+    if (!result.ok) {
+      this.failThread(threadId, report.split("\n")[0]!);
+      return;
+    }
+    if (plan.mode === "script-jev") {
+      const verdict: { escalate: boolean; p?: number } = this.options.needsBot
+        ? await this.options.needsBot(cloneRun(run), plan.escalateWhen ?? "", report).catch(() => ({ escalate: true }))
+        : { escalate: true };
+      if (!live()) return;
+      if (verdict.p !== undefined) run.escalationP = verdict.p;
+      if (verdict.escalate) {
+        run.executor = "script-llm";
+        this.save();
+        this.emitRun(run);
+        try {
+          await this.options.startTurn(
+            run.botId,
+            threadId,
+            composeExecutionPrompt(escalationPrompt(prompt, report), run.attachments, this.continuityCarry(run)) + preCheckItemsPrompt(run.preCheckResult?.items),
+            run.runOn ?? "maus",
+            triggerSource,
+            (message) => this.failThread(threadId, message),
+          );
+        } catch (error) {
+          this.failThread(threadId, error instanceof Error ? error.message : String(error));
+        }
+        return;
+      }
+    }
+    run.status = "completed";
+    run.output = report.slice(0, 2_000);
+    run.finishedAt = this.now();
+    run.error = undefined;
+    this.save();
+    this.emitRun(run);
+    queueMicrotask(() => void this.tick());
+  }
+
+  /** Mark a reviewer as reading (or done reading) a routine. */
+  setReviewing(id: string, reviewing: boolean): void {
+    const routine = this.routines.find((candidate) => candidate.id === id);
+    if (reviewing === this.reviewing.has(id)) return;
+    if (reviewing) this.reviewing.add(id);
+    else this.reviewing.delete(id);
+    if (routine) this.emitRoutine(routine);
+  }
+
+  /** Store a reviewer's plan, unless the instructions changed while it read
+   * them. Returns the routine, or null when the plan no longer applies. */
+  setExecutionPlan(id: string, plan: RoutineExecutionPlan): Routine | null {
+    const routine = this.routines.find((candidate) => candidate.id === id);
+    if (!routine || plan.promptHash !== sha256(routine.prompt)) return null;
+    this.commitMutation(() => {
+      routine.execution = { ...plan };
+      routine.updatedAt = Math.max(this.now(), routine.updatedAt + 1);
+    });
+    this.emitRoutine(routine);
+    return this.routineWithHealth(routine);
+  }
+
+  /** A person approves the proposed script with this exact hash. */
+  approveExecution(id: string, scriptHash: string): Routine | null {
+    const routine = this.routines.find((candidate) => candidate.id === id);
+    const plan = routine?.execution;
+    if (!routine || !plan || plan.mode === "llm" || plan.promptHash !== sha256(routine.prompt)) return null;
+    if (!plan.script || plan.scriptHash !== scriptHash || sha256(plan.script) !== scriptHash) return null;
+    this.commitMutation(() => {
+      routine.execution = { ...plan, status: "approved", approvedAt: this.now() };
+      routine.updatedAt = Math.max(this.now(), routine.updatedAt + 1);
+    });
+    this.emitRoutine(routine);
+    return this.routineWithHealth(routine);
+  }
+
+  /** Back to a bot turn on every run, keeping the reviewer's reason. */
+  useBotForRuns(id: string): Routine | null {
+    const routine = this.routines.find((candidate) => candidate.id === id);
+    if (!routine) return null;
+    const at = this.now();
+    this.commitMutation(() => {
+      routine.execution = {
+        mode: "llm",
+        status: "approved",
+        rationale: "Chosen by a person.",
+        promptHash: sha256(routine.prompt),
+        reviewer: "person",
+        reviewedAt: at,
+        approvedAt: at,
+      };
+      routine.updatedAt = Math.max(at, routine.updatedAt + 1);
+    });
+    this.emitRoutine(routine);
+    return this.routineWithHealth(routine);
   }
 
   private failRun(run: RoutineRun, message: string) {

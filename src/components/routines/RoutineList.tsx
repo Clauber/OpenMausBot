@@ -3,6 +3,7 @@ import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import type { Routine, RoutineRun } from "@/lib/routines";
 import { scheduleLabel } from "@/lib/schedule-label";
+import { executionBadge } from "./ExecutionPlanPanel";
 import { latestRoutineRun, routineDateTime, routineNextLabel, routineRunLabel, routineRunTone, routineScheduleState } from "@/lib/routine-display";
 import type { Bot } from "@/state/store";
 
@@ -29,6 +30,7 @@ export function RoutineList({ routines, runs, bots, loading, error, onOpen, onLo
             <span className="block truncate text-[13px] font-semibold text-ink">{routine.name}</span>
             <span className="mt-1 block text-[11.5px] leading-relaxed text-ink-secondary">{bot && `${bot.name} · `}{scheduleLabel(routine.schedule)}</span>
           </button>
+          {executionBadge(routine) && <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[10px]", routine.execution?.status === "proposed" ? "bg-accent/15 text-accent" : "bg-inset text-ink-secondary")}>{executionBadge(routine)}</span>}
           <span className={cn("shrink-0 rounded-full bg-inset px-2 py-0.5 text-[10px]", routine.enabled && routine.nextRunAt != null ? "text-accent" : "text-ink-secondary")}>{routineScheduleState(routine)}</span>
         </div>
         {routineNextLabel(routine) !== routineScheduleState(routine) && <div className="mt-2 text-[11.5px] text-ink-secondary">{routineNextLabel(routine)}</div>}

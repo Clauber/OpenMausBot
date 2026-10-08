@@ -672,6 +672,8 @@ describe("saving the newer sections", () => {
     try {
       saveConfig({ anthropic: { key: "sk-ant-fixture" } });
       saveConfig({ budgets: { monthlyUsd: 25, warnAtPercent: 70 } });
+      saveConfig({ routineReview: { enabled: true, model: "fixture-reviewer", baseUrl: "http://127.0.0.1:41000/v1", key: "fixture-only" } });
+      expect(loadConfig().routineReview).toMatchObject({ enabled: true, model: "fixture-reviewer", key: "fixture-only" });
       saveConfig({ billing: { currency: "EUR", prices: { default: { inputPerMillion: 1, outputPerMillion: 2 } } } });
       // a later save of one section leaves the others alone, and replaces the price list whole
       saveConfig({ billing: { prices: { "gpt-5": { inputPerMillion: 3, outputPerMillion: 4 } } } });
