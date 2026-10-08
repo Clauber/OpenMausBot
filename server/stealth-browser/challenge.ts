@@ -119,7 +119,13 @@ async function attemptClick(page: Page): Promise<boolean> {
 
 /** One solver pass per page, armed on every main-frame navigation. All
  * failures are swallowed: a closed page, a vanished frame, or a checkbox
- * that will not take the click just end the pass. */
+ * that will not take the click just end the pass. When the budget runs out
+ * with the interstitial still up (Cloudflare keeps re-verifying), the page
+ * is reloaded — a fresh challenge round clears for borderline sessions —
+ * at most MAX_RELOADS times before the page is left alone. */
+const MAX_RELOADS = 2;
+const reloadCounts = new WeakMap<Page, number>();
+
 export function armCloudflareSolver(page: Page, options: ChallengeSolverOptions = {}): void {
   let running = false;
   let armed = false;
@@ -131,6 +137,7 @@ export function armCloudflareSolver(page: Page, options: ChallengeSolverOptions 
       const deadline = Date.now() + budgetMs;
       await sleep(randomBetween(FIRST_ATTEMPT_MIN_MS, FIRST_ATTEMPT_JITTER_MS));
       let first = true;
+      let clicked = false;
       while (Date.now() < deadline) {
         if (!page.isClosed()) {
           if (!(await challengePresent(page).catch(() => false))) {
@@ -138,10 +145,23 @@ export function armCloudflareSolver(page: Page, options: ChallengeSolverOptions 
             return;
           }
           if (first) options.log?.(`stealth-browser: cloudflare challenge detected, auto-clicking`);
-          await attemptClick(page).catch(() => {});
+          if (await attemptClick(page).catch(() => false)) clicked = true;
         }
         first = false;
         await sleep(randomBetween(RETRY_MIN_MS, RETRY_JITTER_MS));
+      }
+      // The click was accepted (widget gone) but Cloudflare still shows the
+      // interstitial: its verification is looping. A reload starts a fresh
+      // challenge round, which borderline sessions clear on the second pass.
+      const stuck = await interstitialMarker(page).catch(() => false);
+      if (clicked && stuck && !page.isClosed()) {
+        const reloads = reloadCounts.get(page) ?? 0;
+        if (reloads < MAX_RELOADS) {
+          reloadCounts.set(page, reloads + 1);
+          options.log?.(`stealth-browser: cloudflare challenge looping, reloading the page (round ${reloads + 1} of ${MAX_RELOADS})`);
+          await page.reload({ waitUntil: "domcontentloaded" }).catch(() => {});
+          return; // the navigation re-arms a fresh pass
+        }
       }
       options.log?.(`stealth-browser: cloudflare challenge not cleared within budget`);
     } catch {
