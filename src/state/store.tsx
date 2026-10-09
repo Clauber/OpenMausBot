@@ -1245,6 +1245,8 @@ export type Action =
   | { type: "createProject"; botId: string; name: string; emoji?: string | null; onCreated?: (project: BotProject) => void; onError?: (message: string) => void }
   | { type: "updateProject"; botId: string; projectId: string; patch: ProjectUpdatePatch; onSaved?: () => void; onError?: (message: string) => void }
   | { type: "deleteProject"; botId: string; projectId: string; onDeleted?: () => void; onError?: (message: string) => void }
+  | { type: "botsOrdered"; botIds: string[] }
+  | { type: "reorderBots"; botIds: string[]; onSaved?: () => void; onError?: (message: string) => void }
   | { type: "reorderProjects"; botId: string; projectIds: string[]; onSaved?: () => void; onError?: (message: string) => void }
   | { type: "botAdded"; bot: Bot; preserveSelection?: boolean }
   | { type: "deleteBot"; botId: string }
@@ -1565,6 +1567,12 @@ export function reducer(state: AppState, action: Action): AppState {
         bots: state.bots.map(bot => bot.section === action.section ? { ...bot, section: undefined } : bot),
         groups: state.groups.map(group => group.section === action.section ? { ...group, section: undefined } : group),
       };
+    case "botsOrdered": {
+      const byId = new Map(state.bots.map(bot => [bot.id, bot]));
+      const ordered = [...new Set(action.botIds)].flatMap(id => byId.has(id) ? [byId.get(id)!] : []);
+      const known = new Set(action.botIds);
+      return { ...state, bots: [...ordered, ...state.bots.filter(bot => !known.has(bot.id))] };
+    }
     case "sections":
       return { ...state, sections: action.sections };
     case "botQueues":
@@ -2463,6 +2471,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case "createProject":
     case "updateProject":
     case "deleteProject":
+    case "reorderBots":
     case "reorderProjects":
     case "interrupt":
     case "createGroup":
@@ -3638,6 +3647,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             .then(({ bot }) => { dispatch({ type: "botPatched", bot }); action.onDeleted?.(); })
             .catch((error) => { showError(error); action.onError?.(error instanceof Error ? error.message : String(error)); });
           break;
+        case "reorderBots": {
+          const previous = stateRef.current.bots.map(bot => bot.id);
+          rawDispatch({ type: "botsOrdered", botIds: action.botIds });
+          api("/api/bots/order", { method: "PATCH", body: JSON.stringify({ botIds: action.botIds }) })
+            .then(({ botIds }) => { rawDispatch({ type: "botsOrdered", botIds }); action.onSaved?.(); })
+            .catch(async (error) => {
+              // Reconcile a failed write against the server, including concurrent changes from another device.
+              try {
+                const { bots } = await api("/api/bots?messages=0");
+                rawDispatch({ type: "botsOrdered", botIds: bots.map((bot: Bot) => bot.id) });
+              } catch { rawDispatch({ type: "botsOrdered", botIds: previous }); }
+              showError(error);
+              action.onError?.(error instanceof Error ? error.message : String(error));
+            });
+          break;
+        }
         case "reorderProjects":
           api(`/api/bots/${action.botId}/projects/order`, { method: "PATCH", body: JSON.stringify({ projectIds: action.projectIds }) })
             .then(({ bot }) => { dispatch({ type: "botPatched", bot }); action.onSaved?.(); })
@@ -3950,6 +3975,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         bumpPeripheralVersion("webhooks");
       }
       switch (frame.kind) {
+        case "bots.order":
+          rawDispatch({ type: "botsOrdered", botIds: frame.botIds });
+          break;
         case "sections":
           rawDispatch({ type: "sections", sections: frame.sections });
           break;

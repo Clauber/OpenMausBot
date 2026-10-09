@@ -5351,6 +5351,9 @@ store.onChange((change) => {
   // Who owns which thread, and what each member may see, follow the fleet.
   if (change.type !== "message" && change.type !== "message.patch" && change.type !== "thread" && change.type !== "sections") forgetVisibility();
   switch (change.type) {
+    case "bots.order":
+      broadcast({ kind: "bots.order", botIds: store.bots.map(bot => bot.id) });
+      break;
     case "sections":
       broadcast({ kind: "sections", sections: store.sections });
       break;
@@ -19478,6 +19481,23 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         throw Object.assign(new Error("This bot has more than one thread. Update the OpenMausBot app on this device, then choose a thread and try again."), { status: 409 });
       }
     };
+    if (method === "PATCH" && path === "/api/bots/order") {
+      const body = await readBody(req);
+      if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => key !== "botIds") ||
+        !Array.isArray(body.botIds) || body.botIds.some((id: unknown) => typeof id !== "string")) {
+        return json(res, 400, { error: "botIds must be an array of bot IDs" });
+      }
+      const shown = store.bots.filter(bot => visible.bot(bot.id));
+      const ids = new Set(shown.map(bot => bot.id));
+      if (body.botIds.length !== shown.length || new Set(body.botIds).size !== shown.length || body.botIds.some((id: string) => !ids.has(id))) {
+        return json(res, 400, { error: "botIds must include each visible bot exactly once" });
+      }
+      // A restricted client can only reorder its visible slots, never reveal or move hidden bots.
+      let index = 0;
+      const order = store.bots.map(bot => ids.has(bot.id) ? body.botIds[index++] : bot.id);
+      store.reorderBots(order);
+      return json(res, 200, { botIds: body.botIds });
+    }
     if (method === "GET" && path === "/api/bots") {
       try { groupUsageReader.refresh(); } catch { /* accounting must not block a snapshot */ }
       const limit = pageSize(url.searchParams.get("messages"));

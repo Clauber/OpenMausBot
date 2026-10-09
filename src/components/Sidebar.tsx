@@ -59,6 +59,7 @@ import { TeamDialog } from "./TeamDialog";
 import { RenameTitle } from "./RenameTitle";
 import { BotPickerList } from "./BotPickerList";
 import { BotProjectDialog, FolderActions, FolderIcon, navigateThreadMenu } from "./BotProjects";
+import { BOT_DRAG_TYPE, draggedBot, placeBot, type BotDrag } from "@/lib/bot-order";
 import { draggedFolder, FOLDER_DRAG_TYPE, moveFolder, placeFolder } from "@/lib/folder-order";
 import { folderUnreadThreadIds, markFolderRead } from "@/lib/folder-read";
 import { orderedThreadList, SidebarThreadRow, stampClock, threadRecency, useRelativeNow, useSnoozeExpiry, visibleSidebarThreads } from "./SidebarThreadRow";
@@ -1867,6 +1868,11 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
   collapseToIcons?: boolean;
 }) {
   const { state, dispatch } = useStore();
+  const [draggingBot, setDraggingBot] = useState<BotDrag | null>(null);
+  const [botDrop, setBotDrop] = useState<{ id: string; place: "before" | "after" } | null>(null);
+  const [reorderingBots, setReorderingBots] = useState(false);
+  const [botOrderError, setBotOrderError] = useState("");
+  const [botOrderStatus, setBotOrderStatus] = useState("");
   const now = useRelativeNow();
   const showThreads = useShowThreads();
   const remoteClient = window.ogb?.remoteClient?.active === true;
@@ -2185,7 +2191,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
   };
 
   const dropSection = (event: React.DragEvent<HTMLDivElement>) => {
-    if (event.dataTransfer.types.includes(FOLDER_DRAG_TYPE)) return;
+    if (event.dataTransfer.types.includes(FOLDER_DRAG_TYPE) || event.dataTransfer.types.includes(BOT_DRAG_TYPE)) return;
     event.preventDefault();
     const from =
       event.dataTransfer.getData("application/x-openmausbot-sidebar-section") ||
@@ -2211,6 +2217,63 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
   const pinnedThreads = crossBotPinnedThreads(state.bots, state.groups, state.pendingQueued);
   const pendingBotUndo = teamFeedback?.restoreBot;
   const botRow = (bot: Bot) => botRowProps(state, dispatch, bot, { density, quiet: quietRows, query: q, onMenu: setMenu });
+  const resetBotDrag = () => { setDraggingBot(null); setBotDrop(null); };
+  const startBotDrag = (event: React.DragEvent<HTMLElement>, payload: BotDrag) => {
+    if (reorderingBots || q) { event.preventDefault(); return; }
+    event.stopPropagation();
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData(BOT_DRAG_TYPE, JSON.stringify(payload));
+    // Include the expanded threads in the native drag image, even when dragging its grip.
+    const subtree = event.currentTarget.closest<HTMLElement>("[data-sidebar-bot-id]") ?? event.currentTarget;
+    event.dataTransfer.setDragImage(subtree, 20, 16);
+    setDraggingBot(payload);
+    setBotOrderError("");
+  };
+  const acceptBotDrag = (event: React.DragEvent<HTMLElement>) => {
+    if (reorderingBots || q || !event.dataTransfer.types.includes(BOT_DRAG_TYPE)) return false;
+    event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = "move";
+    return true;
+  };
+  const pinDraggedThread = (event: React.DragEvent<HTMLElement>, pinned: boolean) => {
+    if (!acceptBotDrag(event)) return;
+    const payload = draggedBot(event.dataTransfer.getData(BOT_DRAG_TYPE), state.bots);
+    if (payload) dispatch({ type: "updateTask", botId: payload.botId, threadId: payload.threadId, patch: { pinned } });
+    resetBotDrag();
+  };
+  const dropBot = (event: React.DragEvent<HTMLElement>, target?: string) => {
+    if (!acceptBotDrag(event)) return;
+    const payload = draggedBot(event.dataTransfer.getData(BOT_DRAG_TYPE), state.bots);
+    if (payload) {
+      if (payload.fromPinned) dispatch({ type: "updateTask", botId: payload.botId, threadId: payload.threadId, patch: { pinned: false } });
+      if (target) {
+        const ids = state.bots.map(bot => bot.id);
+        const rect = event.currentTarget.getBoundingClientRect();
+        const order = placeBot(ids, payload.botId, target, event.clientY < rect.top + rect.height / 2 ? "before" : "after");
+        if (order.some((id, index) => id !== ids[index])) {
+          setReorderingBots(true); setBotOrderError(""); setBotOrderStatus(t("sidebar.bots.reordering"));
+          dispatch({ type: "reorderBots", botIds: order,
+            onSaved: () => { setReorderingBots(false); setBotOrderStatus(t("sidebar.bots.reordered")); },
+            onError: message => { setReorderingBots(false); setBotOrderStatus(""); setBotOrderError(message); } });
+        }
+      }
+    }
+    resetBotDrag();
+  };
+  const renderDraggableBot = (bot: Bot) => <div key={bot.id} data-sidebar-bot-id={bot.id} draggable={!q && !reorderingBots}
+    onDragStart={event => startBotDrag(event, { botId: bot.id, threadId: bot.threadId, fromPinned: false })}
+    onDragEnd={resetBotDrag}
+    onDragOver={event => {
+      if (!acceptBotDrag(event)) return;
+      const rect = event.currentTarget.getBoundingClientRect();
+      setBotDrop({ id: bot.id, place: event.clientY < rect.top + rect.height / 2 ? "before" : "after" });
+    }}
+    onDragLeave={event => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setBotDrop(null); }}
+    onDrop={event => dropBot(event, bot.id)}
+    className={cn("relative", draggingBot?.botId === bot.id && !draggingBot.fromPinned && "opacity-50",
+      botDrop?.id === bot.id && draggingBot?.botId !== bot.id && (botDrop.place === "before" ? "shadow-[0_-2px_var(--color-accent)]" : "shadow-[0_2px_var(--color-accent)]"))}>
+    <BotListItem {...botRow(bot)} />
+  </div>;
+
 
   return (
     <aside
@@ -2460,6 +2523,12 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
       {density !== "icons" && (
         <SidebarPinnedThreadsPanel
           entries={pinnedThreads}
+          acceptBotDrop={!q && state.bots.some(bot => !bot.hidden)}
+          draggingBot={Boolean(draggingBot)}
+          onDragOver={acceptBotDrag}
+          onDrop={event => pinDraggedThread(event, true)}
+          onThreadDragStart={(event, entry) => { if (entry.kind === "bot") startBotDrag(event, { botId: entry.botId, threadId: entry.task.threadId, fromPinned: true }); }}
+          onDragEnd={resetBotDrag}
           density={density}
           now={now}
           onJump={(entry) => dispatch(attentionJumpAction(entry))}
@@ -2508,6 +2577,8 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
       />}
 
       {/* Bot list */}
+      {botOrderError && <p role="alert" className="px-3 py-1 text-[12px] text-danger">{botOrderError}</p>}
+      <span role="status" className="sr-only">{botOrderStatus}</span>
       <GlassScroller className="px-2">
         <div className="flex flex-col gap-0.5">
           {matchingBots.length === 0 && visibleGroups.length === 0 && q && q.length < MIN_QUERY && (
@@ -2515,7 +2586,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
           )}
           {unsectionedChief && (
             <div className="mb-1.5">
-              <BotListItem {...botRow(unsectionedChief)} />
+              {renderDraggableBot(unsectionedChief)}
             </div>
           )}
           {sectionIds.map((id, index) => {
@@ -2552,8 +2623,8 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
               <div
                 key={id}
                 data-sidebar-section-id={id}
-                onDragOver={(event) => updateSectionDropTarget(event, id)}
-                onDrop={dropSection}
+                onDragOver={event => { if (event.dataTransfer.types.includes(BOT_DRAG_TYPE) && id === BOTS_SECTION_ID) acceptBotDrag(event); else updateSectionDropTarget(event, id); }}
+                onDrop={event => { if (event.dataTransfer.types.includes(BOT_DRAG_TYPE) && id === BOTS_SECTION_ID) dropBot(event); else dropSection(event); }}
                 className={cn(
                   "flex flex-col gap-0.5",
                   density !== "icons" && index > 0 && "pt-3",
@@ -2592,7 +2663,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
                   className="mx-3 mb-1 self-start rounded bg-raised/50 px-2 py-0.5 text-[10px] text-ink-secondary hover:text-ink">{t("task.queued")} · {queued.length}</button>}
                 {!collapsed && (
                   <>
-                    {sectionChiefItems.map((bot) => <BotListItem key={bot.id} {...botRow(bot)} />)}
+                    {sectionChiefItems.map(renderDraggableBot)}
                     {sectionGroupItems.map((group) => (
                       <GroupListItem
                         key={group.id}
@@ -2610,7 +2681,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
                         circles={pinnedCircles}
                         row={botRow}
                       />
-                    ) : sectionBotItems.map((bot) => <BotListItem key={bot.id} {...botRow(bot)} />)}
+                    ) : sectionBotItems.map(renderDraggableBot)}
                     {!remoteClient && sectionName && layoutInteractive && (
                       <button onClick={() => setMoveToTeam(sectionName)} aria-label={t(state.bots.some(bot => !bot.hidden && bot.section?.trim() === sectionName) ? "team.manageBotsIn" : "team.addBotsTo", { name: sectionName })}
                         className="mx-3 my-1 flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] text-ink-secondary hover:bg-raised hover:text-ink">

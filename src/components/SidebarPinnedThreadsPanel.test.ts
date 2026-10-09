@@ -65,6 +65,14 @@ describe("pinned threads panel", () => {
     expect(markup).toBe("");
   });
 
+  it("offers an empty drop target and makes pinned bot threads draggable back to Bots", () => {
+    const props = { density: "comfortable" as const, now: 1, onUnpin: vi.fn(), onJump: vi.fn(), collapsed: false, acceptBotDrop: true, onDrop: vi.fn(), onThreadDragStart: vi.fn() };
+    const empty = renderToStaticMarkup(createElement(SidebarPinnedThreadsPanel, { ...props, entries: [] }));
+    expect(empty).toContain(t("sidebar.bots.dropToPin"));
+    const pinned = renderToStaticMarkup(createElement(SidebarPinnedThreadsPanel, { ...props, entries: [entry] }));
+    expect(pinned).toContain('data-pinned-thread-id="pinned-1" draggable="true"');
+  });
+
   it("renders the pinned rows under the Pinned threads name", () => {
     const { markup } = renderPanel();
     expect(markup).toContain(t("sidebar.pinnedThreads.title"));
