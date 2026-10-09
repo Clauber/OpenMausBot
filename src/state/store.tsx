@@ -38,6 +38,7 @@ import type { Routine, RoutineInput, RoutineRun, RoutineRunStatusFilter } from "
 import type { WebhookAttempt, WebhookIngressStatus, WebhookTrigger } from "@/lib/webhooks";
 import { applySkin, DEFAULT_SKIN, isCustomSkinValue } from "@/lib/skins";
 import { customSkinAttr, ensureCustomSkinStyles, readCustomSkinsCache, writeCustomSkinsCache } from "@/lib/custom-skins";
+import type { FileViewerTab } from "@/lib/file-viewer";
 import { botShowsUnread } from "@/lib/bot-unread";
 import { answerResponse, dismissResponse } from "@/lib/card-answer";
 import { currentCall } from "@/lib/call";
@@ -162,6 +163,9 @@ export interface Message {
   role: "bot" | "user";
   kind: "text" | "options" | "activity" | "screen" | "connector" | "secret" | "routine.run" | "goal.run" | "digest" | "compaction";
   text?: string;
+  /** The harness reasoning that led to this bot text, present only when the
+   * bot has includeThinking. */
+  thinking?: string;
   /** digest messages: what the turn did, rendered in `text` and structured here. */
   digest?: TurnDigest;
   compaction?: import("../../shared/wire").WireMessage["compaction"];
@@ -448,6 +452,8 @@ export interface Bot {
   callEngine?: "default" | "openai" | "codex" | "none";
   /** whether this bot uses native memory (on unless switched off) */
   memoryEnabled?: boolean;
+  /** Store reasoning with settled replies (off by default). */
+  includeThinking?: boolean;
   pinned?: boolean;
   hidden?: boolean;
   /** Sidebar section this bot renders under; absent = unsectioned. */
@@ -967,6 +973,12 @@ export interface AppState {
   /** the per-thread event inspector (runtime stream + native protocol tee) */
   inspectorOpen: boolean;
   activityOpen: boolean;
+  /** The docked file viewer: inline previews of attachments and file links. */
+  fileViewerOpen: boolean;
+  fileViewerTabs: FileViewerTab[];
+  fileViewerActiveTab: string | null;
+  /** the bottom-docked owner terminal (Ctrl+`); closed again on reload */
+  terminalOpen: boolean;
   appSettingsOpen: boolean;
   appSettingsSection: AppSettingsSection;
   /** Non-zero while Settings → OMB Cloud is open because of the Cloud page's
@@ -1259,6 +1271,11 @@ export type Action =
   | { type: "toggleComputer"; open?: boolean }
   | { type: "toggleInspector"; open?: boolean }
   | { type: "toggleActivity"; open?: boolean }
+  | { type: "openFileViewerTab"; tab: FileViewerTab }
+  | { type: "closeFileViewerTab"; id: string }
+  | { type: "setFileViewerTab"; id: string }
+  | { type: "toggleFileViewer"; open?: boolean }
+  | { type: "toggleTerminal"; open?: boolean }
   | { type: "focusMessage"; threadId: string; messageId: string; matchText?: string }
   | { type: "focusMessageConsumed"; nonce: number }
   | { type: "toggleAppSettings"; open?: boolean; section?: AppSettingsSection; cloudLink?: boolean; phonePairing?: boolean }
@@ -1560,6 +1577,7 @@ export function reducer(state: AppState, action: Action): AppState {
         computerOpen: false,
         inspectorOpen: false,
         activityOpen: false,
+        fileViewerOpen: false,
         appSettingsOpen: false,
         pluginsOpen: false,
         triggersOpen: false,
@@ -1574,6 +1592,7 @@ export function reducer(state: AppState, action: Action): AppState {
         computerOpen: false,
         inspectorOpen: false,
         activityOpen: false,
+        fileViewerOpen: false,
         appSettingsOpen: false,
         pluginsOpen: false,
         triggersOpen: false,
@@ -2096,6 +2115,7 @@ export function reducer(state: AppState, action: Action): AppState {
         settingsOpen: open ? false : state.settingsOpen,
         inspectorOpen: open ? false : state.inspectorOpen,
         activityOpen: open ? false : state.activityOpen,
+        fileViewerOpen: open ? false : state.fileViewerOpen,
         appSettingsOpen: open ? false : state.appSettingsOpen,
       };
     }
@@ -2107,6 +2127,7 @@ export function reducer(state: AppState, action: Action): AppState {
         settingsOpen: open ? false : state.settingsOpen,
         computerOpen: open ? false : state.computerOpen,
         activityOpen: open ? false : state.activityOpen,
+        fileViewerOpen: open ? false : state.fileViewerOpen,
         appSettingsOpen: open ? false : state.appSettingsOpen,
       };
     }
@@ -2118,8 +2139,59 @@ export function reducer(state: AppState, action: Action): AppState {
         settingsOpen: open ? false : state.settingsOpen,
         computerOpen: open ? false : state.computerOpen,
         inspectorOpen: open ? false : state.inspectorOpen,
+        fileViewerOpen: open ? false : state.fileViewerOpen,
         appSettingsOpen: open ? false : state.appSettingsOpen,
       };
+    }
+    case "openFileViewerTab": {
+      // Re-opening a file refreshes its tab in place; a new path appends.
+      const existing = state.fileViewerTabs.findIndex((tab) => tab.id === action.tab.id);
+      const tabs = existing === -1
+        ? [...state.fileViewerTabs, action.tab]
+        : state.fileViewerTabs.map((tab, index) => (index === existing ? action.tab : tab));
+      return {
+        ...state,
+        fileViewerOpen: true,
+        fileViewerTabs: tabs,
+        fileViewerActiveTab: action.tab.id,
+        settingsOpen: false,
+        computerOpen: false,
+        inspectorOpen: false,
+        activityOpen: false,
+        appSettingsOpen: false,
+      };
+    }
+    case "closeFileViewerTab": {
+      const index = state.fileViewerTabs.findIndex((tab) => tab.id === action.id);
+      if (index === -1) return state;
+      const tabs = state.fileViewerTabs.filter((tab) => tab.id !== action.id);
+      if (tabs.length === 0) return { ...state, fileViewerOpen: false, fileViewerTabs: tabs, fileViewerActiveTab: null };
+      const activeId = state.fileViewerActiveTab === action.id
+        ? tabs[Math.min(index, tabs.length - 1)]!.id
+        : state.fileViewerActiveTab;
+      return { ...state, fileViewerTabs: tabs, fileViewerActiveTab: activeId };
+    }
+    case "setFileViewerTab":
+      return state.fileViewerTabs.some((tab) => tab.id === action.id)
+        ? { ...state, fileViewerOpen: true, fileViewerActiveTab: action.id }
+        : state;
+    case "toggleFileViewer": {
+      const open = action.open ?? !state.fileViewerOpen;
+      return {
+        ...state,
+        fileViewerOpen: open,
+        settingsOpen: open ? false : state.settingsOpen,
+        computerOpen: open ? false : state.computerOpen,
+        inspectorOpen: open ? false : state.inspectorOpen,
+        activityOpen: open ? false : state.activityOpen,
+        appSettingsOpen: open ? false : state.appSettingsOpen,
+      };
+    }
+    // The terminal docks below the whole app, so it never displaces the
+    // side panels; nothing needs closing when it opens.
+    case "toggleTerminal": {
+      const open = action.open ?? !state.terminalOpen;
+      return { ...state, terminalOpen: open };
     }
     case "toggleAppSettings": {
       const open = action.open ?? !state.appSettingsOpen;
@@ -2127,6 +2199,7 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         appSettingsOpen: open,
         activityOpen: open ? false : state.activityOpen,
+        fileViewerOpen: open ? false : state.fileViewerOpen,
         appSettingsSection: action.section ?? state.appSettingsSection,
         appSettingsCloudLink: action.cloudLink && open ? state.appSettingsCloudLink + 1 : 0,
         appSettingsPhonePairing: action.phonePairing && open ? state.appSettingsPhonePairing + 1 : 0,
@@ -2471,6 +2544,10 @@ export const initialState: AppState = {
   computerOpen: false,
   inspectorOpen: false,
   activityOpen: false,
+  fileViewerOpen: false,
+  fileViewerTabs: [],
+  fileViewerActiveTab: null,
+  terminalOpen: false,
   appSettingsOpen: false,
   appSettingsSection: "general",
   appSettingsCloudLink: 0,

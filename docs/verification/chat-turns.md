@@ -207,7 +207,6 @@ optional folders, and group-history navigation checks.
 ```sh
 pnpm exec vitest run server/kill-tree.test.ts server/engine-install.test.ts server/cli-stop.e2e.test.ts
 ```
-
 The Stop fixture wraps only the isolated launcher's fake Claude CLI with an
 owned helper that ignores TERM. It covers both a root that exits first and a
 root that also ignores TERM: the task stays busy during the grace period,
@@ -232,3 +231,46 @@ executable while its process is still running. Local mocked Windows tests
 do not substitute for that native check.
 Processes that intentionally detach into a different group are not owned by
 this POSIX group-based cancellation.
+
+## The composer /stop command and stored thinking
+
+`/stop` typed in the composer is the Stop button as text. The composer offers
+it in the slash menu while the bot is busy; sending it interrupts the running
+turn, never reaches the model, and appends nothing to the transcript — the
+same path as the header control, so a stop from a steer-capable queue, a room
+turn or a routine obeys the same rules as the button. When the bot has
+`includeThinking`, the harness's reasoning stream is folded onto each settled
+reply: the reasoning buffered since the last text item is stored (redacted,
+capped at a 16k tail) as the message's `thinking`, and reset at turn
+boundaries. Off, reasoning stays live-only and is never stored.
+
+```sh
+node --experimental-strip-types scripts/control-omb.ts launch
+pnpm control:omb new-bot --name Thinker --url http://127.0.0.1:PORT
+curl -s -X PATCH "http://127.0.0.1:PORT/api/bots/BOT_ID" \
+  -H 'content-type: application/json' -d '{"includeThinking":true}'
+FAKE_CLAUDE_MODE=stream runs the fake engine with a thinking delta; after a
+settled turn, messages --bot BOT_ID shows `thinking` on the reply and the
+desktop transcript shows the collapsible Thinking disclosure above it. A bot
+without the flag settles the same turn with no `thinking` field. A
+non-boolean PATCH is refused (400).
+```
+
+The /stop half needs the real composer: with the fake engine in `hang` mode,
+send a message, type `/stop` in the composer, press Enter. The bot goes idle,
+the transcript keeps the sent message and gains no `/stop` row, and the Stop
+control disappears.
+
+### Last exercised
+
+2026-10-03, isolated Linux fixtures from this tree. A bot with
+`includeThinking` settled a `stream`-mode turn whose stored reply carried
+`thinking: "hmm"` (the fake engine's delta) in SQLite and
+`GET /api/threads/:id/messages`; a control bot stored none; a `"yes"` patch
+returned 400. In the driven renderer the expanded message showed the THINKING
+disclosure with the same "hmm" (screenshot `.omb-scratch` evidence, fixture
+log retained). For `/stop`, a `hang`-mode turn interrupted through the
+composer: busy went to idle with one Enter on the picked `/stop` menu entry,
+and the transcript gained no `/stop` row (snapshot and screenshot evidence,
+fixture log retained). The MCP transcript projection now carries a bounded
+thinking tail. Fixture launchers were stopped with their own cleanup.

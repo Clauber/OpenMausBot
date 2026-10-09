@@ -179,6 +179,17 @@ const ROUTINE_FIELDS_SCHEMA = {
     type: "boolean",
     description: "Only for updates: set true to remove an existing safety limit. Do not combine with timeout_minutes.",
   },
+  preCheck: {
+    type: ["object", "null"],
+    description: "Optional locally approved executable to check scheduled bot routines before waking. Runs directly on the server without a shell. Empty items skip quietly; errors wake normally. Run now bypasses. Set null in an update to remove. Never include secrets in arguments.",
+    properties: {
+      command: { type: "string", description: "Absolute executable path on the server." },
+      args: { type: "array", maxItems: 64, items: { type: "string", maxLength: 4096 } },
+      timeoutMs: { type: "integer", minimum: 100, maximum: 60000 },
+    },
+    required: ["command"],
+    additionalProperties: false,
+  },
   continuity: {
     type: "boolean",
     description: "Opt in to using the latest completed run's bounded report as historical context. Defaults to false; set false in an update to start fresh again. Included in the applied result or pending confirmation.",
@@ -402,7 +413,7 @@ const toolDefinitions = (externalRuntime: boolean) => [
   {
     name: "attach_file",
     description:
-      "Attach a finished file to the chat so the user can preview and download it: an image, video, audio clip, PDF, spreadsheet, slide deck or other document you made. Pass its path: a path inside your computer's /home/cua/workspace (for example /home/cua/workspace/report.pdf), or a file in your working folder. Do this instead of pasting a VM path as a link; a path inside a VM cannot be opened from chat. Supported: images (png, jpg, gif, webp), video (mp4, webm, mov), audio (mp3, m4a, aac, wav, ogg, opus, flac), pdf, Word/Excel/PowerPoint and OpenDocument files, and csv, tsv, txt, md, json, rtf. Up to 25 MB (images 10 MB). Finish writing the file first, then call this directly: it reports an error if the file is missing, so you do not need to list or open the folder to check.",
+      "Attach a finished file to the chat so the user can preview and download it: an image, video, audio clip, PDF, spreadsheet, slide deck or other document you made. Pass its path: a path inside your computer's /home/cua/workspace (for example /home/cua/workspace/report.pdf), or a file in your working folder. Do this instead of pasting a VM path as a link; a path inside a VM cannot be opened from chat. For a file in your working folder you can instead share it with a Markdown link to its absolute path — the chat turns the link into a file card the user can open. Supported: images (png, jpg, gif, webp), video (mp4, webm, mov), audio (mp3, m4a, aac, wav, ogg, opus, flac), pdf, Word/Excel/PowerPoint and OpenDocument files, and csv, tsv, txt, md, json, rtf. Up to 25 MB (images 10 MB). Finish writing the file first, then call this directly: it reports an error if the file is missing, so you do not need to list or open the folder to check.",
     inputSchema: {
       type: "object",
       additionalProperties: false,

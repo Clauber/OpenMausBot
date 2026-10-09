@@ -1,6 +1,7 @@
 import { useId } from "react";
 import { t } from "@/lib/i18n";
 import type { Bot } from "@/state/store";
+import { ROUTINE_DEFAULT_RESULTS_THREAD, ROUTINE_OWN_RESULTS_THREAD } from "../../../shared/routines";
 
 /** A destination is just an existing conversation, not another execution mode. */
 export function ResultsDestination({ bot, value, allowCurrent = false, onChange }: {
@@ -11,7 +12,7 @@ export function ResultsDestination({ bot, value, allowCurrent = false, onChange 
 }) {
   const id = useId();
   const tasks = (bot?.tasks ?? []).filter((task) => !task.routineRunId);
-  const selectedMissing = typeof value === "string" && !tasks.some((task) => task.threadId === value);
+  const selectedMissing = typeof value === "string" && value !== ROUTINE_OWN_RESULTS_THREAD && value !== ROUTINE_DEFAULT_RESULTS_THREAD && !tasks.some((task) => task.threadId === value);
   const groups = [...(bot?.projects ?? []), { id: "", name: t("folder.none") }];
   return <div className="min-w-0 space-y-1.5">
     <label htmlFor={id} className="block text-[12px] font-medium text-ink">{t("routines.results.label")}</label>
@@ -20,6 +21,8 @@ export function ResultsDestination({ bot, value, allowCurrent = false, onChange 
       className="w-full min-w-0 rounded-lg border border-hairline/50 bg-inset px-3 py-2 text-[12.5px] text-ink outline-none focus:border-accent disabled:opacity-50">
       {allowCurrent && <option value="current">{t("routines.results.keep")}</option>}
       <option value="new">{t("routines.results.new")}</option>
+      <option value={ROUTINE_OWN_RESULTS_THREAD}>{t("routines.results.own")}</option>
+      <option value={ROUTINE_DEFAULT_RESULTS_THREAD}>{t("routines.results.default")}</option>
       {selectedMissing && <option value={value!} disabled>{t("routines.results.unavailable")}</option>}
       {groups.map((group) => {
         const members = tasks.filter((task) => group.id ? task.projectId === group.id : !bot?.projects?.some((project) => project.id === task.projectId));

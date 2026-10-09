@@ -47,6 +47,7 @@ import { CalendarSidebar } from "@/components/routines/CalendarSidebar";
 import { RoutineList } from "@/components/routines/RoutineList";
 import { RoutineLogs } from "@/components/routines/RoutineLogs";
 import { ResultsDestination } from "@/components/routines/ResultsDestination";
+import { ExecutionPlanPanel } from "@/components/routines/ExecutionPlanPanel";
 import { CronScheduleFields, CronSchedulePreview } from "@/components/routines/CronScheduleFields";
 import { cronChoiceFor, cronDraftFor, cronEditorValue, isCronChoice, type CronChoice } from "@/components/routines/cron-editor";
 import { routineRunLabel, routineRunTime, routineScheduleState } from "@/lib/routine-display";
@@ -602,6 +603,7 @@ export function EventEditor({
     || routineTarget === "room-goal"
     || attachments.length > 0
     || runOn === "cloud"
+    || Boolean(existingRoutine?.preCheck)
     || timeoutMinutes != null
     || overlap === "queue");
 
@@ -821,7 +823,7 @@ export function EventEditor({
   const runLimitControls = kind === "routine" && (
                 <details className="rounded-xl border border-hairline/40 bg-inset/40 px-3 py-2.5">
                   <summary className="cursor-pointer select-none text-[11.5px] font-medium text-ink-secondary hover:text-ink">
-                    Advanced · {timeoutMinutes == null ? "no run limit" : `${durationLabel(timeoutMinutes)} run limit`}
+                    Advanced · {timeoutMinutes == null ? "no run limit" : `${durationLabel(timeoutMinutes)} run limit`}{existingRoutine?.preCheck ? " · pre-check" : ""}
                   </summary>
                   <div className="mt-3 border-t border-hairline/35 pt-3">
                     <label className="flex flex-wrap items-center gap-2 text-[12px] text-ink">
@@ -832,6 +834,11 @@ export function EventEditor({
                       </select>
                     </label>
                     <div className="mt-1.5 text-[10.5px] leading-relaxed text-ink-secondary">Optional. The clock starts when work actually begins and does not control how often the routine starts.</div>
+                    {existingRoutine?.preCheck && <div className="mt-3 text-[11px] text-ink-secondary" aria-label="Routine pre-check">
+                      <p className="font-medium text-ink">Local pre-check · {existingRoutine.preCheck.timeoutMs ?? 30_000} ms timeout</p>
+                      <pre className="mt-1 whitespace-pre-wrap break-all rounded-lg bg-panel p-2 font-mono text-[10.5px]">{JSON.stringify({ command: existingRoutine.preCheck.command, args: existingRoutine.preCheck.args ?? [] }, null, 2)}</pre>
+                      <p className="mt-1.5 leading-relaxed">Empty or confidently irrelevant items skip scheduled runs. Run now bypasses this check. Other edits preserve it; change or remove it through a reviewed routine proposal or the routine API.</p>
+                    </div>}
                     {recurrence !== "none" && <div className="mt-3">
                       <label className="flex flex-wrap items-center gap-2 text-[12px] text-ink">
                         <span>{t("routines.overlapLabel")}</span>
@@ -847,6 +854,7 @@ export function EventEditor({
               );
   const resultsControl = kind === "routine" && !isRoomGoal && <div className={cn(advanced && "ml-8")}>
             <ResultsDestination bot={bots.find((bot) => bot.id === botIds[0])} value={resultsThreadId} allowCurrent={Boolean(existingRoutine)} onChange={setResultsThreadId} />
+            {existingRoutine && <div className="mt-3"><ExecutionPlanPanel routineId={existingRoutine.id} /></div>}
           </div>;
   const attachmentsRow = (
           <div className="flex items-start gap-4">
@@ -1630,6 +1638,7 @@ export function EventDetails({
         )}
         {!isCall && !isRoomGoal && <DrawerField label={t("routines.results.label")}><div className="text-[12.5px] text-ink">{resultsTitle}</div></DrawerField>}
         {attachments.length > 0 && <DrawerField label="Attachments"><AttachmentChips attachments={attachments} />{call && <div className="mt-1.5 text-[11px] leading-relaxed text-ink-secondary">{call.botIds.length > 1 ? "These references will be shared in the group when the event starts." : "These references stay with the event and are available when you join the group."}</div>}</DrawerField>}
+        {routine?.target === "bot" && <ExecutionPlanPanel routineId={routine.id} />}
         {advanced && !isCall && <DrawerField label={t("routines.drawer.runLimit")}><div className="text-[12.5px] text-ink">{safetyLimit == null ? "No time limit" : `Stops if still running after ${durationLabel(safetyLimit)}`}</div></DrawerField>}
         {!isCall && (
           <DrawerField label={t("routines.logs")} action={routine && <button type="button" onClick={() => { dispatch({ type: "showRoutines", section: "logs", routineId: routine.id, botId: routine.botId }); onClose(); }} className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-accent-text hover:bg-raised"><FileText size={11} />{t("routines.drawer.allRuns")}</button>}>

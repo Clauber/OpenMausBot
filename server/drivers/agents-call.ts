@@ -320,6 +320,7 @@ function routineFields(args: Json): { fields: Json; error?: string } {
   if (runOn != null) fields.runOn = runOn;
   if (args.clear_timeout === true) fields.timeoutMinutes = null;
   else if (timeoutMinutes != null) fields.timeoutMinutes = timeoutMinutes;
+  if (args.preCheck !== undefined) fields.preCheck = args.preCheck;
   if (typeof args.continuity === "boolean") fields.continuity = args.continuity;
   if (args.overlap !== undefined) fields.overlap = args.overlap;
   if (args.results !== undefined) fields.results = args.results === "own_thread" ? "own" : "main";

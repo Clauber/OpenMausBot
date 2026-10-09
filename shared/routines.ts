@@ -3,6 +3,7 @@
  * from the client's hand-maintained mirrors (src/lib/routines.ts) so the
  * frame union and every client consumer share one home; the client file
  * re-exports these under the same names. */
+import type { RoutinePreCheck, RoutinePreCheckResult } from "./routine-precheck.ts";
 import type { RoutineCronSchedule } from "./routine-schedule.ts";
 
 export interface RoutineIntervalWindow {
@@ -60,6 +61,39 @@ export interface RoutineContextAttachment {
   size: number;
 }
 
+/** How a routine's runs execute. `llm` is a bot turn every run (the
+ * default). `script` runs an approved Python script and reports its output
+ * with no model involved. `script-jev` runs the script, then asks the
+ * decision model whether the output needs the bot; only then does a turn
+ * start, with the output in hand. */
+export type RoutineExecutionMode = "llm" | "script" | "script-jev";
+
+/** A reviewer model's verdict on a routine, written after it is created or
+ * its instructions change. A script never runs until a person approves it:
+ * `proposed` runs as `llm`. A plan whose `promptHash` no longer matches the
+ * routine's instructions is stale and ignored. */
+export interface RoutineExecutionPlan {
+  mode: RoutineExecutionMode;
+  status: "proposed" | "approved";
+  /** Why the reviewer chose this mode, one or two sentences. */
+  rationale: string;
+  /** Python 3 source; present for `script` and `script-jev`. */
+  script?: string;
+  /** For `script-jev`: when the output needs the bot, in plain words. */
+  escalateWhen?: string;
+  /** SHA-256 of the routine instructions this plan was written for. */
+  promptHash: string;
+  /** SHA-256 of `script`; approval names it so an edit cannot ride along. */
+  scriptHash?: string;
+  reviewer: string;
+  reviewedAt: number;
+  approvedAt?: number;
+}
+
+/** What actually ran: the script alone, the script then the bot (the
+ * decision model asked for it, or could not answer), or the bot alone. */
+export type RoutineRunExecutor = "script" | "script-llm" | "llm";
+
 export type RoutineRunTrigger = "schedule" | "manual" | "webhook";
 
 export type RoutineRunStatus =
@@ -69,7 +103,8 @@ export type RoutineRunStatus =
   | "completed"
   | "failed"
   | "cancelled"
-  | "missed";
+  | "missed"
+  | "skipped";
 
 /** The statuses both failure indicators count: a run that went wrong and has
  * not been acknowledged. One home so the sidebar dot, the errors pill, the
@@ -88,6 +123,7 @@ export interface Routine {
   id: string;
   name: string;
   prompt: string;
+  preCheck?: RoutinePreCheck;
   target: RoutineTarget;
   botId: string;
   groupId?: string;
@@ -104,6 +140,9 @@ export interface Routine {
   attachments?: RoutineContextAttachment[];
   sourceThreadId?: string;
   resultsThreadId?: string;
+  execution?: RoutineExecutionPlan;
+  /** A reviewer is looking at this routine right now. */
+  reviewing?: boolean;
   nextRunAt: number | null;
   createdAt: number;
   updatedAt: number;
@@ -114,6 +153,8 @@ export interface RoutineRun {
   routineId: string;
   routineName: string;
   prompt?: string;
+  preCheck?: RoutinePreCheck;
+  preCheckResult?: RoutinePreCheckResult;
   durationMinutes?: number;
   timeoutMinutes?: number;
   attachments?: RoutineContextAttachment[];
@@ -139,6 +180,9 @@ export interface RoutineRun {
   error?: string;
   /** Concise, redacted question or approval reason while status is waiting. */
   attention?: string;
+  executor?: RoutineRunExecutor;
+  /** The decision model's probability that the script output needed the bot. */
+  escalationP?: number;
   cost?: number | null;
   denials?: string[];
   createdAt: number;
@@ -148,6 +192,7 @@ export interface RoutineRun {
 export interface RoutineInput {
   name: string;
   prompt: string;
+  preCheck?: RoutinePreCheck | null;
   target?: RoutineTarget;
   botId: string;
   groupId?: string | null;

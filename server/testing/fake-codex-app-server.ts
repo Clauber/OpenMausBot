@@ -8,7 +8,13 @@
 //                     mcp-elicitation | mcp-app-approval | mcp-form | permissions-approval | question |
 //                     multi-question | mixed-question | empty-question | malformed-question | config-profile |
 //                     config-profile-unsupported | config-read-error | image |
-//                     logged-in-stdout | logged-out | unauthorized | late-request
+//                     logged-in-stdout | logged-out | unauthorized | late-request |
+//                     announce (the first turn ends on "Now let me verify the
+//                     build passes." — the announced-action nudge must follow
+//                     up on the same thread; the nudge round echoes the prompt
+//                     it received) | announce-twice (like announce, but the
+//                     nudge round announces AGAIN — the driver must settle
+//                     instead of nudging a second time)
 //   FAKE_CODEX_LAUNCH_CRASHES  die at turn/start (before ack) with transient stderr,
 //                               exit 1, for the first N launches (launch count kept in
 //                               FAKE_CODEX_STATE)
@@ -110,6 +116,7 @@ let developerInstructions = "";
 let resumedThread: string | null = null;
 let decision: unknown = null;
 let experimentalApi = false;
+let announceTurns = 0;
 
 const out = (obj: unknown) => process.stdout.write(JSON.stringify(obj) + "\n");
 let nativeThreadId = "codex-thread-1";
@@ -584,6 +591,21 @@ process.stdin.on("data", (chunk) => {
         }
         if (process.env.FAKE_CODEX_ROOM_PLAN) {
           playRoomPlanTurn(msg, process.env.FAKE_CODEX_ROOM_PLAN);
+          break;
+        }
+        if (mode === "announce" || mode === "announce-twice") {
+          announceTurns += 1;
+          out({ jsonrpc: "2.0", id: msg.id, result: { turn: { id: nativeTurnId } } });
+          const promptText = (msg.params?.input ?? []).filter((item: any) => item?.type === "text").map((item: any) => item.text).join("\n");
+          const text = announceTurns === 1
+            ? "Now let me verify the build passes."
+            : mode === "announce-twice" && announceTurns === 2
+              ? "Now let me check the logs. round 2 got: " + promptText
+              : announceTurns === 2
+                ? "done — received: " + promptText
+                : "unexpected extra turn: " + promptText;
+          notify("item/completed", { item: { id: "m1", type: "agentMessage", text } });
+          notify("turn/completed", { turn: { status: "completed" } });
           break;
         }
         if (mode === "early-turn-events") finishTurn();

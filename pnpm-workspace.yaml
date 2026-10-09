@@ -13,9 +13,11 @@ supportedArchitectures:
     - arm64
     - x64
 allowBuilds:
+  node-pty: true # optional server terminal backend
   electron: true # postinstall downloads the Electron dist
   esbuild: true # postinstall validates the platform binary
   electron-winstaller: false # unused — Windows builds ship NSIS
 onlyBuiltDependencies:
+  - node-pty
   - electron
   - esbuild

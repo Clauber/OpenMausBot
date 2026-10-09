@@ -1,3 +1,4 @@
+import { preCheckSchema, cleanPreCheck } from "./routine-precheck.ts";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
@@ -85,15 +86,16 @@ const routineToolDefinitionSchema = z.object({
   runOn: z.enum(["maus", "cloud"]).optional(),
   durationMinutes: z.number().optional(),
   timeoutMinutes: z.number().nullable().optional(),
+  preCheck: preCheckSchema.optional(),
   continuity: z.boolean().optional(),
   overlap: z.enum(["skip", "queue"]).optional(),
   results: z.enum(["main", "own"]).optional(),
 }).strict();
 
 const routineToolChangesSchema = routineToolDefinitionSchema
-  .omit({ timeoutMinutes: true })
+  .omit({ timeoutMinutes: true, preCheck: true })
   .partial()
-  .extend({ timeoutMinutes: z.number().nullable().optional() })
+  .extend({ timeoutMinutes: z.number().nullable().optional(), preCheck: preCheckSchema.nullable().optional() })
   .strict()
   .refine(
   (changes) => Object.values(changes).some((value) => value !== undefined),
@@ -213,16 +215,18 @@ const storedDefinitionSchema = z.object({
   runOn: z.enum(["maus", "cloud"]),
   durationMinutes: z.number().int().min(5).max(240),
   timeoutMinutes: z.number().int().min(5).max(240).optional(),
+  preCheck: preCheckSchema.optional(),
   continuity: z.boolean().optional(),
   overlap: z.enum(["skip", "queue"]).optional(),
   results: z.enum(["main", "own"]).optional(),
 }).strict();
 const storedChangesSchema = storedDefinitionSchema
-  .omit({ schedule: true, timeoutMinutes: true })
+  .omit({ schedule: true, timeoutMinutes: true, preCheck: true })
   .partial()
   .extend({
     schedule: storedScheduleChangesSchema.optional(),
     timeoutMinutes: z.number().int().min(5).max(240).nullable().optional(),
+    preCheck: preCheckSchema.nullable().optional(),
   })
   .strict()
   .refine(
@@ -559,6 +563,7 @@ function normalizeDefinition(input: RoutineToolDefinitionInput, now: number): Ro
   return {
     name: text(input.name, "name", 80),
     instructions: text(input.instructions, "instructions", 20_000),
+    ...(input.preCheck ? { preCheck: cleanPreCheck(input.preCheck) } : {}),
     schedule: normalizeSchedule(input.schedule, now),
     runOn: runOn(input.runOn),
     durationMinutes: duration(input.durationMinutes),
@@ -577,6 +582,7 @@ function normalizeChanges(input: RoutineToolChangesInput, now: number): RoutineR
   if (input.runOn !== undefined) changes.runOn = runOn(input.runOn);
   if (input.durationMinutes !== undefined) changes.durationMinutes = duration(input.durationMinutes);
   if (input.timeoutMinutes !== undefined) changes.timeoutMinutes = timeout(input.timeoutMinutes);
+  if (input.preCheck !== undefined) changes.preCheck = input.preCheck === null ? null : cleanPreCheck(input.preCheck);
   if (input.continuity !== undefined) changes.continuity = input.continuity === true;
   if (input.overlap !== undefined) changes.overlap = input.overlap;
   if (input.results !== undefined) changes.results = input.results;
@@ -791,6 +797,7 @@ function effectiveDefinition(operation: RoutineRequestOperation, manager: Routin
   const base: RoutineRequestDefinition = {
     name: existing.name,
     instructions: existing.prompt,
+    ...(existing.preCheck ? { preCheck: structuredClone(existing.preCheck) } : {}),
     schedule: existing.schedule.type === "interval"
       ? {
           ...existing.schedule,
@@ -807,12 +814,14 @@ function effectiveDefinition(operation: RoutineRequestOperation, manager: Routin
     ...(existing.overlap ? { overlap: existing.overlap } : {}),
   };
   if (operation.action !== "update") return base;
-  const { schedule, timeoutMinutes, ...changes } = operation.changes;
+  const { schedule, timeoutMinutes, preCheck, ...changes } = operation.changes;
   const merged: RoutineRequestDefinition = {
     ...base,
     ...changes,
     ...(schedule === undefined ? {} : { schedule: effectiveSchedule(base.schedule, schedule) }),
   };
+  if (preCheck === null) delete merged.preCheck;
+  else if (preCheck !== undefined) merged.preCheck = preCheck;
   if (timeoutMinutes === null) delete merged.timeoutMinutes;
   else if (timeoutMinutes !== undefined) merged.timeoutMinutes = timeoutMinutes;
   return merged;
@@ -887,6 +896,7 @@ function cardCopy(
         : []),
       `Runs on: ${destination}`,
       `Run limit: ${definition.timeoutMinutes === undefined ? "No limit" : `${definition.timeoutMinutes} minutes`}`,
+      `Pre-check: ${definition.preCheck ? `Runs local executable ${redactSecretsInText(JSON.stringify(definition.preCheck))}; empty or confidently irrelevant items skip scheduled runs; Run now bypasses it` : "None"}`,
       `Continuity: ${definition.continuity ? "Carries the previous run's report into the next run" : "Each run starts fresh"}`,
       `While busy: ${definition.overlap === "queue" ? "Queue one scheduled run; skip further occurrences until it starts" : "Skip overlapping scheduled occurrences"}`,
       ...(definition.results
@@ -910,6 +920,7 @@ function inputFromDefinition(definition: RoutineRequestDefinition, botId: string
   return {
     name: definition.name,
     prompt: definition.instructions,
+    ...(definition.preCheck ? { preCheck: structuredClone(definition.preCheck) } : {}),
     botId,
     runOn: definition.runOn,
     enabled: true,
@@ -934,6 +945,7 @@ function updateFromChanges(
   if (changes.runOn !== undefined) patch.runOn = changes.runOn;
   if (changes.durationMinutes !== undefined) patch.durationMinutes = changes.durationMinutes;
   if (changes.timeoutMinutes !== undefined) patch.timeoutMinutes = changes.timeoutMinutes;
+  if (changes.preCheck !== undefined) patch.preCheck = changes.preCheck;
   if (changes.continuity !== undefined) patch.continuity = changes.continuity;
   if (changes.overlap !== undefined) patch.overlap = changes.overlap;
   if (changes.results !== undefined) patch.resultsThreadId = changes.results === "own" ? ROUTINE_OWN_RESULTS_THREAD : ROUTINE_DEFAULT_RESULTS_THREAD;
@@ -1010,6 +1022,7 @@ function revalidateOperation(operation: RoutineRequestOperation, manager: Routin
         || routine.runOn !== definition.runOn || routine.prompt !== definition.instructions
         || routine.durationMinutes !== definition.durationMinutes
         || routine.timeoutMinutes !== definition.timeoutMinutes
+        || !isDeepStrictEqual(routine.preCheck, definition.preCheck)
         || Boolean(routine.continuity) !== Boolean(definition.continuity)
         || (routine.overlap ?? "skip") !== (definition.overlap ?? "skip")
         || (routine.attachments?.length ?? 0) > 0) return false;

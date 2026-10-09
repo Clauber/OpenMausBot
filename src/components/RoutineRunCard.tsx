@@ -15,6 +15,7 @@ const COPY = {
   completed: { label: "Completed", tone: "text-ink-secondary" },
   failed: { label: "Failed", tone: "text-danger" },
   cancelled: { label: "Cancelled", tone: "text-ink-secondary" },
+  skipped: { label: "Skipped", tone: "text-ink-secondary" },
   missed: { label: "Missed", tone: "text-danger" },
 } satisfies Record<
   RoutineRunCardData["status"],

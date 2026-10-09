@@ -143,6 +143,7 @@ const userInputRequest = (id: string) =>
   });
 
 let nextRequestId = 100;
+let sentTurns = 0;
 // The model registry the fake serves in catalog mode: one model that
 // requires a reasoning level, matching the real headless registry's shape.
 const FAKE_MODELS = [
@@ -195,6 +196,8 @@ process.stdin.on("data", (chunk) => {
     if (msg.method === undefined) continue;
 
     dump.calls.push({ id: msg.id, method: msg.method, params: msg.params });
+    // A rejected request can make the driver stop this process immediately.
+    writeDump();
     switch (msg.method) {
       case "session/create":
         reply(msg.id, sessionResult("sess_fake_1", msg.params?.mode, msg.params));
@@ -234,7 +237,24 @@ process.stdin.on("data", (chunk) => {
         reply(msg.id, {});
         break;
       case "session/send": {
+        sentTurns += 1;
+        if (mode === "announce-rejected" && sentTurns === 2) {
+          fail(msg.id, -32603, "synthetic continuation rejection");
+          break;
+        }
         reply(msg.id, { accepted: true, inputId: "in-1" });
+        if (mode.startsWith("announce") || mode === "reply-question" || mode === "reply-long") {
+          const response = mode === "reply-question" ? "Now let me run the tests?"
+            : mode === "reply-long" ? "Now let me run the tests. " + "Finished work. ".repeat(40)
+            : sentTurns === 1 || mode === "announce-twice" ? "Now let me run the tests."
+            : `Done — received: ${msg.params?.content}`;
+          const resultType = mode === "announce-cancelled" ? "cancelled" : "success";
+          setTimeout(() => event("turn.completed", {
+            response, resultType,
+            usage: { inputTokens: 100, outputTokens: 7, cacheReadTokens: 40 },
+          }), 20);
+          break;
+        }
         if (mode === "exit-mid-turn") {
           process.stderr.write("synthetic mid-turn crash\n");
           process.exit(1);
@@ -254,6 +274,5 @@ process.stdin.on("data", (chunk) => {
       default:
         fail(msg.id, -32601, `Unsupported server request: ${msg.method}`);
     }
-    writeDump();
   }
 });

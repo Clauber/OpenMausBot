@@ -35,8 +35,8 @@ New rooms start on Auto while the decider and its room job are on. Existing
 rooms keep their mode. With Jev off, an Auto room shows a one-line hint and
 answers like lead mode.
 
-The three jobs below (click by description, fewer connected-app tools,
-where work runs) change what a bot sees or does, so each starts off
+Click by description, fewer connected-app tools, where work runs, and
+scheduled routine wake decisions change what a bot sees or does, so each starts off
 until someone switches it on in **Settings → Decision model**. With the
 switch off they cost nothing: no request is built.
 
@@ -103,6 +103,10 @@ Jev is, and the bot gets the likeliest candidates instead.
 
 With the switch off, or no key, the tool is not offered at all. A person
 taking over the browser while Jev decides stops the click.
+
+
+**Whether a routine script's output needs the bot.** A routine approved to run
+as *Script + Jev* asks once per run; see [routine-execution.md](routine-execution.md).
 
 ## It fails open
 
@@ -183,3 +187,27 @@ Settings UI. It must be https, or http to this machine only. Requests go to
 (`server/decider/fixtures/room-routing.json`) against the live model. It is
 skipped unless `OMB_JEV_LIVE_EVAL=1` is set with a key, and costs about
 $0.002 per run.
+
+## Scheduled routine wake decisions
+
+**Wake routines for useful items** (`routineWake`) starts off. It applies only
+after a scheduled bot routine's local pre-check returns a fully validated,
+nonempty item array. Empty arrays skip without a decision-model request.
+Manual Run now, webhook runs and room goals bypass the pre-check path.
+
+The fixed question asks whether any item needs the work described by the
+routine instructions. Its only choices are `needs_bot` and `noise_only`.
+Only `noise_only` with a finite probability from 0.7 to 1 skips. All other
+answers and failures wake the bot. Items are untrusted data, and all checked
+items are passed to a woken bot. The classifier receives the complete
+instructions and item set within 24,000 UTF-8 state bytes; exceeding that
+budget wakes the bot instead of classifying a truncated request. The call
+uses the existing decision relay and logging path, with a 1.5 second budget.
+
+Skipped runs appear only in central Run logs, without a chat card or engine
+turn. The local contract in `server/decider/jobs.ts` must also be installed in
+the Cloud Admin's fixed-contract relay before Cloud Pro's included token can
+serve this job. A relay that does not recognize it fails open; an own key
+uses the normal Jev-compatible endpoint. See
+[routine-schedules.md](routine-schedules.md#optional-local-pre-check) for the
+executable/output contract and restart/cancellation behavior.

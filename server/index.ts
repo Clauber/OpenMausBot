@@ -453,6 +453,8 @@ import { LocalVmSeatPool, type LocalVmSeatHolder } from "./local-vm-seat-pool.ts
 import { RepeatDetector, callKey } from "./repeat-detector.ts";
 import { redactSecretsInText } from "./redact.ts";
 import * as vps from "./vps-computer.ts";
+import { quietPreCheckRun } from "./routine-precheck.ts";
+import { decideRoutineWake } from "./decider/routine-wake.ts";
 import { RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
 import { CalendarCallManager, type CalendarCall } from "./calendar-calls.ts";
 import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
@@ -493,6 +495,10 @@ import { createTeamManifest, parseTeamManifest } from "./team-manifest.ts";
 import { readThreadEvents } from "./thread-events.ts";
 import { TeamMemory, TEAM_MEMORY_KINDS, type TeamMemoryKind } from "./team-memory.ts";
 import { describeTool, readBotActivity } from "./activity.ts";
+import {
+  chatCompletionReviewer, ESCALATION_THRESHOLD, ESCALATION_TIMEOUT_MS, escalationInstructions, escalationState, reviewRoutine,
+  runRoutineScript, type ReviewModel,
+} from "./routine-execution.ts";
 import { OutboundCounts } from "./outbound-counts.ts";
 import { OutboundRequestService } from "./outbound-requests.ts";
 import { DEFAULT_OUTBOUND_POLICY, connectorCallsIn, normalizeOutboundPolicy, outboundCallsIn } from "../shared/outbound.ts";
@@ -628,6 +634,7 @@ import { createBotPresetRoutes } from "./routes/bot-presets.ts";
 import { createBotMemoryRoutes } from "./routes/bot-memory.ts";
 import { createDeciderRoutes } from "./routes/decider.ts";
 import { createDesktopViewer, desktopViewerUrl } from "./routes/desktop-viewer.ts";
+import { createTerminalRoutes } from "./routes/terminal.ts";
 import { localDesktopTarget, localVmViewerStatus, viewerTargetId } from "./desktop-viewer-targets.ts";
 import { createAntigravityLeftoverRoutes } from "./routes/antigravity-leftovers.ts";
 import { findAntigravityLeftovers, removeAntigravityLeftovers } from "./drivers/antigravity-temp.ts";
@@ -948,7 +955,7 @@ function cloudLendingTurn(capability: Pick<InternalCapability, "botId" | "thread
     generation: capability.generation,
     thread: store.messagesFor(capability.threadId),
     starters: cloudThreadStarters(capability.threadId),
-    reportsFromOthers: store.messagesFor(capability.threadId).some(cloudOthersRoutineReport),
+    reportsFromOthers: store.messagesFor(capability.threadId).some(cloudReportFromOthers),
     ownerPerson: cloudProvenOwnerPerson,
     cardAnswerer: cloudCardAnswerer,
     routineRun: () => {
@@ -994,11 +1001,12 @@ function cloudLendingView(capability: Pick<InternalCapability, "botId" | "thread
   return CLOUD_HOME !== null && cloudHomeLendingRefusal(cloudLendingTurn(capability)) === null;
 }
 
-/** On a Cloud home: a routine's report (its lifecycle card, carrying what
- * the run said) of a routine the owner did not write, as it stands now. It
- * brings someone else's instructions' results into the conversation it
- * reports to. */
-function cloudOthersRoutineReport(line: Message): boolean {
+/** On a Cloud home: a line that brings someone else's words into the
+ * conversation it lands in: a "post" webhook's payload, or a routine's
+ * report (its lifecycle card, carrying what the run said) of a routine the
+ * owner did not write, as it stands now. */
+function cloudReportFromOthers(line: Message): boolean {
+  if (line.webhookPost) return true;
   if (line.kind !== "routine.run" || !line.routineRun) return false;
   const routine = routines?.listRoutines().find((candidate) => candidate.id === line.routineRun!.routineId);
   return !routine || cloudRoutineAuthors?.authored(routine.id, routine) !== true;
@@ -1018,7 +1026,7 @@ function cloudOwnerOnlyThread(threadId: string): boolean {
   // A card answered later changes the answer too: key on its answerer as well.
   const lastKey = last ? `${last.id}:${last.card?.answeredBy ? JSON.stringify(last.card.answeredBy) : ""}` : undefined;
   if (cached && cached.length === thread.length && cached.last === lastKey) return cached.owner;
-  const owner = ownerOnlyConversation(thread, cloudProvenOwnerPerson, cloudCardAnswerer) && !thread.some(cloudOthersRoutineReport);
+  const owner = ownerOnlyConversation(thread, cloudProvenOwnerPerson, cloudCardAnswerer) && !thread.some(cloudReportFromOthers);
   if (ownerOnlyCache.size > 5_000) ownerOnlyCache.clear();
   ownerOnlyCache.set(threadId, { length: thread.length, last: lastKey, owner });
   return owner;
@@ -1134,7 +1142,7 @@ function cloudRoutineRunIsOwners(run: RoutineRun | null | undefined, botId: stri
   if (!run || run.threadId !== threadId || store.taskByThread(botId, threadId)?.routineRunId !== run.id || !cloudRoutineAuthors) return false;
   const routine = routines?.listRoutines().find((candidate) => candidate.id === run.routineId);
   return Boolean(routine) && cloudRoutineAuthors.authored(run.routineId, {
-    ...routine!, prompt: run.prompt, target: run.target, botId: run.botId, groupId: run.groupId, attachments: run.attachments, runOn: run.runOn,
+    ...routine!, prompt: run.prompt, target: run.target, botId: run.botId, groupId: run.groupId, attachments: run.attachments, runOn: run.runOn, preCheck: run.preCheck,
   }) === true;
 }
 
@@ -1150,24 +1158,20 @@ function cloudOwnerApplied(action: string, routineId: string | undefined, wasOwn
 /** What the owner saw on a card that proposed a routine, and what a routine
  * runs, in the same terms (everything its fingerprint covers except an
  * interval's anchor, which only moves when it runs). */
-function approvalShape(shape: { prompt?: string; botId?: string; runOn?: string; schedule?: unknown; target?: string; groupId?: string | null; attachments?: { id: string; path: string }[] }): string {
+function approvalShape(shape: { prompt?: string; botId?: string; runOn?: string; schedule?: unknown; target?: string; groupId?: string | null; attachments?: { id: string; path: string }[]; preCheck?: unknown }): string {
   const schedule = shape.schedule && typeof shape.schedule === "object" ? { ...(shape.schedule as Record<string, unknown>) } : null;
   if (schedule) delete schedule.anchorAt;
   return JSON.stringify([shape.prompt ?? "", shape.botId ?? "", shape.runOn ?? "maus", schedule, shape.target ?? "bot", shape.groupId ?? null,
-    (shape.attachments ?? []).map((attachment) => [attachment.id, attachment.path])]);
+    (shape.attachments ?? []).map((attachment) => [attachment.id, attachment.path]), ...(shape.preCheck ? [shape.preCheck] : [])]);
 }
 
 /** Who opens a routine's results conversation on a Cloud home: the writer
  * of this request, else the owner for a routine that is theirs (they wrote
  * it as it stands, or they are its writer: cloud-owner.ts), else its last
- * writer, else nobody. A webhook's run is the owner's: only their own
- * devices can create, edit or rotate one (admin scope), so it runs at the
- * bot's own level, in its folder, as on the desktop. Its payload still never
- * reaches the lent Mac: cloud-lending.ts refuses every webhook run. */
+ * writer, else nobody. */
 function routineOpener(routineId: string): string {
   if (routineWriterInFlight) return routineWriterInFlight;
   const routine = routines?.listRoutines().find((candidate) => candidate.id === routineId);
-  if (!routine && CLOUD_OWNER_KEY && webhooks.list().some((hook) => hook.id === routineId)) return CLOUD_OWNER_KEY;
   if (routine && CLOUD_OWNER_KEY && cloudRoutineAuthors?.authored(routineId, routine)) return CLOUD_OWNER_KEY;
   const writer = cloudRoutineAuthors?.writer(routineId);
   if (writer && CLOUD_OWNER_KEY && writer === CLOUD_OWNER_KEY) return CLOUD_OWNER_KEY;
@@ -5595,9 +5599,12 @@ const desktopViewer = createDesktopViewer({
     return holds() ? holds : undefined;
   },
 });
+// The owner terminal (Ctrl+` in the web app): a shell on this server.
+const terminal = createTerminalRoutes();
 function closeSessionStreams(sessionId: string): void {
   browserLive.closeForOwner(sessionId);
   desktopViewer.closeForOwner(sessionId);
+  terminal.closeForOwner(sessionId);
   for (const client of sseClients) {
     if (client.sessionId !== sessionId) continue;
     sseClients.delete(client);
@@ -5943,6 +5950,14 @@ function requestBehavior(value: unknown): "allow" | "deny" | "answer" | null {
 // the last settled assistant text per thread, so a "finished" notification
 // can carry what the bot actually said
 const lastReply = new Map<string, string>();
+/** Reasoning deltas accumulated for the turn in flight on threads whose bot
+ * has includeThinking. Drained onto each settled text message (the thinking
+ * that led to it) and reset at turn boundaries; never stored when the option
+ * is off, which is also what bounds this map to opted-in threads. */
+const turnThinkingByThread = new Map<string, string>();
+/** Stored thinking is a tail, not the whole stream: a long reasoning turn
+ * must not write megabytes into the durable transcript. */
+const MAX_STORED_THINKING_CHARS = 16_000;
 /** the model each thread's provider session announced in session.started,
  * so a fallback notice can name the model Auto is unavailable for */
 const sessionModelByThread = new Map<string, string>();
@@ -7490,6 +7505,7 @@ bus.subscribe((event: RuntimeEvent) => {
   switch (event.type) {
     case "turn.started":
       turnStartedAt.set(event.threadId, Date.now());
+      turnThinkingByThread.delete(event.threadId);
       break;
     case "session.started":
       if (bot && event.sessionId && event.providerInstanceId) {
@@ -7500,7 +7516,11 @@ bus.subscribe((event: RuntimeEvent) => {
     case "item.completed":
       if (event.itemType === "assistant_text") {
         const text = event.text;
-        pushMessage({ role: "bot", kind: "text", text, turnId: event.turnId });
+        // Include thinking drains here: the reasoning accumulated since the
+        // last text item is exactly the thinking that led to this reply.
+        const thinking = bot?.includeThinking ? turnThinkingByThread.get(event.threadId) : undefined;
+        if (thinking) turnThinkingByThread.delete(event.threadId);
+        pushMessage({ role: "bot", kind: "text", text, ...(thinking ? { thinking } : {}), turnId: event.turnId });
         // kept so "finished" can say what it finished with, rather than
         // just that something ended
         lastReply.set(event.threadId, text);
@@ -7572,6 +7592,12 @@ bus.subscribe((event: RuntimeEvent) => {
           turnId: liveTurnId,
         });
         if (event.itemId) toolMessageByItem.set(`${event.threadId}:${event.itemId}`, message.id);
+      }
+      break;
+    case "content.delta":
+      if (event.streamKind === "reasoning_text" && bot?.includeThinking && event.delta && !goalCoordinatorTurn && !ambiguousCoordinatorText) {
+        const thinking = `${turnThinkingByThread.get(event.threadId) ?? ""}${event.delta}`;
+        turnThinkingByThread.set(event.threadId, thinking.slice(-MAX_STORED_THINKING_CHARS));
       }
       break;
     case "request.opened": {
@@ -7888,6 +7914,10 @@ bus.subscribe((event: RuntimeEvent) => {
       }
       const reply = lastReply.get(event.threadId) ?? "";
       lastReply.delete(event.threadId);
+      // Reasoning that never fed a settled text item (reasoning-only turns,
+      // interrupts, coordinator elisions) is dropped with the turn; it must
+      // not leak into the next turn's first reply.
+      turnThinkingByThread.delete(event.threadId);
       // A run that broke — not one the person stopped, and not a routine's,
       // which reports through its own failure path — is the Chief's to see.
       // A lazy computer-claim rejection already reported its failure and
@@ -11046,7 +11076,61 @@ function routineRunFallbackText(card: NonNullable<Message["routineRun"]>): strin
 /** Upsert one durable lifecycle card per run. Replaying the same transition,
  * including restart recovery, patches the existing run id instead of adding
  * another chat message. */
+/** Who proposes how a routine runs: `routineReview` in config.json, else the
+ * OpenAI-compatible endpoint, else the routine bot's own engine. */
+function routineReviewer(botId: string): ReviewModel | null {
+  const own = cfg.routineReview;
+  if (own?.enabled === false) return null;
+  const baseUrl = own?.baseUrl?.trim() || cfg.openaiCompat?.url?.trim();
+  const key = own?.key?.trim() || (own?.baseUrl?.trim() ? "" : cfg.openaiCompat?.key?.trim());
+  const model = own?.model?.trim() || cfg.openaiCompat?.model?.trim();
+  if (baseUrl && key && model) return chatCompletionReviewer({ baseUrl, key, model });
+  const bot = store.bot(botId);
+  const instance = bot ? registry.get(bot.modelSelection.instanceId) : undefined;
+  if (!bot || !instance?.generateText || policyModelRefusal(instance)) return null;
+  const generate = instance.generateText.bind(instance);
+  return { id: bot.modelSelection.model || bot.modelSelection.instanceId, generate: (prompt, signal) => generate(prompt, { signal }) };
+}
+
+/** Ask the reviewer how a routine should run, store its plan, and say so
+ * where the routine was asked for. Never throws: no plan means the bot runs. */
+async function reviewRoutineExecution(routineId: string): Promise<void> {
+  const routine = routines?.listRoutines().find((candidate) => candidate.id === routineId);
+  if (!routine || routine.target !== "bot" || routine.reviewing) return;
+  const reviewer = routineReviewer(routine.botId);
+  if (!reviewer) return;
+  routines!.setReviewing(routineId, true);
+  try {
+    const plan = await reviewRoutine({
+      name: routine.name,
+      prompt: routine.prompt,
+      schedule: JSON.stringify(routine.schedule),
+      hasAttachments: Boolean(routine.attachments?.length),
+    }, reviewer, { now: Date.now });
+    const stored = plan ? routines!.setExecutionPlan(routineId, plan) : null;
+    if (stored?.execution && stored.execution.mode !== "llm") {
+      const source = routineSourceOwner(stored);
+      if (source) {
+        const how = stored.execution.mode === "script"
+          ? "a Python script, with no AI model on each run"
+          : "a Python script, waking me only when the decision model says the output needs me";
+        store.appendMessage(source.threadId, {
+          role: "bot",
+          kind: "text",
+          text: `“${stored.name}” can run as ${how}. ${stored.execution.rationale}\n\nIt keeps running as a normal bot turn until you approve the script in Automations.`,
+          ...(source.group ? { from: { botId: source.bot.id, name: source.bot.name, color: source.bot.color } } : {}),
+        });
+      }
+    }
+  } catch (error) {
+    console.warn(`[routines] review of ${routineId} failed: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    routines!.setReviewing(routineId, false);
+  }
+}
+
 function syncRoutineRunToSource(run: RoutineRun): string | null {
+  if (quietPreCheckRun(run)) return null;
   const source = routineSourceOwner(run);
   if (!source) {
     const execution = run.threadId ? store.taskByThread(run.botId, run.threadId) : null;
@@ -11175,6 +11259,9 @@ _loadPending();
 
 routines = new RoutineManager({
   emit: broadcast,
+  decideWake: (prompt, items, signal) => deciderReady(cfg, "routineWake")
+    ? decideRoutineWake(decider, prompt, items, signal)
+    : Promise.resolve({ skip: false, reason: "disabled" }),
   hasPendingDelegations: (threadId) => pendingThreads().includes(threadId) ||
     [...delegationWatch.values()].some((watch) => watch.sourceThreadId === threadId) ||
     pendingDelegationWakes.has(threadId),
@@ -11194,12 +11281,18 @@ routines = new RoutineManager({
     }
     return groupIsWorking(group) || coordinator.busy ? "busy" : "ready";
   },
-  createTask: (botId, title, activate = false, routineId) => {
+  createTask: (botId, title, activate = false, run) => {
     const task = store.createTask(botId, title, activate);
     // On a Cloud home a run's conversation is opened, like its results
     // conversation, by whoever wrote the routine: a run of one that is
     // nobody's is confined to a folder of its own, never the bot's project.
-    if (task && CLOUD_HOME && routineId) threadStarters.set(task.threadId, routineOpener(routineId));
+    // A webhook's run is the owner's: only their own devices can create,
+    // edit or rotate a webhook, so it works at the bot's own level, in its
+    // folder, as on the desktop. Its payload still never reaches the lent
+    // Mac: cloud-lending.ts refuses every webhook run by its trigger.
+    if (task && CLOUD_HOME && run) {
+      threadStarters.set(task.threadId, run.triggerSource === "webhook" ? CLOUD_OWNER_KEY! : routineOpener(run.routineId));
+    }
     // The store's frame announces it. A run's task that stays in the
     // background leaves the open thread alone, so that frame carries no
     // transcript: a whole thread on every scheduled run once passed the phone
@@ -11277,6 +11370,35 @@ routines = new RoutineManager({
   },
   interruptGoal: interruptRoutineGroupGoal,
   onRunChanged: syncRoutineRunToSource,
+  runScript: (run, script, timeoutMs, signal) => {
+    const previous = routines?.listRuns().filter((other) => other.routineId === run.routineId && other.id !== run.id && other.status === "completed")
+      .reduce((latest, other) => Math.max(latest, other.finishedAt ?? 0), 0);
+    return runRoutineScript(script, {
+      stateDir: join(DATA_DIR, "routine-state", run.routineId),
+      timeoutMs,
+      signal,
+      env: {
+        OMB_ROUTINE_ID: run.routineId,
+        OMB_ROUTINE_NAME: run.routineName,
+        OMB_ROUTINE_LAST_RUN_AT: previous ? String(previous) : "",
+      },
+    });
+  },
+  needsBot: async (run, escalateWhen, output) => {
+    // Without the decision model the bot runs, exactly as before.
+    if (!deciderReady(cfg, "routineGate")) return { escalate: true };
+    const answer = await decider.yesNo(
+      "routineGate",
+      escalationState(run.routineName, run.prompt ?? "", output),
+      escalationInstructions(escalateWhen),
+      { timeoutMs: ESCALATION_TIMEOUT_MS },
+    );
+    return answer.ok ? { escalate: answer.answers.p >= ESCALATION_THRESHOLD, p: answer.answers.p } : { escalate: true };
+  },
+  postScriptReport: (_botId, threadId, text) => {
+    store.appendMessage(threadId, { role: "bot", kind: "text", text });
+  },
+  onNeedsReview: (routine) => void reviewRoutineExecution(routine.id),
   onRunFailed: (run) => {
     if (run.threadId) {
       pendingDelegationWakes.delete(run.threadId);
@@ -11341,7 +11463,7 @@ if (CLOUD_HOME && CLOUD_OWNER_KEY && cloudRoutineAuthors) {
           if (answerer && line.card?.answered === "allow" && request?.operation.action === "create" && request.resultId) {
             const definition = request.operation.routine;
             approvals.push([request.resultId, answerer, approvalShape({ prompt: definition.instructions, botId: request.operation.forBot?.botId ?? request.botId,
-              runOn: definition.runOn, schedule: asSchedule(definition.schedule, 0) })]);
+              runOn: definition.runOn, schedule: asSchedule(definition.schedule, 0), preCheck: definition.preCheck })]);
           }
         }
       }
@@ -11932,6 +12054,7 @@ const agentRoutine = (
     name: safeName,
     instructions: safeInstructions.slice(0, 2_000),
     instructionsTruncated: safeInstructions.length > 2_000,
+    preCheck: routine.preCheck ? JSON.parse(redactSecretsInText(JSON.stringify(routine.preCheck))) : undefined,
     continuity: routine.continuity === true,
     overlap: routine.overlap ?? "skip",
     skippedRuns: routine.skippedRuns ?? 0,
@@ -12128,7 +12251,7 @@ const webhooks = new WebhookManager({
   // that bot's selection, including a live conversation.
   post: (botId, threadId, text) => {
     if (!store.bot(botId)) return;
-    store.appendMessage(threadId, { role: "bot", kind: "text", text });
+    store.appendMessage(threadId, { role: "bot", kind: "text", text, webhookPost: true });
   },
   // Mirrors resolveResultsThread's routines wiring a few hundred lines up
   // in this same file: create-on-first-use, never activated (so it never
@@ -14138,6 +14261,26 @@ function messageFileRootsForThread(senderId: string, threadId: string): string[]
   });
 }
 
+/** The working folders of the teammate conversations this one handed work
+ * to or heard from. A bot relaying a teammate's result links the teammate's
+ * file, which lives in that teammate's folder rather than its own. Only the
+ * harness writes `threadRef` onto activity rows, so a bot cannot widen this
+ * by writing one; and each referenced thread is one the person can open. */
+function linkedThreadFileRoots(threadId: string): string[] {
+  const roots = new Set<string>();
+  const seen = new Set<string>();
+  for (const message of store.messagesFor(threadId)) {
+    const ref = message.role === "bot" && message.kind === "activity" ? message.threadRef : undefined;
+    if (!ref || ref.threadId === threadId || seen.has(ref.threadId)) continue;
+    seen.add(ref.threadId);
+    if (store.botByThread(ref.threadId)?.id !== ref.botId) continue;
+    for (const root of messageFileRootsForThread(ref.botId, ref.threadId)) {
+      if (root !== ATTACHMENTS_DIR) roots.add(root);
+    }
+  }
+  return [...roots];
+}
+
 async function attachmentVmForTurn(capability: InternalCapability): Promise<LocalVmTarget | undefined> {
   const slot = autoVmClaims.get(capability.threadId);
   if (!localVmThreadTargets.has(capability.threadId) &&
@@ -15716,6 +15859,7 @@ ROUTES.push(createAntigravityLeftoverRoutes({
 ROUTES.push(createSkinRoutes({ skins: customSkins }));
 
 ROUTES.push(desktopViewer.route);
+ROUTES.push(terminal.route);
 
 // Live calls (GPT-Live as the voice, the bot as the brain). A client holds
 // the WebRTC audio; the harness creates the session with the key (which
@@ -18997,6 +19141,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         ? cloudThreadRefusal(auth, (body as { resultsThreadId: string }).resultsThreadId) : null;
     if (path === "/api/routines" && method === "POST") {
       const body = await readBody(req);
+      if (body && typeof body === "object" && "preCheck" in body && !auth.scopes.includes("admin")) {
+        return json(res, 403, { error: "Only the workspace owner can configure executable prechecks." });
+      }
       const hidden = hiddenRoutineTarget(body, visible);
       if (hidden) return json(res, 404, { error: hidden });
       const notYours = routineResultsRefusal(body);
@@ -19014,6 +19161,26 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     if (path === "/api/routines/wake" && method === "GET") {
       return json(res, 200, routines!.wakeHold());
     }
+    const executionMatch = path.match(/^\/api\/routines\/([\w-]+)\/execution\/(review|approve|use-bot)$/);
+    if (executionMatch && method === "POST") {
+      const [, id, action] = executionMatch;
+      const routine = routines!.listRoutines().find((candidate) => candidate.id === id);
+      if (!routine || !routineVisible(routine, visible)) return json(res, 404, { error: "no such routine" });
+      if (action === "review") {
+        if (routine.target !== "bot") return json(res, 409, { error: "only a bot's routine can run as a script" });
+        if (!routineReviewer(routine.botId)) return json(res, 409, { error: "no reviewer model is available for this routine" });
+        void reviewRoutineExecution(routine.id);
+        return json(res, 202, { routine: { ...routine, reviewing: true } });
+      }
+      if (action === "approve") {
+        const body = await readBody(req);
+        const scriptHash = body && typeof body === "object" ? (body as { scriptHash?: unknown }).scriptHash : undefined;
+        const approved = typeof scriptHash === "string" ? routines!.approveExecution(routine.id, scriptHash) : null;
+        return approved ? json(res, 200, { routine: approved }) : json(res, 409, { error: "this script changed or no longer matches the routine — review it again" });
+      }
+      const chosen = routines!.useBotForRuns(routine.id);
+      return chosen ? json(res, 200, { routine: chosen }) : json(res, 404, { error: "no such routine" });
+    }
     let routineMatch = path.match(/^\/api\/routines\/([\w-]+)\/run$/);
     if (routineMatch && method === "POST") {
       const run = routines!.runNow(routineMatch[1]);
@@ -19023,6 +19190,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     routineMatch = path.match(/^\/api\/routines\/([\w-]+)$/);
     if (routineMatch && method === "PATCH") {
       const body = await readBody(req);
+      if (body && typeof body === "object" && "preCheck" in body && !auth.scopes.includes("admin")) {
+        return json(res, 403, { error: "Only the workspace owner can configure executable prechecks." });
+      }
       const hidden = hiddenRoutineTarget(body, visible);
       if (hidden) return json(res, 404, { error: hidden });
       const notYours = routineResultsRefusal(body);
@@ -19454,7 +19624,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (!senderId) {
           return json(res, 403, { error: "the file's bot author could not be verified" });
         }
-        roots = messageFileRootsForThread(senderId, threadId);
+        roots = [...new Set([
+          ...messageFileRootsForThread(senderId, threadId),
+          ...linkedThreadFileRoots(threadId),
+        ])];
       }
 
       const file = await openMessageFile(href, roots);
@@ -21274,6 +21447,13 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           return json(res, 409, { error: "stop this bot's turn before changing its memory setting" });
         }
         patch.memoryEnabled = body.memoryEnabled;
+      }
+      // Fold the harness's reasoning stream into this bot's settled replies.
+      // Unlike memory this is safe to flip mid-turn: the fold reads the flag
+      // per event, so the next reasoning delta is stored or dropped as-is.
+      if (body.includeThinking !== undefined) {
+        if (typeof body.includeThinking !== "boolean") return json(res, 400, { error: "includeThinking must be true or false" });
+        patch.includeThinking = body.includeThinking;
       }
       // which of those apps' tools this bot may call (connector grants 1/5:
       // data model only — enforcement lands with slice 2). null returns the
@@ -25411,6 +25591,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
 };
 
 const server = createServer(handleRequest);
+// Terminal first: an upgrade is offered to every interceptor, and the
+// desktop viewer answers 404 for paths it does not own (UPGRADE_CLAIMED is
+// how it defers to an earlier claim).
+terminal.attach(server, handleRequest);
 desktopViewer.attach(server, handleRequest);
 
 calendarCalls.start();
@@ -25613,6 +25797,7 @@ const gracefulShutdown = createGracefulShutdown({
       memoryUpkeep.stop();
       webhookIngress?.server.close();
       tunnelListener?.close();
+      terminal.closeAll();
     },
     async () => { await managedDesktop.close(); await registry.disposeAll(); },
     async () => {

@@ -22,6 +22,9 @@ import { ComputerPanel } from "@/components/ComputerPanel";
 import { RemoteDesktopPanel } from "@/components/remote-desktop-panel";
 import { InspectorPanel } from "@/components/InspectorPanel";
 import { ActivityPanel } from "@/components/ActivityPanel";
+import { FileViewerPanel } from "@/components/FileViewerPanel";
+import { FileViewerContext, type FileViewerTab } from "@/lib/file-viewer";
+import { TerminalPanel } from "@/components/TerminalPanel";
 import { SettingsModal } from "@/components/SettingsModal";
 import { WorkspaceBackupRecovery } from "@/components/WorkspaceBackupSettings";
 import { UpdateBanner } from "@/components/UpdateBanner";
@@ -46,6 +49,10 @@ import { phonePairingSettingsAction, takePhonePairingRequest } from "@/lib/phone
 function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   const { state, dispatch } = useStore();
   const { capabilities } = useDesktopCapabilities();
+  const openFileViewerTab = useCallback(
+    (tab: FileViewerTab) => dispatch({ type: "openFileViewerTab", tab }),
+    [dispatch],
+  );
   const unreadCount =
     state.bots.filter((bot) => !bot.hidden && botShowsUnread(bot)).length +
     state.groups.filter((group) => group.unread).length;
@@ -170,6 +177,21 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [state.bots, state.selectedId, state.shortcutsOpen, dispatch]);
 
+  // Ctrl+` toggles the terminal dock. Capture phase on purpose: xterm's
+  // textarea must never see the chord, or a closing panel also feeds the
+  // shell a stray control byte.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+      if (e.key !== "`" && e.code !== "Backquote") return;
+      e.preventDefault();
+      e.stopPropagation();
+      dispatch({ type: "toggleTerminal" });
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [dispatch]);
+
   useEffect(() => {
     window.ogb?.setUnreadCount?.(unreadCount);
   }, [unreadCount]);
@@ -280,6 +302,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   }, [dispatch]);
 
   return (
+    <FileViewerContext.Provider value={remoteClient ? null : openFileViewerTab}>
     <div className="flex h-full flex-col">
       {/* fixed-position popup, bottom-left — outside the layout flow */}
       <UpdateBanner />
@@ -371,6 +394,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
       )}
       {!remoteClient && state.inspectorOpen && bot && <InspectorPanel key={bot.threadId} bot={bot} />}
       {!remoteClient && state.activityOpen && bot && <ActivityPanel key={`activity:${bot.id}`} bot={bot} />}
+      {!remoteClient && state.fileViewerOpen && <FileViewerPanel />}
       {state.appSettingsOpen && <SettingsModal />}
       {/* On the person's Cloud: its setup checklist, and after it Move to
           Cloud's one-time card on an empty Cloud (desktop app only). */}
@@ -388,6 +412,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
           palette on top when one of them is open underneath */}
       <CommandPalette onOpenChange={setPaletteOpen} />
       </div>
+      {state.terminalOpen && <TerminalPanel />}
       {/* Renderer-drawn caption buttons for the overlay-less frameless
           Windows window. Deliberately the LAST child of the shell: Blink
           resolves -webkit-app-region in DOM-walk order, so these no-drag
@@ -399,6 +424,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
         visible={capabilities.windowChrome === "win-caption" && Boolean(window.ogb?.windowControls)}
       />
     </div>
+    </FileViewerContext.Provider>
   );
 }
 

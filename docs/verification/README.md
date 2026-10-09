@@ -163,6 +163,10 @@ The [chat and settings polish fixture](chat-polish.md) exercises attachment
 galleries, opt-in video playback, persisted tool details, and responsive settings
 through the real renderer in an isolated fake-engine workspace.
 
+The [file viewer fixture](file-viewer.md) checks that file chips and
+bot-authored Markdown links open a docked, tabbed inline preview instead of a
+download, still authorized through the message-scoped file route.
+
 The [people invitation fixture](people.md) checks hosted workspace sign-in,
 roles and device revocation through the real HTTP API with a stubbed email
 service. It does not drive the People settings UI through `control-omb`.

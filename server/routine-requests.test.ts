@@ -1888,3 +1888,19 @@ describe("consequenceLine", () => {
     expect(consequenceLine({ type: "once", at: 0 })).toBe("Will run once; that run starts a fresh session.");
   });
 });
+
+
+it("roundtrips an executable pre-check through reviewed proposal create, update and clear", async () => {
+  const { service, routines, store } = harness();
+  const preCheck = { command: process.execPath, args: ["/tmp/approved-inbox-check.mjs"], timeoutMs: 1000 };
+  const create = await service.propose({ botId: "bot-a", threadId: "thread-a", proposal: createProposal({ preCheck }) });
+  expect(store.messagesFor("thread-a")[0]?.card?.subtitle).toContain("Pre-check:");
+  expect(service.resolve({ botId: "bot-a", threadId: "thread-a", requestId: create.requestId, behavior: "allow" }).state).toBe("applied");
+  const routine = routines.listRoutines()[0]!;
+  expect(routine.preCheck).toEqual(preCheck);
+  for (const value of [{ ...preCheck, timeoutMs: 2000 }, null]) {
+    const update = await service.propose({ botId: "bot-a", threadId: "thread-a", proposal: { action: "update", routineId: routine.id, changes: { preCheck: value } } });
+    expect(service.resolve({ botId: "bot-a", threadId: "thread-a", requestId: update.requestId, behavior: "allow" }).state).toBe("applied");
+    expect(routines.listRoutines()[0]?.preCheck).toEqual(value ?? undefined);
+  }
+});

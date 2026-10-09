@@ -82,7 +82,7 @@ describe("DecisionModelSettings", () => {
 
   it("lists every job with its own switch, and nothing as coming soon", () => {
     const view = render();
-    for (const label of ["Who answers in rooms", "Fewer connected-app tools", "Where work runs", "Click by description"]) expect(view.html).toContain(label);
+    for (const label of ["Who answers in rooms", "Fewer connected-app tools", "Where work runs", "Click by description", "Wake routines for useful items"]) expect(view.html).toContain(label);
     expect(view.html).not.toContain("Coming soon");
     // the master switch, then one per job
     expect(view.switches).toHaveLength(1 + DECIDER_JOBS.length);

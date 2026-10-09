@@ -1837,8 +1837,8 @@
   "mcp.editAria": "Редагувати {name}",
   "mcp.removeAria": "Прибрати {name}",
   "mcp.probe.connected": "Підключено",
-  "mcp.probe.toolsOne": "· 1 інструмент: {names}",
-  "mcp.probe.toolsMany": "· {count} інструментів: {names}",
+  "mcp.probe.toolsOne": "· 1 інструмент",
+  "mcp.probe.toolsMany": "· {count} інструментів",
   "mcp.probe.noTools": "· інструментів не заявлено",
   "engineSetup.device.description": "Підключіть ваш акаунт ChatGPT до Codex на цьому сервері. Завершіть вхід у власному браузері; термінал чи спільний пароль не потрібні.",
   "engineSetup.chatgpt.description": "Використовуйте свій план ChatGPT для відповідних запитів до ШІ в OpenMausBot. Це окремо від OMB Cloud і оплати API.",
@@ -2038,5 +2038,6 @@
   "computer.phase.showPendingBoat": "Авто знайшло наявний хмарний комп'ютер, що не готовий. Його не змінювали.",
   "computer.badge.autoBoat": "хмарний човен · Авто · лише читання",
   "computer.addBoatKey": "Додайте API-ключ Boat, щоб дати цьому боту хмарний комп'ютер — він розгорнеться прямо тут.",
-  "call.live.disclosureCloud": "Під час дзвінка Live ваш голос надсилається до OpenAI разом з останніми повідомленнями чату, відповідями бота та подробицями всіх запитів на схвалення, які він робить. Ключ OpenAI залишається у вашому Cloud."
+  "call.live.disclosureCloud": "Під час дзвінка Live ваш голос надсилається до OpenAI разом з останніми повідомленнями чату, відповідями бота та подробицями всіх запитів на схвалення, які він робить. Ключ OpenAI залишається у вашому Cloud.",
+  "mcp.probe.filter": "Фільтрувати інструменти"
 }
