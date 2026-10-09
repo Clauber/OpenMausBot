@@ -287,6 +287,8 @@
   "chat.timeline.title": "निष्पादन की समयरेखा",
   "chat.timeline.titleRunning": "निष्पादन की समयरेखा · चल रही है",
   "chat.copyMessage": "संदेश कॉपी करें",
+  "clipboard.copyFailed": "कॉपी नहीं हो सका",
+  "clipboard.copyFailedHint": "कॉपी नहीं हो सका। टेक्स्ट चुनें और हाथ से कॉपी करें।",
   "chat.retry": "फिर कोशिश करें",
   "chat.error.signedOut": "{name} में अभी साइन इन नहीं किया गया है। नीचे साइन इन करें, फिर अपना संदेश दोबारा भेजें।",
   "chat.error.details": "विवरण",

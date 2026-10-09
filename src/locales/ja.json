@@ -287,6 +287,8 @@
   "chat.timeline.title": "実行タイムライン",
   "chat.timeline.titleRunning": "実行タイムライン · 実行中",
   "chat.copyMessage": "メッセージをコピー",
+  "clipboard.copyFailed": "コピーに失敗",
+  "clipboard.copyFailedHint": "コピーできませんでした。テキストを選択して手動でコピーしてください。",
   "chat.retry": "再試行",
   "chat.error.signedOut": "{name} にまだサインインしていません。下でサインインしてから、メッセージをもう一度送信してください。",
   "chat.error.details": "詳細",

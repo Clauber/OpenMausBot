@@ -418,6 +418,8 @@
   "inspector.run.screen": "Спостережено екран",
   "inspector.run.response": "Відповідь записано",
   "chat.copyMessage": "Копіювати повідомлення",
+  "clipboard.copyFailed": "Не вдалося скопіювати",
+  "clipboard.copyFailedHint": "Не вдалося скопіювати. Виділіть текст і скопіюйте вручну.",
   "chat.showRawMarkdown": "Показати сирий markdown",
   "chat.showRenderedMarkdown": "Показати оброблений markdown",
   "chat.retry": "Повторити",

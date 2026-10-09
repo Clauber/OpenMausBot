@@ -44,6 +44,7 @@ import { cn } from "@/lib/cn";
 import { useHeldMenuMotion, useMenuMotion } from "./MenuMotion";
 import { lastNonReceipt } from "@/lib/receipts";
 import { activityPreview, botEngine } from "@/lib/failed-turn";
+import { copyText } from "@/lib/clipboard";
 import { activeLocale, t } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -174,6 +175,16 @@ interface MenuState {
 }
 
 /** The same point the bot row's context menu and "more" button already use. */
+/** Copy an id for the person to paste; when neither clipboard path works, say so
+ * in the app's error banner rather than leaving the menu item looking dead. */
+function copyIdOrReport(id: string, dispatch: (action: { type: "error"; message: string | null }) => void) {
+  void copyText(id).then((ok) => {
+    if (ok) return;
+    dispatch({ type: "error", message: t("clipboard.copyFailedHint") });
+    setTimeout(() => dispatch({ type: "error", message: null }), 6000);
+  });
+}
+
 function openBotContextMenu(onMenu: (menu: MenuState) => void, botId: string, event: React.MouseEvent) {
   event.preventDefault();
   onMenu({ botId, x: event.clientX, y: event.clientY });
@@ -497,7 +508,7 @@ function RoomContextMenu({
       )}
       <button
         onClick={() => {
-          void navigator.clipboard?.writeText(group.threadId);
+          copyIdOrReport(group.threadId, dispatch);
           onClose();
         }}
         className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70"
@@ -855,7 +866,7 @@ export function BotContextMenu({
           dispatch({ type: "toggleSettings", open: true });
         }),
         item(<ClipboardCopy size={16} className="text-ink-secondary" />, t("sidebar.copyConversationId"), () => {
-          void navigator.clipboard?.writeText(bot.threadId);
+          copyIdOrReport(bot.threadId, dispatch);
         }),
       ] : [
         item(
@@ -889,7 +900,7 @@ export function BotContextMenu({
         ),
         divider("d2"),
         item(<ClipboardCopy size={16} className="text-ink-secondary" />, t("sidebar.copyConversationId"), () => {
-          void navigator.clipboard?.writeText(bot.threadId);
+          copyIdOrReport(bot.threadId, dispatch);
         }),
         divider("d3"),
         item(

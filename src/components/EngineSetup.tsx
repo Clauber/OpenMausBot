@@ -2,9 +2,10 @@
 // errors. The command has one inline copy action and one primary next step;
 // unusable model lists stay out of the way until the engine is ready.
 import { useEffect, useState } from "react";
-import { AlertTriangle, Check, Copy, Download, ExternalLink, KeyRound, Loader2, LogIn, TerminalSquare } from "lucide-react";
+import { AlertTriangle, Check, CircleAlert, Copy, Download, ExternalLink, KeyRound, Loader2, LogIn, TerminalSquare } from "lucide-react";
 import { api, type EngineInstall, type InstanceInfo, useStore } from "@/state/store";
 import { cn } from "@/lib/cn";
+import { copyText } from "@/lib/clipboard";
 import { t } from "@/lib/i18n";
 import { CodexDeviceSignIn } from "./CodexDeviceSignIn";
 import { ClaudeSignIn } from "./ClaudeSignIn";
@@ -55,21 +56,18 @@ export function CommandRow({
   actionLabel: string;
   compact?: boolean;
 }) {
-  const [status, setStatus] = useState<"copied" | "opened" | null>(null);
+  const [status, setStatus] = useState<"copied" | "opened" | "failed" | null>(null);
   const canOpen = typeof window !== "undefined" && Boolean(window.ogb?.openInstallTerminal);
 
-  const settle = (next: "copied" | "opened") => {
+  const settle = (next: "copied" | "opened" | "failed") => {
     setStatus(next);
     window.setTimeout(() => setStatus(null), 2200);
   };
 
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(command);
-      settle("copied");
-    } catch {
-      // The command remains selectable when clipboard access is blocked.
-    }
+    // Falls back to a textarea copy; if that fails too the button says so and
+    // the command stays selectable.
+    settle((await copyText(command)) ? "copied" : "failed");
   };
 
   const openTerminal = async () => {
@@ -90,8 +88,8 @@ export function CommandRow({
           title={t("engineSetup.copyCommand")}
           className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-medium text-ink-secondary hover:bg-control hover:text-ink"
         >
-          {status === "copied" ? <Check size={12} className="text-success" /> : <Copy size={12} />}
-          {status === "copied" ? t("engineSetup.copied") : t("engineSetup.copy")}
+          {status === "copied" ? <Check size={12} className="text-success" /> : status === "failed" ? <CircleAlert size={12} className="text-danger" /> : <Copy size={12} />}
+          {status === "copied" ? t("engineSetup.copied") : status === "failed" ? t("clipboard.copyFailed") : t("engineSetup.copy")}
         </button>
         {canOpen && (
           <button
@@ -126,8 +124,8 @@ export function CommandRow({
             title={t("engineSetup.copyCommand")}
             className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[11.5px] font-medium text-ink-secondary hover:bg-control hover:text-ink"
           >
-            {status === "copied" ? <Check size={12} className="text-success" /> : <Copy size={12} />}
-            {status === "copied" ? t("engineSetup.copied") : t("engineSetup.copy")}
+            {status === "copied" ? <Check size={12} className="text-success" /> : status === "failed" ? <CircleAlert size={12} className="text-danger" /> : <Copy size={12} />}
+            {status === "copied" ? t("engineSetup.copied") : status === "failed" ? t("clipboard.copyFailed") : t("engineSetup.copy")}
           </button>
         )}
       </div>

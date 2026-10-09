@@ -367,6 +367,8 @@
   "chat.timeline.title": "Linha do tempo da execução",
   "chat.timeline.titleRunning": "Linha do tempo da execução · em andamento",
   "chat.copyMessage": "Copiar mensagem",
+  "clipboard.copyFailed": "Falha ao copiar",
+  "clipboard.copyFailedHint": "Não foi possível copiar. Selecione o texto e copie manualmente.",
   "chat.retry": "Tentar de novo",
   "chat.error.signedOut": "{name} ainda não está conectado. Entre abaixo e envie sua mensagem de novo.",
   "chat.error.details": "Detalhes",

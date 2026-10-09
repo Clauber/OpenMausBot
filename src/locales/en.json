@@ -973,6 +973,8 @@
   "inspector.run.screen": "Screen observed",
   "inspector.run.response": "Response recorded",
   "chat.copyMessage": "Copy message",
+  "clipboard.copyFailed": "Copy failed",
+  "clipboard.copyFailedHint": "Couldn't copy. Select the text and copy it manually.",
   "chat.showRawMarkdown": "Show raw markdown",
   "chat.showRenderedMarkdown": "Show rendered markdown",
   "chat.retry": "Retry",

@@ -5,6 +5,7 @@ import type { BotProject, Task } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { useHeldMenuMotion } from "./MenuMotion";
 import { t } from "@/lib/i18n";
+import { copyText } from "@/lib/clipboard";
 import { nextRename } from "@/lib/rename";
 import { threadRefUrl } from "@/lib/thread-refs";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -297,9 +298,9 @@ export const SidebarThreadRow = memo(function SidebarThreadRow({ task, ownerId, 
   const startRename = () => { finishing.current = false; setDraft(task.title); setRenaming(true); setMenu(null); };
   const copyLink = () => {
     setMenu(null);
-    navigator.clipboard?.writeText(threadRefUrl({ botId: ownerId, threadId: task.threadId })).catch(() => {
-      // clipboard write rejected — the link stays available to copy again
-    });
+    // the menu has closed and the row has no error surface; a failed copy
+    // leaves the item there to try again
+    void copyText(threadRefUrl({ botId: ownerId, threadId: task.threadId }));
   };
   // The menu stays open on "Regenerating…" until the answer lands; a failure
   // keeps it open behind the error so the person can rename by hand.
