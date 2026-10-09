@@ -876,6 +876,15 @@ export function maxConcurrentBotThreads(cfg: { threads?: { maxConcurrentPerBot?:
   return cfg.threads?.maxConcurrentPerBot ?? DEFAULT_MAX_CONCURRENT_BOT_THREADS;
 }
 
+/** The parallel-thread limit that applies to one bot: its own override when
+ * it has one, otherwise the workspace default above. */
+export function maxConcurrentThreadsFor(
+  cfg: { threads?: { maxConcurrentPerBot?: number } },
+  bot?: { maxConcurrentThreads?: number },
+): number {
+  return bot?.maxConcurrentThreads ?? maxConcurrentBotThreads(cfg);
+}
+
 /** Size cap for each per-thread events/ and native/ NDJSON log. Null (the
  * default) means unbounded growth — rotation is strictly opt-in (#1280). */
 export function threadEventLogMaxBytes(cfg: AppConfig): number | null {

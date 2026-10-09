@@ -22,6 +22,7 @@ import { cacheUntilConfigChanges,
   roomHandoffLimits,
   roomTurnTimeoutMinutes,
   maxConcurrentBotThreads,
+  maxConcurrentThreadsFor,
   threadEventLogMaxBytes,
   threadEventLogRetentionDays,
   showToolCallsEnabled,
@@ -115,6 +116,15 @@ describe("configuration boundaries", () => {
     for (const value of [0, -1, 11, 1.5, "10", null]) {
       expect(() => parseConfigPatch({ threads: { maxConcurrentPerBot: value } })).toThrow("threads.maxConcurrentPerBot");
     }
+  });
+
+  it("lets a bot's own thread limit win over the global default", () => {
+    const cfg = parseStoredConfig({ threads: { maxConcurrentPerBot: 6 } });
+    expect(maxConcurrentThreadsFor(cfg, {})).toBe(6);
+    expect(maxConcurrentThreadsFor(cfg, undefined)).toBe(6);
+    expect(maxConcurrentThreadsFor(cfg, { maxConcurrentThreads: 1 })).toBe(1);
+    expect(maxConcurrentThreadsFor(cfg, { maxConcurrentThreads: 10 })).toBe(10);
+    expect(maxConcurrentThreadsFor({}, {})).toBe(3);
   });
 
   it("caps per-thread event logs only when a size is configured", () => {

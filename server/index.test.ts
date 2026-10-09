@@ -5601,6 +5601,16 @@ describe("harness HTTP API", () => {
         { approvalMode: "full", confirmFullAccess: true, applyToAllThreads: true });
       expect(granted.status).toBe(200);
       expect(granted.body.bot).toMatchObject({ approvalMode: "full", autoApprove: false });
+      // A parallel-thread limit is not a permission edit: it must not ask a
+      // Full-access bot for the warning acknowledgement, nor touch its grant.
+      const limited = await isolatedApi("PATCH", `/api/bots/${bot.id}`, { maxConcurrentThreads: 5 });
+      expect(limited.status).toBe(200);
+      expect(limited.body.bot).toMatchObject({ maxConcurrentThreads: 5, approvalMode: "full", autoApprove: false });
+      expect((await isolatedApi("PATCH", `/api/bots/${bot.id}`, { maxConcurrentThreads: 11 })).status).toBe(400);
+      const unlimited = await isolatedApi("PATCH", `/api/bots/${bot.id}`, { maxConcurrentThreads: null });
+      expect(unlimited.status).toBe(200);
+      expect(unlimited.body.bot).toMatchObject({ approvalMode: "full" });
+      expect(unlimited.body.bot.maxConcurrentThreads).toBeUndefined();
       const refusedCustom = await isolatedApi("PATCH", `/api/bots/${bot.id}`, { approvalMode: "custom", confirmFullAccess: true });
       expect(refusedCustom.status).toBe(400);
       expect(refusedCustom.body.error).toMatch(/does not support the selected approval level/i);
