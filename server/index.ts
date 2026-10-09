@@ -21616,7 +21616,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // over HTTP, the same durable write the desktop's private channel
       // commits. Custom keeps its desktop-only rule, and the warning
       // dialog's acknowledgement must travel with the request.
-      const operatorFullAccessGrant = OPERATOR_FULL_ACCESS &&
+      const operatorFullAccessGrant = OPERATOR_FULL_ACCESS && approvalChangeRequested &&
         requestedApprovalMode === "full" && currentApprovalMode !== "custom";
       if (requiresPrivateApprovalTransition && !operatorFullAccessGrant) {
         return json(res, 403, {

@@ -126,6 +126,54 @@ describe("bot patch queue", () => {
     ]);
   });
 
+  it("sends pin edits on a Full access bot without an approval setting or consent", async () => {
+    const full = bot({ approvalMode: "full" });
+    const send = vi.fn(async (_botId: string, patch: BotUpdatePatch) => bot({ ...full, pinned: patch.pinned }));
+    const queue = createBotPatchQueue({
+      send,
+      reconcile: async () => full,
+      onAuthoritative: vi.fn(),
+      onError: vi.fn(),
+    });
+
+    for (const pinned of [true, false, true]) {
+      queue.enqueue("bot-1", { pinned }, full);
+      await queue.flush("bot-1");
+      expect(send).toHaveBeenLastCalledWith(
+        "bot-1",
+        { pinned },
+        expect.any(AbortSignal),
+        expect.objectContaining({ approvalMode: "full" }),
+      );
+    }
+  });
+
+  it("keeps a pin separate from a rejected in-flight Full access change", async () => {
+    const first = deferredBot();
+    const full = bot({ approvalMode: "full" });
+    const send = vi.fn((_botId: string, patch: BotUpdatePatch) =>
+      patch.approvalMode ? first.promise : Promise.resolve(bot({ ...full, pinned: patch.pinned })),
+    );
+    const onError = vi.fn();
+    const queue = createBotPatchQueue({
+      send,
+      reconcile: async () => full,
+      onAuthoritative: vi.fn(),
+      onError,
+    });
+
+    queue.enqueue("bot-1", { approvalMode: "full" }, full);
+    queue.enqueue("bot-1", { pinned: true }, full);
+    first.reject(new Error("Confirm the Full access warning first (confirmFullAccess)"));
+    await queue.flush("bot-1");
+
+    expect(send.mock.calls.map((call) => call[1])).toEqual([
+      { approvalMode: "full" },
+      { pinned: true },
+    ]);
+    expect(onError).toHaveBeenCalledOnce();
+  });
+
   it("flush waits for the PATCH and returns the server-authoritative computer selection", async () => {
     const request = deferredBot();
     const send = vi.fn(async () => request.promise);
