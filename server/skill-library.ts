@@ -320,6 +320,8 @@ export function installLibrarySkill(input: {
   compatibility?: string;
   tags?: string[];
   warnings?: string[];
+  /** Supporting files the library does not carry (SKILL.md only), named for the review. */
+  skippedFiles?: string[];
   reviewState?: LibraryReviewState;
   package?: SkillPackageStamp;
   root?: string;
@@ -355,7 +357,7 @@ export function installLibrarySkill(input: {
     ...(input.compatibility ? { compatibility: input.compatibility } : {}),
     ...(tags?.length ? { tags } : {}),
     warnings: input.warnings ?? [],
-    skippedFiles: [],
+    skippedFiles: input.skippedFiles ?? [],
     ...(input.package ? { package: { ...input.package } } : {}),
   };
   // Bytes first, index second: the index is the commit point, so a crash

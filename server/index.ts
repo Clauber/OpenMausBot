@@ -14,7 +14,7 @@ import { rm as removeDirectory } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { ToolResults, TOOL_RESULT_MAX_CHARS } from "./tool-results.ts";
 import { homedir } from "node:os";
-import { extname, join } from "node:path";
+import { basename, extname, join } from "node:path";
 import { authorizeExternalRuntime, externalRuntimeIsActive, type ExternalRuntimeGrant } from "./external-runtime.ts";
 
 import { z } from "zod";
@@ -244,6 +244,7 @@ import { McpOAuthError, McpSignInError, McpOAuthManager, mcpOAuthRedirectUri, wi
 import { probeMcpServer } from "./mcp-probe.ts";
 import { BUILTIN_MCP_CATALOG } from "./mcp-catalog-data.ts";
 import { createEnvLookup, installCatalogEntry, listCatalog, loadUserCatalog, mergeCatalogs } from "./mcp-catalog.ts";
+import { buildSkillSourceCatalog, importSkillSources, normalizeSkillMd, type SkillSourceDef } from "./skill-sources.ts";
 import {
   GROUP_GOAL_MAX_TURNS,
   groupGoalAssignmentKey,
@@ -15713,6 +15714,11 @@ let mcpProbesInFlight = 0;
 /** Where an install may find a secret a catalog entry names (never printed):
  * this process's environment, then the user's own env files. */
 const catalogSecretLookup = createEnvLookup([join(homedir(), "ai", ".env"), join(homedir(), ".claude", ".env")]);
+/** The skill folders mirrored under <data dir>/skill-sources, in priority order. */
+const SKILL_SOURCES: SkillSourceDef[] = [
+  { id: "shared", label: "Shared harness skills" },
+  { id: "hermes", label: "Hermes skills" },
+];
 /** The built-in catalog plus whatever the person keeps in <data dir>/mcp-catalog.json. */
 const mcpCatalog = () => mergeCatalogs(BUILTIN_MCP_CATALOG, loadUserCatalog(join(DATA_DIR, "mcp-catalog.json")));
 // One updater per executable: multiple Claude instances can point at the same
@@ -22095,6 +22101,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           ...(listing.license ? { license: listing.license } : {}),
           ...(listing.compatibility ? { compatibility: listing.compatibility } : {}),
           warnings: listing.warnings,
+          skippedFiles: listing.skippedFiles,
           assignedBots: store.bots
             .filter((bot) => bot.assignedSkills?.includes(listing.name))
             .map((bot) => ({ id: bot.id, name: bot.name })),
@@ -22137,6 +22144,33 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const result = setLibrarySkillReviewState(m[1]!, parsed.data.enabled ? "approved" : "disabled");
       if ("error" in result) return json(res, 404, { error: result.error });
       return json(res, 200, { skill: result });
+    }
+    // Skill sources: other machines' skill folders, mirrored into
+    // <data dir>/skill-sources/<id> by scripts/mirror-skills.ts (pull-only),
+    // listed here and imported into the library on request.
+    if (path === "/api/skill-sources" && method === "GET") {
+      if (!skillsLibraryEnabled(cfg)) return json(res, 404, { error: "skills library is not enabled" });
+      const { root: _root, ...catalog } = buildSkillSourceCatalog(join(DATA_DIR, "skill-sources"), SKILL_SOURCES);
+      const index = readSkillLibraryIndex();
+      const skills = catalog.skills.map((skill) => {
+        let libraryState: "same" | "changed" | null = null;
+        const entry = index[skill.name];
+        if (entry && !skill.error) {
+          try {
+            const text = normalizeSkillMd(readFileSync(join(DATA_DIR, "skill-sources", skill.source, skill.relPath, "SKILL.md"), "utf8"), basename(skill.relPath)).text;
+            libraryState = entry.sha256 === createHash("sha256").update(text).digest("hex") ? "same" : "changed";
+          } catch { libraryState = "changed"; }
+        }
+        return { ...skill, libraryState };
+      });
+      return json(res, 200, { sources: catalog.sources, skills });
+    }
+    if (path === "/api/skill-sources/import" && method === "POST") {
+      if (!skillsLibraryEnabled(cfg)) return json(res, 404, { error: "skills library is not enabled" });
+      const names = z.array(z.string().min(1).max(64)).max(500);
+      const parsed = z.object({ all: z.boolean().optional(), names: names.optional(), include: names.optional(), reviewedSecrets: names.optional() }).safeParse(await readBody(req));
+      if (!parsed.success || (!parsed.data.all && !parsed.data.names?.length)) return json(res, 400, { error: "send all: true, or the names to import" });
+      return json(res, 200, importSkillSources(buildSkillSourceCatalog(join(DATA_DIR, "skill-sources"), SKILL_SOURCES), parsed.data));
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/skills-library$/);
     if (m && method === "PUT") {

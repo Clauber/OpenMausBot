@@ -746,6 +746,8 @@ export interface SkillsLibrarySkillWire {
   license?: string;
   compatibility?: string;
   warnings: string[];
+  /** supporting files the library does not carry (SKILL.md only) */
+  skippedFiles?: string[];
   assignedBots: Array<{ id: string; name: string }>;
 }
 
