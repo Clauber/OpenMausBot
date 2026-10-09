@@ -1660,3 +1660,12 @@ button:disabled.bg-danger {
 ::highlight(omb-citation-source) {
   background-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
 }
+
+@keyframes terminal-drawer-slide {
+  from { transform: translateY(100%); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+.terminal-drawer { animation: terminal-drawer-slide 180ms ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .terminal-drawer { animation: none; }
+}

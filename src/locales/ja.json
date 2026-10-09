@@ -1492,5 +1492,8 @@
   "computer.badge.autoBoat": "クラウドボート · 自動 · 読み取り専用",
   "computer.addBoatKey": "Boat の API キーを追加すると、このボットにクラウドコンピューターが用意されます。ここで起動します。",
   "call.live.disclosureCloud": "ライブ通話では、音声に加えて、チャットの最近のメッセージ、ボットの回答、ボットが求める承認の詳細が OpenAI に送信されます。OpenAI キーはお使いの Cloud に保存されたままです。",
-  "mcp.probe.filter": "ツールを絞り込む"
+  "mcp.probe.filter": "ツールを絞り込む",
+  "settings.section.servers": "サーバー",
+  "settings.section.keyboardShortcuts": "キーボードショートカット",
+  "settings.section.apps": "アプリ"
 }

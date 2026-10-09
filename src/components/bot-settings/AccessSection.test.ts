@@ -140,7 +140,7 @@ describe("AccessSection always-allowed list", () => {
     connect.props.onClick!();
     expect(fixture.dispatch.mock.calls).toEqual([
       [{ type: "toggleSettings", open: false }],
-      [{ type: "togglePlugins", open: true, surface: "apps" }],
+      [{ type: "toggleAppSettings", open: true, section: "apps", appsSurface: "apps" }],
     ]);
   });
 

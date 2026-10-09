@@ -83,10 +83,10 @@ export function GuidedTour() {
           return;
         }
         case "openApps":
-          if (!press("nav-apps")) dispatch({ type: "togglePlugins", open: true });
+          dispatch({ type: "toggleAppSettings", open: true, section: "apps" });
           return;
         case "closeApps":
-          dispatch({ type: "togglePlugins", open: false });
+          dispatch({ type: "toggleAppSettings", open: false });
           return;
         case "openAutomations":
           if (!press("nav-automations")) dispatch({ type: "showRoutines" });
@@ -139,11 +139,11 @@ export function GuidedTour() {
     setDismissed(true);
     // leave nothing open behind: the panel, the menu, the Automations page
     if (state.computerOpen) run("closeComputer");
-    if (state.pluginsOpen) run("closeApps");
+    if (state.appSettingsOpen && state.appSettingsSection === "apps") run("closeApps");
     run("backToChat");
     void save(true).catch(() => {});
     dispatch({ type: "toggleTour", open: false });
-  }, [state.computerOpen, state.pluginsOpen, run, save, dispatch]);
+  }, [state.computerOpen, state.appSettingsOpen, state.appSettingsSection, run, save, dispatch]);
 
   const active = !dismissed && Boolean(record?.completedAt) && !state.welcomeOpen && step !== null;
 

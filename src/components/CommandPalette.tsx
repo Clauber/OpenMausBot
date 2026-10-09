@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { Bot as BotIcon, MessageSquare, Search, Users } from "lucide-react";
 import { api, useStore, type Bot, type Group } from "@/state/store";
 import { rankByName } from "@/lib/palette-rank";
+import { matchesShortcut } from "@/lib/keyboard-shortcuts";
 import { cn } from "@/lib/cn";
 import type { SearchHit } from "@/lib/search-hit";
 import { landOnSearchHit } from "@/lib/focus-message";
@@ -27,7 +28,7 @@ export function CommandPalette({ onOpenChange }: { onOpenChange?: (open: boolean
   // modifier chord never collides with typing.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k" && !e.shiftKey && !e.altKey) {
+      if (matchesShortcut(e, "command-palette")) {
         e.preventDefault();
         setOpen((o) => !o);
       }

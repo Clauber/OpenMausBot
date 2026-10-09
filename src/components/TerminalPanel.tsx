@@ -128,7 +128,7 @@ export function TerminalPanel() {
   return (
     <section
       aria-label={t("terminal.title")}
-      className="flex h-[38vh] min-h-[180px] shrink-0 flex-col border-t border-hairline bg-[#15171c] text-[#d6d9de]"
+      className="terminal-drawer flex h-[38vh] min-h-[180px] shrink-0 flex-col border-t border-hairline bg-[#15171c] text-[#d6d9de]"
     >
       <header className="flex h-9 shrink-0 items-center gap-2 border-b border-hairline/60 px-3">
         <SquareTerminal size={14} className="text-ink-secondary" />

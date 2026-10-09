@@ -1,3 +1,4 @@
+import { matchesShortcut } from "@/lib/keyboard-shortcuts";
 // A room: several bots + you in one shared thread. The sidebar and call view
 // carry the personality; avatars inside the room stay still so a busy group
 // does not become a wall of competing motion. Plain messages go to the room's
@@ -1001,7 +1002,7 @@ export function GroupView({ group }: { group: Group }) {
   useEffect(() => setFindOpen(false), [group.threadId]);
   useEffect(() => {
     const onFind = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+      if (matchesShortcut(event, "find-conversation")) {
         event.preventDefault();
         setFindOpen(true);
       }

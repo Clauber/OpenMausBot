@@ -2436,5 +2436,8 @@
   "computer.badge.autoBoat": "雲端 Boat · Auto · 唯讀",
   "computer.addBoatKey": "新增 Boat API 金鑰，即可為這個機器人提供雲端電腦 — 它會直接在這裡啟動。",
   "call.live.disclosureCloud": "即時通話會將你的語音傳送給 OpenAI，同時傳送的還有此對話的近期訊息、機器人的回覆，以及其要求核准之項目的詳細資訊。OpenAI 金鑰會保留在你的 Cloud 上。",
-  "mcp.probe.filter": "篩選工具"
+  "mcp.probe.filter": "篩選工具",
+  "settings.section.servers": "伺服器",
+  "settings.section.keyboardShortcuts": "鍵盤快捷鍵",
+  "settings.section.apps": "應用程式"
 }

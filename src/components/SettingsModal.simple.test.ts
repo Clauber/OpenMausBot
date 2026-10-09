@@ -1,4 +1,4 @@
-// Simple mode's Settings: at most five pages, several of them stacking what
+// Simple mode's Settings: focused pages, several of them stacking what
 // Advanced shows as separate pages, and every old deep link still landing.
 import { createElement, type ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -95,17 +95,17 @@ const blocks = (html: string) => [...html.matchAll(/data-settings-block="([^"]+)
 const markers = (html: string) => [...html.matchAll(/MARKER:([^;]+);/g)].map((match) => match[1]);
 
 describe("Settings in Simple mode", () => {
-  it("draws at most five pages on the desktop, and none of the Advanced-only ones", () => {
+  it("draws focused pages on the desktop, and none of the Advanced-only ones", () => {
     const html = render();
-    expect(pages(html)).toEqual(["general", "appearance", "ai", "computers", "account"]);
-    expect(SIMPLE_PAGES.length).toBeLessThanOrEqual(5);
+    expect(pages(html)).toEqual(["general", "appearance", "keyboardShortcuts", "servers", "apps", "ai", "computers", "account"]);
+    expect(SIMPLE_PAGES.length).toBe(8);
     // a flat list: no group headings, no per-section rail entries
     expect(html).not.toContain("data-settings-group=");
     expect(html).not.toContain("data-settings-section=");
     for (const hidden of ["usage", "backups", "experimental", "workspaces", "skills"]) expect(html).not.toContain(`value="${hidden}"`);
     // the narrow-window picker offers the same five pages
     const picker = html.match(/<select aria-label="Settings"[\s\S]*?<\/select>/)![0];
-    expect([...picker.matchAll(/<option value="([^"]+)"/g)].map((match) => match[1])).toEqual(["general", "appearance", "ai", "computers", "account"]);
+    expect([...picker.matchAll(/<option value="([^"]+)"/g)].map((match) => match[1])).toEqual(["general", "appearance", "keyboardShortcuts", "servers", "apps", "ai", "computers", "account"]);
   });
 
   it("files every Advanced page under one Simple page, or hides it", () => {
@@ -137,13 +137,13 @@ describe("Settings in Simple mode", () => {
     expect(html).toContain("More providers for OpenCode bots");
   });
 
-  it("stacks Remote access, Servers, Local VM and the built-in browser on Computers", () => {
+  it("stacks Remote access, Local VM and the built-in browser on Computers", () => {
     fixture.section = "companion";
     const html = render();
     expect(currentPage(html)).toBe("computers");
-    expect(blocks(html)).toEqual(["companion", "desktopWorkspaces", "computer", "browser"]);
+    expect(blocks(html)).toEqual(["companion", "computer", "browser"]);
     const headings = [...html.matchAll(/<h3[^>]*>([^<]+)<\/h3>/g)].map((match) => match[1]);
-    expect(headings).toEqual(["Remote access", "Servers", "Local VM", "Built-in browser"]);
+    expect(headings).toEqual(["Remote access", "Local VM", "Built-in browser"]);
     expect(html).toContain('aria-label="Enable the built-in browser"');
   });
 
@@ -160,7 +160,7 @@ describe("Settings in Simple mode", () => {
     fixture.section = "people";
     const html = render();
     // no Servers page without the desktop bridge, and no desktop-only account pages
-    expect(pages(html)).toEqual(["general", "appearance", "ai", "computers", "account"]);
+    expect(pages(html)).toEqual(["general", "appearance", "keyboardShortcuts", "servers", "apps", "ai", "computers", "account"]);
     expect(blocks(html)).toEqual(["people", "activity"]);
   });
 
@@ -168,16 +168,16 @@ describe("Settings in Simple mode", () => {
     // an OMB Cloud home in a browser: no desktop account pages, nobody to invite, not an admin
     vi.stubGlobal("window", {});
     fixture.config = { ...fixture.config, cloudHome: true };
-    expect(pages(render())).toEqual(["general", "appearance", "ai", "computers"]);
+    expect(pages(render())).toEqual(["general", "appearance", "keyboardShortcuts", "servers", "apps", "ai", "computers"]);
   });
 
   it("keeps a paired remote client's reduced set: Appearance, and Computers with Remote access and Servers", () => {
     vi.stubGlobal("window", { ogb: { ...desktop.ogb, remoteClient: { active: true } } });
     fixture.section = "desktopWorkspaces";
     const html = render();
-    expect(pages(html)).toEqual(["appearance", "computers"]);
-    expect(currentPage(html)).toBe("computers");
-    expect(blocks(html)).toEqual(["companion", "desktopWorkspaces"]);
+    expect(pages(html)).toEqual(["appearance", "keyboardShortcuts", "servers", "apps", "computers"]);
+    expect(currentPage(html)).toBe("servers");
+    expect(blocks(html)).toEqual(["servers"]);
     expect(html).not.toContain('aria-label="Enable the built-in browser"');
   });
 
@@ -189,7 +189,7 @@ describe("Settings in Simple mode", () => {
     ["decisionModel", "ai"],
     ["companion", "computers"],
     ["remote", "computers"],
-    ["desktopWorkspaces", "computers"],
+    ["desktopWorkspaces", "servers"],
     ["computer", "computers"],
     ["cloudAccount", "account"],
     ["organization", "account"],
@@ -197,7 +197,7 @@ describe("Settings in Simple mode", () => {
     fixture.section = section;
     const html = render();
     expect(currentPage(html)).toBe(page);
-    expect(blocks(html)).toContain(section === "remote" ? "companion" : section);
+    expect(blocks(html)).toContain(section === "remote" ? "companion" : section === "desktopWorkspaces" ? "servers" : section);
   });
 
   it.each<[AppSettingsSection, string]>([
@@ -207,7 +207,7 @@ describe("Settings in Simple mode", () => {
   ])("opens a hidden page (%s) for as long as it is the open one", (section, content) => {
     fixture.section = section;
     const html = render();
-    expect(pages(html)).toEqual(["general", "appearance", "ai", "computers", "account", section]);
+    expect(pages(html)).toEqual(["general", "appearance", "keyboardShortcuts", "servers", "apps", "ai", "computers", "account", section]);
     expect(currentPage(html)).toBe(section);
     if (content === "skillAuthoring") expect(html).toContain("Bots may draft skills for your review");
     else expect(markers(html)).toContain(content);

@@ -1,3 +1,4 @@
+import { matchesShortcut } from "@/lib/keyboard-shortcuts";
 import { Component, createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type ReactNode } from "react";
 import { useAdvancedMode } from "@/lib/interface-mode";
 import {
@@ -1055,7 +1056,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   useEffect(() => setFindOpen(false), [bot.threadId]);
   useEffect(() => {
     const onFind = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+      if (matchesShortcut(event, "find-conversation")) {
         event.preventDefault();
         setFindOpen(true);
       }

@@ -879,6 +879,9 @@ export interface InstanceInfo {
 
 export type AppSettingsSection =
   | "general"
+  | "apps"
+  | "servers"
+  | "keyboardShortcuts"
   | "desktopWorkspaces"
   | "organization"
   | "cloudAccount"
@@ -958,10 +961,9 @@ export interface AppState {
    *  localStorage cache, not the empty array, is what the machine knows. */
   customSkinsLoaded: boolean;
   settingsOpen: boolean;
-  pluginsOpen: boolean;
-  /** Which tab the Plugins panel opens on; "mcp" when a bot's tools
+  /** Which tab Settings → Apps opens on; "mcp" when a bot's tools
    * sent the user there to add a server. */
-  pluginsSurface: "apps" | "mcp";
+  appsSurface: "apps" | "mcp";
   /** The Triggers pop-up (webhooks, as a sentence: when this happens, that
    * bot should…). */
   triggersOpen: boolean;
@@ -1265,7 +1267,6 @@ export type Action =
   | { type: "notice"; notice: AppState["notice"] }
   | { type: "revealThread"; threadId: string }
   | { type: "toggleSettings"; open?: boolean; section?: BotSettingsSection; botId?: string }
-  | { type: "togglePlugins"; open?: boolean; surface?: "apps" | "mcp" }
   | { type: "toggleTriggers"; open?: boolean }
   | { type: "toggleNewBot"; open?: boolean }
   | { type: "toggleComputer"; open?: boolean }
@@ -1278,7 +1279,7 @@ export type Action =
   | { type: "toggleTerminal"; open?: boolean }
   | { type: "focusMessage"; threadId: string; messageId: string; matchText?: string }
   | { type: "focusMessageConsumed"; nonce: number }
-  | { type: "toggleAppSettings"; open?: boolean; section?: AppSettingsSection; cloudLink?: boolean; phonePairing?: boolean }
+  | { type: "toggleAppSettings"; open?: boolean; section?: AppSettingsSection; cloudLink?: boolean; phonePairing?: boolean; appsSurface?: "apps" | "mcp" }
   | { type: "toggleShortcuts"; open?: boolean }
   | { type: "toggleWelcome"; open?: boolean }
   | { type: "toggleTour"; open?: boolean }
@@ -1579,7 +1580,6 @@ export function reducer(state: AppState, action: Action): AppState {
         activityOpen: false,
         fileViewerOpen: false,
         appSettingsOpen: false,
-        pluginsOpen: false,
         triggersOpen: false,
       };
     case "showChat":
@@ -1594,7 +1594,6 @@ export function reducer(state: AppState, action: Action): AppState {
         activityOpen: false,
         fileViewerOpen: false,
         appSettingsOpen: false,
-        pluginsOpen: false,
         triggersOpen: false,
       };
     case "routinesHydrated":
@@ -2063,21 +2062,12 @@ export function reducer(state: AppState, action: Action): AppState {
         appSettingsOpen: open ? false : state.appSettingsOpen,
       };
     }
-    case "togglePlugins": {
-      const open = action.open ?? !state.pluginsOpen;
-      return {
-        ...state,
-        pluginsOpen: open,
-        pluginsSurface: action.surface ?? state.pluginsSurface,
-        ...(open ? { settingsOpen: false, appSettingsOpen: false, newBotOpen: false, shortcutsOpen: false, triggersOpen: false } : {}),
-      };
-    }
     case "toggleTriggers": {
       const open = action.open ?? !state.triggersOpen;
       return {
         ...state,
         triggersOpen: open,
-        ...(open ? { settingsOpen: false, appSettingsOpen: false, newBotOpen: false, shortcutsOpen: false, pluginsOpen: false } : {}),
+        ...(open ? { settingsOpen: false, appSettingsOpen: false, newBotOpen: false, shortcutsOpen: false } : {}),
       };
     }
     case "botCreationPending":
@@ -2086,7 +2076,7 @@ export function reducer(state: AppState, action: Action): AppState {
       const open = action.open ?? !state.newBotOpen;
       return {
         ...state, newBotOpen: open,
-        ...(open ? { settingsOpen: false, appSettingsOpen: false, pluginsOpen: false, shortcutsOpen: false, triggersOpen: false } : {}),
+        ...(open ? { settingsOpen: false, appSettingsOpen: false, shortcutsOpen: false, triggersOpen: false } : {}),
       };
     }
     case "notice":
@@ -2201,12 +2191,12 @@ export function reducer(state: AppState, action: Action): AppState {
         activityOpen: open ? false : state.activityOpen,
         fileViewerOpen: open ? false : state.fileViewerOpen,
         appSettingsSection: action.section ?? state.appSettingsSection,
+        appsSurface: action.appsSurface ?? state.appsSurface,
         appSettingsCloudLink: action.cloudLink && open ? state.appSettingsCloudLink + 1 : 0,
         appSettingsPhonePairing: action.phonePairing && open ? state.appSettingsPhonePairing + 1 : 0,
         settingsOpen: open ? false : state.settingsOpen,
         computerOpen: open ? false : state.computerOpen,
         inspectorOpen: open ? false : state.inspectorOpen,
-        pluginsOpen: open ? false : state.pluginsOpen,
         triggersOpen: open ? false : state.triggersOpen,
       };
     }
@@ -2536,8 +2526,7 @@ export const initialState: AppState = {
   customSkins: [],
   customSkinsLoaded: false,
   settingsOpen: false,
-  pluginsOpen: false,
-  pluginsSurface: "apps",
+  appsSurface: "apps",
   triggersOpen: false,
   newBotOpen: false,
   botCreationPending: false,

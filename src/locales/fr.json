@@ -1490,5 +1490,8 @@
   "computer.badge.autoBoat": "boat cloud · Auto · lecture seule",
   "computer.addBoatKey": "Ajoutez une clé d'API Boat pour donner un ordinateur cloud à ce bot — il démarre ici même.",
   "call.live.disclosureCloud": "Un appel Live envoie votre voix à OpenAI, ainsi que les messages récents de la conversation, les réponses du bot et les détails de toute approbation qu'il demande. La clé OpenAI reste sur votre Cloud.",
-  "mcp.probe.filter": "Filtrer les outils"
+  "mcp.probe.filter": "Filtrer les outils",
+  "settings.section.servers": "Serveurs",
+  "settings.section.keyboardShortcuts": "Raccourcis clavier",
+  "settings.section.apps": "Applications"
 }

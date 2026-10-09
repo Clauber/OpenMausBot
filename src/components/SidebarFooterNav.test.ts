@@ -30,18 +30,18 @@ function render(density: SidebarDensity) {
 beforeEach(() => {
   fixture.advanced = false;
   fixture.dispatch.mockReset();
-  fixture.state = { activeView: "chat", routineRuns: [], triggersOpen: false, pluginsOpen: false };
+  fixture.state = { activeView: "chat", routineRuns: [], triggersOpen: false };
   vi.stubGlobal("window", {});
 });
 afterEach(() => vi.unstubAllGlobals());
 
 describe("sidebar footer places", () => {
-  it.each(["comfortable", "compact"] as const)("shows Routines, Triggers and Apps as direct rows (%s)", (density) => {
+  it.each(["comfortable", "compact"] as const)("shows Routines and Triggers as direct rows (%s)", (density) => {
     const { html } = render(density);
-    const order = ["routines", "triggers", "apps"].map((id) => html.indexOf(`data-sidebar-nav="${id}"`));
+    const order = ["routines", "triggers"].map((id) => html.indexOf(`data-sidebar-nav="${id}"`));
     expect(order.every((index) => index >= 0)).toBe(true);
     expect(order).toEqual([...order].sort((a, b) => a - b));
-    for (const label of ["Routines", "Triggers", "Apps"]) expect(html).toContain(`>${label}</span>`);
+    for (const label of ["Routines", "Triggers"]) expect(html).toContain(`>${label}</span>`);
     // the hover Tools menu is gone in Simple mode
     expect(html).not.toContain("Team map");
   });
@@ -53,15 +53,14 @@ describe("sidebar footer places", () => {
     expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "showRoutines" });
     (row("triggers").props.onClick as () => void)();
     expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "toggleTriggers", open: true });
-    (row("apps").props.onClick as () => void)();
-    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "togglePlugins", open: true });
+    expect(row("apps")).toBeUndefined();
   });
 
   it("keeps the guided tour's anchors on the new rows", () => {
     const { html } = render("comfortable");
     expect(html).toContain('data-tour="tools"');
     expect(html).toMatch(/data-tour="nav-automations" data-sidebar-nav="routines"/);
-    expect(html).toMatch(/data-tour="nav-apps" data-sidebar-nav="apps"/);
+    expect(html).not.toContain('data-sidebar-nav="apps"');
   });
 
   it("keeps the failed-routine dot on Routines", () => {
@@ -84,7 +83,7 @@ describe("sidebar footer places", () => {
   it("draws icons with tooltips in the avatars-only density", () => {
     fixture.advanced = true;
     const { html } = render("icons");
-    for (const label of ["Routines", "Triggers", "Apps", "Team map"]) {
+    for (const label of ["Routines", "Triggers", "Team map"]) {
       expect(html).toContain(`aria-label="${label}" title="${label}"`);
       expect(html).not.toContain(`>${label}</span>`);
     }

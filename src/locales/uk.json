@@ -2039,5 +2039,8 @@
   "computer.badge.autoBoat": "хмарний човен · Авто · лише читання",
   "computer.addBoatKey": "Додайте API-ключ Boat, щоб дати цьому боту хмарний комп'ютер — він розгорнеться прямо тут.",
   "call.live.disclosureCloud": "Під час дзвінка Live ваш голос надсилається до OpenAI разом з останніми повідомленнями чату, відповідями бота та подробицями всіх запитів на схвалення, які він робить. Ключ OpenAI залишається у вашому Cloud.",
-  "mcp.probe.filter": "Фільтрувати інструменти"
+  "mcp.probe.filter": "Фільтрувати інструменти",
+  "settings.section.servers": "Сервери",
+  "settings.section.keyboardShortcuts": "Комбінації клавіш",
+  "settings.section.apps": "Застосунки"
 }

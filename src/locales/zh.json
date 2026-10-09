@@ -2436,5 +2436,8 @@
   "computer.badge.autoBoat": "云 boat · 自动 · 只读",
   "computer.addBoatKey": "添加 Boat API 密钥即可为此机器人提供云电脑——它就在这里启动。",
   "call.live.disclosureCloud": "实时通话会将你的语音连同此聊天的近期消息、机器人的回复以及其请求审批的详细信息一并发送给 OpenAI。OpenAI 密钥始终保存在你的 Cloud 上。",
-  "mcp.probe.filter": "筛选工具"
+  "mcp.probe.filter": "筛选工具",
+  "settings.section.servers": "服务器",
+  "settings.section.keyboardShortcuts": "键盘快捷键",
+  "settings.section.apps": "应用"
 }

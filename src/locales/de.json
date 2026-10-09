@@ -1508,5 +1508,8 @@
   "computer.badge.autoBoat": "Cloud-Boat · Auto · nur lesen",
   "computer.addBoatKey": "Füg einen Boat-API-Schlüssel hinzu, damit dieser Bot einen Cloud-Computer bekommt — er startet direkt hier.",
   "call.live.disclosureCloud": "Bei einem Live-Anruf werden deine Stimme sowie die letzten Nachrichten des Chats, die Antworten des Bots und die Details aller von ihm angefragten Freigaben an OpenAI gesendet. Der OpenAI-Schlüssel bleibt in deiner Cloud.",
-  "mcp.probe.filter": "Tools filtern"
+  "mcp.probe.filter": "Tools filtern",
+  "settings.section.servers": "Server",
+  "settings.section.keyboardShortcuts": "Tastenkombinationen",
+  "settings.section.apps": "Apps"
 }

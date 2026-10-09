@@ -1511,7 +1511,10 @@
       "computer.badge.autoBoat": "ea81d1b8c0f10bbb043fecfd863ba77595403e14d1acb09f23bc229cb42f9b4a",
       "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36",
       "call.live.disclosureCloud": "bc95af3223557caa2c73153c2e5a9c4b65ce17d73d5b4e2efe851751da718935",
-      "mcp.probe.filter": "6a9632993564a275f2b2d217bc6de321dbe23f1576eb8007f22f1ca3b81321bf"
+      "mcp.probe.filter": "6a9632993564a275f2b2d217bc6de321dbe23f1576eb8007f22f1ca3b81321bf",
+      "settings.section.servers": "68d7beb6df59ee85bc11a6679c29ac3e6aab738833c6871c6df29ae0246d5d98",
+      "settings.section.keyboardShortcuts": "59cdaa26dd9dcd4cbcded97a7b91029b396bcfdbfd927356facbeb163283a3df",
+      "settings.section.apps": "89dd748442c194857825848e1500abbbc5f52fb067ad27fb05dc9fb23eebba3b"
     },
     "es": {
       "pro.getPro": "12657108fe5682e937f179e5f394191b99fad614dbb3bf8759376d5da35d4992",
@@ -3005,7 +3008,10 @@
       "computer.badge.autoBoat": "ea81d1b8c0f10bbb043fecfd863ba77595403e14d1acb09f23bc229cb42f9b4a",
       "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36",
       "call.live.disclosureCloud": "bc95af3223557caa2c73153c2e5a9c4b65ce17d73d5b4e2efe851751da718935",
-      "mcp.probe.filter": "6a9632993564a275f2b2d217bc6de321dbe23f1576eb8007f22f1ca3b81321bf"
+      "mcp.probe.filter": "6a9632993564a275f2b2d217bc6de321dbe23f1576eb8007f22f1ca3b81321bf",
+      "settings.section.servers": "68d7beb6df59ee85bc11a6679c29ac3e6aab738833c6871c6df29ae0246d5d98",
+      "settings.section.keyboardShortcuts": "59cdaa26dd9dcd4cbcded97a7b91029b396bcfdbfd927356facbeb163283a3df",
+      "settings.section.apps": "89dd748442c194857825848e1500abbbc5f52fb067ad27fb05dc9fb23eebba3b"
     },
     "fr": {
       "pro.getPro": "12657108fe5682e937f179e5f394191b99fad614dbb3bf8759376d5da35d4992",
@@ -4499,7 +4505,10 @@
       "computer.badge.autoBoat": "ea81d1b8c0f10bbb043fecfd863ba77595403e14d1acb09f23bc229cb42f9b4a",
       "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36",
       "call.live.disclosureCloud": "bc95af3223557caa2c73153c2e5a9c4b65ce17d73d5b4e2efe851751da718935",
-      "mcp.probe.filter": "6a9632993564a275f2b2d217bc6de321dbe23f1576eb8007f22f1ca3b81321bf"
+      "mcp.probe.filter": "6a9632993564a275f2b2d217bc6de321dbe23f1576eb8007f22f1ca3b81321bf",
+      "settings.section.servers": "68d7beb6df59ee85bc11a6679c29ac3e6aab738833c6871c6df29ae0246d5d98",
+      "settings.section.keyboardShortcuts": "59cdaa26dd9dcd4cbcded97a7b91029b396bcfdbfd927356facbeb163283a3df",
+      "settings.section.apps": "89dd748442c194857825848e1500abbbc5f52fb067ad27fb05dc9fb23eebba3b"
     },
     "hi": {
       "pro.getPro": "12657108fe5682e937f179e5f394191b99fad614dbb3bf8759376d5da35d4992",
@@ -5993,7 +6002,10 @@
       "computer.badge.autoBoat": "ea81d1b8c0f10bbb043fecfd863ba77595403e14d1acb09f23bc229cb42f9b4a",
       "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36",
       "call.live.disclosureCloud": "bc95af3223557caa2c73153c2e5a9c4b65ce17d73d5b4e2efe851751da718935",
-      "mcp.probe.filter": "6a9632993564a275f2b2d217bc6de321dbe23f1576eb8007f22f1ca3b81321bf"
+      "mcp.probe.filter": "6a9632993564a275f2b2d217bc6de321dbe23f1576eb8007f22f1ca3b81321bf",
+      "settings.section.servers": "68d7beb6df59ee85bc11a6679c29ac3e6aab738833c6871c6df29ae0246d5d98",
+      "settings.section.keyboardShortcuts": "59cdaa26dd9dcd4cbcded97a7b91029b396bcfdbfd927356facbeb163283a3df",
+      "settings.section.apps": "89dd748442c194857825848e1500abbbc5f52fb067ad27fb05dc9fb23eebba3b"
     },
     "ja": {
       "pro.getPro": "12657108fe5682e937f179e5f394191b99fad614dbb3bf8759376d5da35d4992",
@@ -7489,7 +7501,10 @@
       "computer.badge.autoBoat": "ea81d1b8c0f10bbb043fecfd863ba77595403e14d1acb09f23bc229cb42f9b4a",
       "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36",
       "call.live.disclosureCloud": "bc95af3223557caa2c73153c2e5a9c4b65ce17d73d5b4e2efe851751da718935",
-      "mcp.probe.filter": "6a9632993564a275f2b2d217bc6de321dbe23f1576eb8007f22f1ca3b81321bf"
+      "mcp.probe.filter": "6a9632993564a275f2b2d217bc6de321dbe23f1576eb8007f22f1ca3b81321bf",
+      "settings.section.servers": "68d7beb6df59ee85bc11a6679c29ac3e6aab738833c6871c6df29ae0246d5d98",
+      "settings.section.keyboardShortcuts": "59cdaa26dd9dcd4cbcded97a7b91029b396bcfdbfd927356facbeb163283a3df",
+      "settings.section.apps": "89dd748442c194857825848e1500abbbc5f52fb067ad27fb05dc9fb23eebba3b"
     },
     "pt-br": {
       "pro.getPro": "12657108fe5682e937f179e5f394191b99fad614dbb3bf8759376d5da35d4992",
@@ -8997,7 +9012,10 @@
       "computer.badge.autoBoat": "ea81d1b8c0f10bbb043fecfd863ba77595403e14d1acb09f23bc229cb42f9b4a",
       "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36",
       "call.live.disclosureCloud": "bc95af3223557caa2c73153c2e5a9c4b65ce17d73d5b4e2efe851751da718935",
-      "mcp.probe.filter": "6a9632993564a275f2b2d217bc6de321dbe23f1576eb8007f22f1ca3b81321bf"
+      "mcp.probe.filter": "6a9632993564a275f2b2d217bc6de321dbe23f1576eb8007f22f1ca3b81321bf",
+      "settings.section.servers": "68d7beb6df59ee85bc11a6679c29ac3e6aab738833c6871c6df29ae0246d5d98",
+      "settings.section.keyboardShortcuts": "59cdaa26dd9dcd4cbcded97a7b91029b396bcfdbfd927356facbeb163283a3df",
+      "settings.section.apps": "89dd748442c194857825848e1500abbbc5f52fb067ad27fb05dc9fb23eebba3b"
     },
     "zh": {
       "pro.getPro": "12657108fe5682e937f179e5f394191b99fad614dbb3bf8759376d5da35d4992",
@@ -11437,7 +11455,10 @@
       "computer.badge.autoBoat": "ea81d1b8c0f10bbb043fecfd863ba77595403e14d1acb09f23bc229cb42f9b4a",
       "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36",
       "call.live.disclosureCloud": "bc95af3223557caa2c73153c2e5a9c4b65ce17d73d5b4e2efe851751da718935",
-      "mcp.probe.filter": "6a9632993564a275f2b2d217bc6de321dbe23f1576eb8007f22f1ca3b81321bf"
+      "mcp.probe.filter": "6a9632993564a275f2b2d217bc6de321dbe23f1576eb8007f22f1ca3b81321bf",
+      "settings.section.servers": "68d7beb6df59ee85bc11a6679c29ac3e6aab738833c6871c6df29ae0246d5d98",
+      "settings.section.keyboardShortcuts": "59cdaa26dd9dcd4cbcded97a7b91029b396bcfdbfd927356facbeb163283a3df",
+      "settings.section.apps": "89dd748442c194857825848e1500abbbc5f52fb067ad27fb05dc9fb23eebba3b"
     },
     "zh-tw": {
       "pro.getPro": "12657108fe5682e937f179e5f394191b99fad614dbb3bf8759376d5da35d4992",
@@ -13877,7 +13898,10 @@
       "computer.badge.autoBoat": "ea81d1b8c0f10bbb043fecfd863ba77595403e14d1acb09f23bc229cb42f9b4a",
       "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36",
       "call.live.disclosureCloud": "bc95af3223557caa2c73153c2e5a9c4b65ce17d73d5b4e2efe851751da718935",
-      "mcp.probe.filter": "6a9632993564a275f2b2d217bc6de321dbe23f1576eb8007f22f1ca3b81321bf"
+      "mcp.probe.filter": "6a9632993564a275f2b2d217bc6de321dbe23f1576eb8007f22f1ca3b81321bf",
+      "settings.section.servers": "68d7beb6df59ee85bc11a6679c29ac3e6aab738833c6871c6df29ae0246d5d98",
+      "settings.section.keyboardShortcuts": "59cdaa26dd9dcd4cbcded97a7b91029b396bcfdbfd927356facbeb163283a3df",
+      "settings.section.apps": "89dd748442c194857825848e1500abbbc5f52fb067ad27fb05dc9fb23eebba3b"
     },
     "uk": {
       "pro.getPro": "12657108fe5682e937f179e5f394191b99fad614dbb3bf8759376d5da35d4992",
@@ -15920,7 +15944,10 @@
       "computer.badge.autoBoat": "ea81d1b8c0f10bbb043fecfd863ba77595403e14d1acb09f23bc229cb42f9b4a",
       "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36",
       "call.live.disclosureCloud": "bc95af3223557caa2c73153c2e5a9c4b65ce17d73d5b4e2efe851751da718935",
-      "mcp.probe.filter": "6a9632993564a275f2b2d217bc6de321dbe23f1576eb8007f22f1ca3b81321bf"
+      "mcp.probe.filter": "6a9632993564a275f2b2d217bc6de321dbe23f1576eb8007f22f1ca3b81321bf",
+      "settings.section.servers": "68d7beb6df59ee85bc11a6679c29ac3e6aab738833c6871c6df29ae0246d5d98",
+      "settings.section.keyboardShortcuts": "59cdaa26dd9dcd4cbcded97a7b91029b396bcfdbfd927356facbeb163283a3df",
+      "settings.section.apps": "89dd748442c194857825848e1500abbbc5f52fb067ad27fb05dc9fb23eebba3b"
     }
   }
 }
