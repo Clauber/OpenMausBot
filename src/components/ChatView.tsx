@@ -45,6 +45,7 @@ import {
   type Message,
   type AppState,
 } from "@/state/store";
+import { ArchiveThreadButton } from "./ArchiveThreadButton";
 import { EngineSetup } from "./EngineSetup";
 import { CHATGPT_USAGE_URL } from "./ChatGptPlanStatus";
 import { openExternalLink } from "@/lib/app-links";
@@ -1310,6 +1311,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
         >
           {/* below md the sidebar (and its Live call pill) is hidden */}
           <LiveCallChip currentBotId={bot.id} onOpen={(botId, threadId) => openThread(dispatch, { botId, threadId }, state)} />
+          <ArchiveThreadButton bot={bot} />
           <button
             data-tour="computer"
             onClick={() => dispatch({ type: "toggleComputer" })}

@@ -90,6 +90,28 @@ describe("Advanced mode in the header menu", () => {
   });
 });
 
+describe("Archive thread button in the header", () => {
+  it("sits immediately left of the computer (monitor) button, in the header's right-hand controls", () => {
+    const markup = renderToStaticMarkup(createElement(ChatView, { bot: { ...bot, busy: false } }));
+    const controls = markup.indexOf("data-chathead-controls");
+    const archive = markup.indexOf("data-archive-thread");
+    const computer = markup.indexOf('data-tour="computer"');
+    expect(controls).toBeGreaterThan(-1);
+    expect(archive).toBeGreaterThan(controls);
+    expect(archive).toBeLessThan(computer);
+    // nothing but the archive button's own markup lies between the two
+    expect(markup.slice(archive, computer)).not.toMatch(/<button[^>]*>[\s\S]*<button/);
+    expect(markup.slice(archive, archive + 400)).toContain('title="Archive thread"');
+  });
+
+  it("is disabled, with the reason, while the thread is running", () => {
+    const running = { ...bot, tasks: bot.tasks!.map((task) => ({ ...task, busy: true, activity: "working" as const })) };
+    const markup = renderToStaticMarkup(createElement(ChatView, { bot: running }));
+    expect(markup).toMatch(/data-archive-thread[^>]*aria-disabled="true"/);
+    expect(markup).toContain("Stop the run before archiving this thread");
+  });
+});
+
 describe("glass header", () => {
   it("floats the header over the transcript, which starts below it and scrolls on underneath", () => {
     const markup = renderToStaticMarkup(createElement(ChatView, { bot }));

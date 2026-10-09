@@ -130,7 +130,7 @@ const tomorrowNineAm = () => {
 /** Working is activity or flag: the wire can carry either alone, so the
  * visibility filter, the Working status, and the busy-disabled actions must
  * all ask the same question. */
-const isWorking = (task: Pick<Task, "activity" | "busy">): boolean => task.activity === "working" || Boolean(task.busy);
+export const isWorking = (task: Pick<Task, "activity" | "busy">): boolean => task.activity === "working" || Boolean(task.busy);
 
 /** The current wire distinguishes coordination waits from provider work. */
 const isWaitingOnTeammate = (task: Pick<Task, "waitingForTeammates">): boolean =>
