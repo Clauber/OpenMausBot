@@ -39,10 +39,10 @@ const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(SERVER_DIR, "..");
 const FAKE_CLAUDE_CLI = join(SERVER_DIR, "testing", "fake-claude-cli.ts");
 const FAKE_MCP_SERVER = join(SERVER_DIR, "testing", "fake-mcp-server.ts");
-const PORT = 18800 + Math.floor(Math.random() * 10_000);
-const BASE = `http://127.0.0.1:${PORT}`;
-const WEBHOOK_PORT = 39000 + Math.floor(Math.random() * 10_000);
-const WEBHOOK_BASE = `http://127.0.0.1:${WEBHOOK_PORT}`;
+let PORT = 0;
+let BASE = "";
+let WEBHOOK_PORT = 0;
+let WEBHOOK_BASE = "";
 const TEST_CAPABILITY_KEY = "index-fixture-internal-capability";
 
 async function mintTestCapability(
@@ -375,6 +375,10 @@ const statusWithHeaders = (headers: Record<string, string>): Promise<number> =>
   });
 
 beforeAll(async () => {
+  PORT = await freePortBlock([0, 1]);
+  BASE = `http://127.0.0.1:${PORT}`;
+  WEBHOOK_PORT = PORT + 1;
+  WEBHOOK_BASE = `http://127.0.0.1:${WEBHOOK_PORT}`;
   home = mkdtempSync(join(tmpdir(), "omb-api-test-"));
   writeFileSync(join(home, "fake-agent-browser"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   staticDir = join(home, "static");
