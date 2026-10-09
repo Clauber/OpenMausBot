@@ -78,6 +78,38 @@ describe("pinned circle frame", () => {
   });
 });
 
+describe("pinned activity indicators", () => {
+  it.each([
+    ["working", { busy: true, activity: "working" }],
+    ["waiting", { busy: true, activity: "waiting-on-you" }],
+    ["idle", { busy: false, activity: "idle" }],
+  ] as const)("shows the shared %s state on both the avatar tile and pinned row", (state, activity) => {
+    const candidate = bot(activity);
+    for (const markup of [renderCircle(candidate), renderThreads(false, [candidate])]) {
+      if (state === "idle") {
+        expect(markup).not.toContain("data-sidebar-activity=");
+      } else {
+        expect(markup).toContain(`data-sidebar-activity="${state}"`);
+        if (state === "working") expect(markup).toContain("animate-status-pulse");
+        else {
+          expect(markup).toContain("lucide-circle-alert");
+          expect(markup).toContain("text-warning");
+          expect(markup).not.toContain("animate-status-pulse");
+        }
+      }
+    }
+  });
+
+  it("uses the Bots-row status source when a sibling thread needs the person", () => {
+    const candidate = bot({ busy: true, tasks: [
+      { threadId: "thread-atlas", title: "Current", createdAt: 2, busy: true, activity: "working" },
+      { threadId: "thread-earlier", title: "Earlier", createdAt: 1, activity: "waiting-on-you" },
+    ] });
+    expect(renderCircle(candidate)).toContain('data-sidebar-activity="waiting"');
+    expect(renderThreads(false, [candidate])).toContain('data-sidebar-activity="waiting"');
+  });
+});
+
 describe("pinned circle thread list", () => {
   const atlas = bot({
     tasks: [

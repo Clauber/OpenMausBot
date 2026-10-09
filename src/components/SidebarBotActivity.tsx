@@ -4,6 +4,7 @@ import type { Dispatch } from "react";
 import type { Action, AppState, Bot, Group, Task } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
+import { SidebarActivityIndicator } from "./WorkingIndicator";
 import { orderedSidebarThreads, orderedThreadList, threadRecency, threadUpdatedLabel } from "./SidebarThreadRow";
 import type { SidebarDensity } from "@/lib/sidebar-preferences";
 
@@ -19,6 +20,15 @@ export function sidebarBotActivityTasks(bot: Bot, queued: Record<string, unknown
     // Routine runs are reachable through their run receipt, never a menu.
     .filter((task) => !task.routineRunId)
     .filter((task) => task.activity === "waiting-on-you" || task.activity === "working" || task.busy || task.waitingForTeammates === true || task.queued || task.unread);
+}
+
+/** Aggregate bot status shared by the normal roster and pinned avatar tiles. */
+export function sidebarBotStatus(bot: Bot, queued: Record<string, unknown[]>) {
+  const activityTasks = sidebarBotActivityTasks(bot, queued);
+  const waiting = bot.activity === "waiting-on-you" || activityTasks.some(task => task.activity === "waiting-on-you");
+  const working = !waiting && (Boolean(bot.busy) || activityTasks.some(task => task.busy || task.activity === "working"));
+  const teammateWait = !waiting && !working && (Boolean(bot.waitingForTeammates) || activityTasks.some(task => Boolean(task.waitingForTeammates)));
+  return { waiting, working, teammateWait, queued: activityTasks.some(task => task.queued), activityTasks };
 }
 
 /** What stays reachable when the thread tree is folded away: anything that
@@ -199,7 +209,9 @@ export function PinnedThreadRows({ entries, now, onJump, onUnpin, onDragStart, o
         <button type="button" aria-label={label} title={label}
           onClick={() => onJump(entry)}
           className="flex min-w-0 flex-1 items-center gap-2.5 px-3.5 py-2 text-left text-[13px] text-ink hover:bg-raised/70">
-          <Icon size={15} aria-hidden="true" className={cn("shrink-0", status.active ? status.colorClass : "text-ink-secondary")} />
+          {entry.task.activity === "waiting-on-you" || (!entry.task.waitingForTeammates && (entry.task.busy || entry.task.activity === "working"))
+            ? <SidebarActivityIndicator waiting={entry.task.activity === "waiting-on-you"} working={Boolean(entry.task.busy || entry.task.activity === "working")} />
+            : <Icon size={15} aria-hidden="true" className={cn("shrink-0", status.active ? status.colorClass : "text-ink-secondary")} />}
           <span className="min-w-0 flex-1">
             <span className="block truncate">{entry.task.title}</span>
             <span className="block truncate text-[11px] text-ink-secondary">{byline}</span>
