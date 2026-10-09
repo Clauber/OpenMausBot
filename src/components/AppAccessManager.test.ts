@@ -38,15 +38,15 @@ describe("access matrix", () => {
   const html = renderToStaticMarkup(createElement(AccessMatrix, { apps, bots, servers, instances, onToggle }));
 
   it("lists installed and available apps down the side and every bot across the top", () => {
-    for (const name of ["notes", "scratch", "gog", "vault"]) expect(html).toContain(`data-access-row="${name}"`);
-    for (const id of ["alpha", "beta", "gamma"]) expect(html).toContain(`data-access-bot="${id}"`);
-    expect(html.indexOf('data-access-row="notes"')).toBeLessThan(html.indexOf('data-access-row="gog"'));
+    for (const name of ["notes", "scratch", "gog", "vault"]) expect(html).toContain(`data-grant-row="${name}"`);
+    for (const id of ["alpha", "beta", "gamma"]) expect(html).toContain(`data-grant-bot="${id}"`);
+    expect(html.indexOf('data-grant-row="notes"')).toBeLessThan(html.indexOf('data-grant-row="gog"'));
     expect(html).toContain("Installed");
     expect(html).toContain("Available to install");
   });
 
   it("shows each cell's grant from the bot's own list", () => {
-    const on = (cell: string) => new RegExp(`aria-checked="true"[^>]*data-access-cell="${cell}"|data-access-cell="${cell}"[^>]*aria-checked="true"`).test(html);
+    const on = (cell: string) => new RegExp(`aria-checked="true"[^>]*data-grant-cell="${cell}"|data-grant-cell="${cell}"[^>]*aria-checked="true"`).test(html);
     expect(on("notes:alpha")).toBe(true);
     expect(on("notes:beta")).toBe(false);
     expect(on("gog:alpha")).toBe(false);
@@ -59,8 +59,8 @@ describe("access matrix", () => {
   });
 
   it("calls the toggle with the app, the bot and the new state; a working bot's switch is locked", () => {
-    const cells = expand(matrixTree().props.children).filter((node) => typeof node.props["data-access-cell"] === "string");
-    const cell = (id: string) => cells.find((node) => node.props["data-access-cell"] === id)!;
+    const cells = expand(matrixTree()).filter((node) => typeof node.props["data-grant-cell"] === "string");
+    const cell = (id: string) => cells.find((node) => node.props["data-grant-cell"] === id)!;
     cell("gog:alpha").props.onClick!();
     expect(onToggle).toHaveBeenLastCalledWith(expect.objectContaining({ name: "gog" }), expect.objectContaining({ id: "alpha" }), true);
     cell("notes:alpha").props.onClick!();
@@ -82,9 +82,9 @@ describe("a bot's apps", () => {
   it("splits the apps into on and off for that bot and counts them", () => {
     const html = view("idle", null);
     expect(html).toContain("Apps on: 1");
-    expect(html.indexOf("On for this bot")).toBeLessThan(html.indexOf('data-bot-app="notes"'));
-    expect(html.indexOf('data-bot-app="notes"')).toBeLessThan(html.indexOf("Off for this bot"));
-    expect(html.indexOf("Off for this bot")).toBeLessThan(html.indexOf('data-bot-app="gog"'));
+    expect(html.indexOf("On for this bot")).toBeLessThan(html.indexOf('data-grant-bot-row="notes"'));
+    expect(html.indexOf('data-grant-bot-row="notes"')).toBeLessThan(html.indexOf("Off for this bot"));
+    expect(html.indexOf("Off for this bot")).toBeLessThan(html.indexOf('data-grant-bot-row="gog"'));
   });
 
   it("lists the tools of apps the bot has, and none for apps it does not", () => {
@@ -92,7 +92,7 @@ describe("a bot's apps", () => {
       { name: "notes", ok: true, tools: [{ name: "read_notes" }] },
       { name: "gog", ok: true, tools: [{ name: "gmail_search" }] },
     ] });
-    expect(html).toContain('data-bot-app-tools="notes"');
+    expect(html).toContain('data-grant-detail="notes"');
     expect(html).toContain("read_notes");
     expect(html).not.toContain("gmail_search");
   });

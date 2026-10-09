@@ -95,13 +95,13 @@ try {
   await page.getByText("You", { exact: true }).first().click();
   await page.getByText("Settings", { exact: true }).first().click();
   await page.getByRole("button", { name: "Apps", exact: true }).click();
-  await page.locator("[data-access-matrix]").waitFor();
+  await page.locator("[data-grant-matrix]").waitFor();
   const filters = await page.locator("[data-apps-filter]").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-apps-filter")));
   assert.deepEqual(filters, ["access", "mcp"], "Composio chips stay hidden without a key");
   const body = await page.evaluate(() => document.body.innerText);
   assert.ok(!body.includes("Connected apps are not set up yet"), "no Composio banner");
   assert.equal(await page.locator("[data-app-tile]").count(), 0, "no Composio cards");
-  for (const row of ["notes", "gog", "grafana"]) assert.equal(await page.locator(`[data-access-row="${row}"]`).count(), 1);
+  for (const row of ["notes", "gog", "grafana"]) assert.equal(await page.locator(`[data-grant-row="${row}"]`).count(), 1);
   await shot("01-access-matrix.png");
   await shot("07-no-composio.png");
 
@@ -121,33 +121,33 @@ try {
   assert.deepEqual(installed && { enabled: installed.enabled, url: installed.url, headerKeys: installed.headerKeys }, { enabled: true, url: gateway.url, headerKeys: ["x-litellm-api-key", "x-mcp-servers"] });
   await expectChecked(toggle("Planner", GOG), false);
   await expectChecked(toggle("Scout", GOG), false);
-  await page.locator('[data-access-row="gog"]').scrollIntoViewIfNeeded();
+  await page.locator('[data-grant-row="gog"]').scrollIntoViewIfNeeded();
   await shot("02-gog-on.png");
   assert.deepEqual(await turn(bots["Mail tester"]!), ["gog", "notes"], "granted: mounted on the next turn");
   assert.deepEqual(await turn(bots.Planner!), ["notes"], "other bots stay as they were");
 
   // This bot's apps, and the tools they give it.
-  await page.locator('[data-access-view="bot"]').click();
-  await page.selectOption("[data-access-bot-select]", { label: "Mail tester" });
-  await page.locator(`[data-bot-apps="${bots["Mail tester"]}"]`).waitFor();
+  await page.locator('[data-grant-view="bot"]').click();
+  await page.selectOption("[data-grant-bot-select]", { label: "Mail tester" });
+  await page.locator(`[data-grant-bot-view="${bots["Mail tester"]}"]`).waitFor();
   await shot("06-bot-apps.png");
-  await page.locator("[data-bot-tools-button]").click();
-  await page.locator('[data-bot-app-tools="gog"]').waitFor();
-  const gogTools = await page.locator('[data-bot-app-tools="gog"] li').allInnerTexts();
+  await page.locator("[data-grant-detail-button]").click();
+  await page.locator('[data-grant-detail="gog"]').waitFor();
+  const gogTools = await page.locator('[data-grant-detail="gog"] li').allInnerTexts();
   assert.deepEqual(gogTools.sort(), ["calendar_events", "gmail_get_message", "gmail_list_labels", "gmail_search"]);
   await shot("03-tools-with-gog.png");
 
   // Revoke: the switch goes off, the tools go with it, the app stays installed.
   await toggle("Mail tester", GOG).click();
   await expectChecked(toggle("Mail tester", GOG), false);
-  await page.locator('[data-bot-app-tools="gog"]').waitFor({ state: "detached" });
-  await page.locator('[data-bot-app-tools="notes"]').waitFor();
-  assert.equal(await page.locator('[data-bot-app-tools="gog"]').count(), 0);
+  await page.locator('[data-grant-detail="gog"]').waitFor({ state: "detached" });
+  await page.locator('[data-grant-detail="notes"]').waitFor();
+  assert.equal(await page.locator('[data-grant-detail="gog"]').count(), 0);
   await shot("05-tools-without-gog.png");
-  await page.locator('[data-access-view="app"]').click();
-  await page.locator("[data-access-matrix]").waitFor();
+  await page.locator('[data-grant-view="row"]').click();
+  await page.locator("[data-grant-matrix]").waitFor();
   await expectChecked(toggle("Mail tester", GOG), false);
-  await page.locator('[data-access-row="gog"]').scrollIntoViewIfNeeded();
+  await page.locator('[data-grant-row="gog"]').scrollIntoViewIfNeeded();
   await shot("04-gog-off.png");
   assert.deepEqual(await turn(bots["Mail tester"]!), ["notes"], "revoked: gone on the next turn");
   assert.ok((await api("GET", "/api/mcp/servers")).servers.some((server: { name: string; enabled: boolean }) => server.name === "gog" && server.enabled), "the app stays installed");

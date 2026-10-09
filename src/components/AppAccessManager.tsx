@@ -4,7 +4,7 @@
 // bot's own server list, so it takes effect on that bot's next turn; turning
 // on an app that is not installed yet installs it first.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Wrench } from "lucide-react";
+import { Loader2 } from "lucide-react";
 
 import {
   accessBots,
@@ -17,15 +17,12 @@ import {
   type AccessApp,
   type CatalogApp,
 } from "@/lib/mcp-access";
-import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import { updateMcpServers, useMcpServers, type McpServerSummary } from "@/lib/mcp-servers";
 import { api, useStore, type Bot, type InstanceInfo } from "@/state/store";
 
-import { BotAvatar } from "./Avatar";
-import { Switch } from "./SettingsPrimitives";
+import { GrantBotView, GrantManagerHeader, GrantMatrix, type GrantRow, type GrantRules } from "./GrantGrid";
 
-type Lock = "busy" | "engine" | null;
 type AccessView = "app" | "bot";
 
 interface BotTools {
@@ -41,28 +38,34 @@ function appNote(app: AccessApp): string | null {
   return app.enabled ? null : t("apps.access.switchedOff");
 }
 
-function lockText(lock: Lock): string | undefined {
-  return lock === "busy" ? t("apps.access.busy") : lock === "engine" ? t("apps.access.engine") : undefined;
+function lockText(lock: "busy" | "engine" | null): string | null {
+  return lock === "busy" ? t("apps.access.busy") : lock === "engine" ? t("apps.access.engine") : null;
 }
 
-function AppCell({ label, app, bot, checked, lock, onToggle }: {
-  label: string;
-  app: AccessApp;
-  bot: Bot;
-  checked: boolean;
-  lock: Lock;
-  onToggle: (app: AccessApp, bot: Bot, on: boolean) => void;
-}) {
-  return (
-    <Switch
-      data-access-cell={`${app.name}:${bot.id}`}
-      checked={checked}
-      disabled={lock !== null}
-      title={lockText(lock)}
-      aria-label={t("apps.access.toggle", { bot: bot.name, app: label })}
-      onClick={() => onToggle(app, bot, !checked)}
-    />
-  );
+/** Rows the shared grid draws for the apps on screen. */
+function appRows(apps: AccessApp[], grouped: boolean): GrantRow[] {
+  return apps.map((app) => ({
+    id: app.name,
+    label: app.label,
+    note: appNote(app),
+    title: app.name,
+    ...(grouped ? { group: app.installed ? t("apps.access.installed") : t("apps.access.available") } : {}),
+  }));
+}
+
+function appRules(
+  apps: AccessApp[],
+  servers: McpServerSummary[],
+  instances: InstanceInfo[],
+  onToggle: (app: AccessApp, bot: Bot, on: boolean) => void,
+): GrantRules {
+  const byName = new Map(apps.map((app) => [app.name, app] as const));
+  return {
+    isOn: (row, bot) => botHasApp(bot, servers, row.id),
+    lockFor: (_row, bot) => lockText(accessLockReason(bot, instances)),
+    onToggle: (row, bot, on) => onToggle(byName.get(row.id)!, bot, on),
+    toggleLabel: (row, bot) => t("apps.access.toggle", { bot: bot.name, app: row.label }),
+  };
 }
 
 /** Apps × bots. Wide fleets scroll sideways under a pinned app column. */
@@ -73,69 +76,10 @@ export function AccessMatrix({ apps, bots, servers, instances, onToggle }: {
   instances: InstanceInfo[];
   onToggle: (app: AccessApp, bot: Bot, on: boolean) => void;
 }) {
-  const installed = apps.filter((app) => app.installed);
-  const available = apps.filter((app) => !app.installed);
-  const group = (title: string, rows: AccessApp[]) => rows.length === 0 ? null : (
-    <>
-      <tr>
-        <th colSpan={bots.length + 1} scope="colgroup" className="sticky left-0 px-3 pb-1 pt-4 text-left text-[11.5px] font-medium uppercase tracking-wide text-ink-secondary">
-          {title}
-        </th>
-      </tr>
-      {rows.map((app) => {
-        const note = appNote(app);
-        return (
-          <tr key={app.name} data-access-row={app.name} className="border-t border-hairline/30">
-            <th scope="row" className="sticky left-0 z-[1] min-w-[220px] max-w-[260px] bg-menu px-3 py-2.5 text-left align-middle font-normal">
-              <div className="truncate text-[13.5px] font-medium text-ink" title={app.name}>{app.label}</div>
-              {note && <div className="mt-0.5 text-[11.5px] leading-snug text-ink-secondary">{note}</div>}
-            </th>
-            {bots.map((bot) => (
-              <td key={bot.id} className="px-3 py-2.5 text-center align-middle">
-                <AppCell
-                  label={app.label}
-                  app={app}
-                  bot={bot}
-                  checked={botHasApp(bot, servers, app.name)}
-                  lock={accessLockReason(bot, instances)}
-                  onToggle={onToggle}
-                />
-              </td>
-            ))}
-          </tr>
-        );
-      })}
-    </>
-  );
-  return (
-    <div data-access-matrix className="overflow-x-auto rounded-xl border border-hairline/40 bg-menu">
-      <table className="w-full border-collapse text-[13px]">
-        <thead>
-          <tr>
-            <th scope="col" className="sticky left-0 z-[1] bg-menu px-3 py-3 text-left text-[11.5px] font-medium uppercase tracking-wide text-ink-secondary">
-              {t("apps.access.appColumn")}
-            </th>
-            {bots.map((bot) => (
-              <th key={bot.id} scope="col" data-access-bot={bot.id} className="min-w-[88px] max-w-[120px] px-3 py-3 text-center align-bottom font-normal">
-                <span className="mx-auto flex size-7 items-center justify-center overflow-hidden rounded-full">
-                  <BotAvatar bot={bot} size={22} animated={false} />
-                </span>
-                <span className="mt-1 block truncate text-[12px] font-medium text-ink" title={bot.name}>{bot.name}</span>
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {group(t("apps.access.installed"), installed)}
-          {group(t("apps.access.available"), available)}
-        </tbody>
-      </table>
-    </div>
-  );
+  return <GrantMatrix rows={appRows(apps, true)} bots={bots} rules={appRules(apps, servers, instances, onToggle)} rowColumnTitle={t("apps.access.appColumn")} />;
 }
 
-/** One bot's apps: every app with its switch, and on request the tools the
- * bot's next turn will have from them. */
+/** One bot's apps, and on request the tools the bot's next turn will have. */
 export function BotAppsView({ bot, apps, servers, instances, tools, toolsState, onToggle, onShowTools }: {
   bot: Bot;
   apps: AccessApp[];
@@ -146,73 +90,43 @@ export function BotAppsView({ bot, apps, servers, instances, tools, toolsState, 
   onToggle: (app: AccessApp, bot: Bot, on: boolean) => void;
   onShowTools: () => void;
 }) {
-  const lock = accessLockReason(bot, instances);
-  const on = apps.filter((app) => botHasApp(bot, servers, app.name));
-  const off = apps.filter((app) => !botHasApp(bot, servers, app.name));
-  const toolsFor = (name: string) => tools?.servers.find((server) => server.name === name);
-  const row = (app: AccessApp) => {
-    const granted = botHasApp(bot, servers, app.name);
-    const listed = granted ? toolsFor(app.name) : undefined;
-    const note = appNote(app);
-    return (
-      <div key={app.name} data-bot-app={app.name} className="px-3 py-2.5">
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="truncate text-[13.5px] font-medium text-ink" title={app.name}>{app.label}</div>
-            {note && <div className="mt-0.5 text-[11.5px] leading-snug text-ink-secondary">{note}</div>}
-          </div>
-          <AppCell label={app.label} app={app} bot={bot} checked={granted} lock={lock} onToggle={onToggle} />
-        </div>
-        {listed && (
-          <div data-bot-app-tools={app.name} className="mt-2 text-[12px] text-ink-secondary">
-            {listed.ok ? (
-              listed.tools.length ? (
-                <ul className="flex flex-wrap gap-1.5">
-                  {listed.tools.map((tool) => (
-                    <li key={tool.name} title={tool.description} className="rounded-md bg-inset px-2 py-0.5 font-mono text-[11.5px] text-ink">{tool.name}</li>
-                  ))}
-                </ul>
-              ) : t("apps.access.toolsNone")
-            ) : (
-              <span className="text-danger">{t("apps.access.toolsFailed", { error: listed.error ?? "" })}</span>
-            )}
-          </div>
-        )}
-      </div>
-    );
-  };
+  const rules = appRules(apps, servers, instances, onToggle);
   return (
-    <div data-bot-apps={bot.id} className="rounded-xl border border-hairline/40 bg-card">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-hairline/40 px-3 py-3">
-        <div className="flex min-w-0 items-center gap-2.5">
-          <span className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-full">
-            <BotAvatar bot={bot} size={26} animated={false} />
-          </span>
-          <div className="min-w-0">
-            <div className="truncate text-[14px] font-medium text-ink">{bot.name}</div>
-            <div className="text-[12px] text-ink-secondary">{t("apps.access.botCount", { count: botAppCount(bot, servers) })}</div>
-          </div>
-        </div>
-        <button
-          type="button"
-          data-bot-tools-button
-          onClick={onShowTools}
-          disabled={toolsState === "loading"}
-          className="flex items-center gap-1.5 rounded-lg bg-control px-3 py-1.5 text-[12.5px] text-ink hover:bg-raised-hover disabled:opacity-60"
-        >
-          {toolsState === "loading" ? <Loader2 size={13} className="animate-spin" /> : <Wrench size={13} />}
-          {toolsState === "loading" ? t("apps.access.toolsLoading") : t("apps.access.showTools")}
-        </button>
-      </div>
-      {lock && <div className="px-3 pt-2 text-[12px] text-ink-secondary">{lockText(lock)}</div>}
-      {toolsState === "error" && <div role="alert" className="px-3 pt-2 text-[12px] text-danger">{t("apps.access.toolsFailed", { error: "" })}</div>}
-      <div className="divide-y divide-hairline/30">
-        {on.length > 0 && <div className="px-3 pb-1 pt-3 text-[11.5px] font-medium uppercase tracking-wide text-ink-secondary">{t("apps.access.onForBot")}</div>}
-        {on.map(row)}
-        {off.length > 0 && <div className="px-3 pb-1 pt-3 text-[11.5px] font-medium uppercase tracking-wide text-ink-secondary">{t("apps.access.offForBot")}</div>}
-        {off.map(row)}
-      </div>
-    </div>
+    <GrantBotView
+      bot={bot}
+      rows={appRows(apps, false)}
+      rules={rules}
+      summary={t("apps.access.botCount", { count: botAppCount(bot, servers) })}
+      onTitle={t("apps.access.onForBot")}
+      offTitle={t("apps.access.offForBot")}
+      lockText={lockText(accessLockReason(bot, instances))}
+      detail={{
+        buttonLabel: t("apps.access.showTools"),
+        loadingLabel: t("apps.access.toolsLoading"),
+        state: toolsState,
+        errorText: t("apps.access.toolsFailed", { error: "" }),
+        onLoad: onShowTools,
+        renderRow: (row) => {
+          const listed = tools?.servers.find((server) => server.name === row.id);
+          if (!listed) return null;
+          return (
+            <div data-grant-detail={row.id} className="mt-2 text-[12px] text-ink-secondary">
+              {listed.ok ? (
+                listed.tools.length ? (
+                  <ul className="flex flex-wrap gap-1.5">
+                    {listed.tools.map((tool) => (
+                      <li key={tool.name} title={tool.description} className="rounded-md bg-inset px-2 py-0.5 font-mono text-[11.5px] text-ink">{tool.name}</li>
+                    ))}
+                  </ul>
+                ) : t("apps.access.toolsNone")
+              ) : (
+                <span className="text-danger">{t("apps.access.toolsFailed", { error: listed.error ?? "" })}</span>
+              )}
+            </div>
+          );
+        },
+      }}
+    />
   );
 }
 
@@ -340,39 +254,17 @@ export function AppAccessManager({ search }: { search: string }) {
   const loading = servers === null || catalog === null;
   return (
     <section data-access-manager aria-labelledby="access-title" className="min-w-0 pt-3">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="min-w-0">
-          <h3 id="access-title" className="text-[15px] font-medium text-ink">{t("apps.access.title")}</h3>
-          <p className="mt-0.5 max-w-[640px] text-[12.5px] text-ink-secondary">{t("apps.access.intro")}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          {view === "bot" && selected && (
-            <select
-              aria-label={t("apps.access.pickBot")}
-              data-access-bot-select
-              value={selected.id}
-              onChange={(event) => setBotId(event.target.value)}
-              className="max-w-[200px] rounded-lg bg-control px-3 py-1.5 text-[12.5px] text-ink focus:outline-none"
-            >
-              {bots.map((bot) => <option key={bot.id} value={bot.id}>{bot.name}</option>)}
-            </select>
-          )}
-          <div className="flex rounded-lg bg-control/70 p-0.5" role="group" aria-label={t("apps.access.viewAria")}>
-            {(["app", "bot"] as const).map((id) => (
-              <button
-                key={id}
-                type="button"
-                data-access-view={id}
-                aria-pressed={view === id}
-                onClick={() => setView(id)}
-                className={cn("rounded-md px-3 py-1 text-[12.5px] font-medium", view === id ? "bg-accent text-accent-ink" : "text-ink-secondary hover:text-ink")}
-              >
-                {t(id === "app" ? "apps.access.byApp" : "apps.access.byBot")}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
+      <GrantManagerHeader
+        titleId="access-title"
+        title={t("apps.access.title")}
+        intro={t("apps.access.intro")}
+        view={view === "app" ? "row" : "bot"}
+        onView={(next) => setView(next === "row" ? "app" : "bot")}
+        bots={bots}
+        selectedId={selected?.id ?? null}
+        onSelect={setBotId}
+        labels={{ byRow: t("apps.access.byApp"), byBot: t("apps.access.byBot"), viewAria: t("apps.access.viewAria"), pickBot: t("apps.access.pickBot") }}
+      />
       {(message || serversError || catalogError) && (
         <div role="alert" className="mt-3 rounded-lg bg-danger/10 px-3 py-2 text-[12.5px] text-danger">
           {message ?? t("apps.access.loadFailed")}{" "}
