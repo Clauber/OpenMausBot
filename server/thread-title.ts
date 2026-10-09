@@ -26,6 +26,49 @@ export function threadTitlePrompt(text: string, source: ThreadTitleSource = "fir
   ].join("\n");
 }
 
+const PASTE_OPEN = /^<pasted-text\b[^>\n]*>$/i;
+const PASTE_CLOSE = /^<\/pasted-text>$/i;
+
+/** One line of Markdown as plain words: block markers (quote, bullet, number,
+ * checkbox, heading), inline emphasis, code ticks and link syntax removed. */
+function plainFromMarkdownLine(raw: string): string {
+  let line = raw.replace(/<!--.*?-->/g, " ").trim();
+  for (let previous = ""; previous !== line;) {
+    previous = line;
+    line = line.replace(/^(?:>|[-*+]\s+|\d{1,9}[.)]\s+|#{1,6}\s+|\[[ xX]\]\s+)\s*/, "");
+  }
+  return line
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/__(.+?)__/g, "$1")
+    .replace(/(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])/g, "$1")
+    .replace(/(?<![\w_])_(?!\s)(.+?)(?<!\s)_(?![\w_])/g, "$1")
+    .replace(/~~(.+?)~~/g, "$1")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/\s+#+\s*$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** When a message opens with the app's `<pasted-text>` wrapper, the first
+ * meaningful line of what was pasted, as plain words: "" when the paste has
+ * none (only markers, fences, rules or blanks). null when the message does
+ * not open with a paste, so typed text keeps naming the thread as before. */
+export function pastedTextTitleLine(text: string): string | null {
+  const lines = text.split("\n");
+  const start = lines.findIndex((line) => line.trim() !== "");
+  if (start < 0 || !PASTE_OPEN.test(lines[start]!.trim())) return null;
+  for (const raw of lines.slice(start + 1)) {
+    const trimmed = raw.trim();
+    if (PASTE_CLOSE.test(trimmed)) break;
+    if (/^(?:`{3,}|~{3,})/.test(trimmed)) continue;
+    const plain = plainFromMarkdownLine(raw);
+    // a rule, fence, table divider or lone marker has no words in it
+    if (/[\p{L}\p{N}]/u.test(plain)) return plain;
+  }
+  return "";
+}
+
 /** The newest user and bot text lines, oldest first, one per line and each
  * clipped, until the next line would pass the input cap. Attachment markup
  * and secrets are scrubbed before anything leaves this machine. Empty when

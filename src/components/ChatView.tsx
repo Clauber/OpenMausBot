@@ -68,6 +68,7 @@ import { askText, runSteps, runSummary, showRun, skillPrompt, skillStaged } from
 import { useShowRunCard } from "@/lib/run-card-preferences";
 import { ToolActivity } from "./ToolActivity";
 import { ThreadRefText } from "./ThreadRefs";
+import { userTextIsMarkdown } from "@/lib/user-message-markdown";
 import { OptionCard, shouldHideOnboardingCard } from "./OptionCard";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
@@ -448,6 +449,9 @@ const Bubble = memo(function Bubble({
   // A message that is only attachments is just the files: no bubble around them.
   const attachmentsOnly = !webhookView && !replyTarget && !visibleText.trim() &&
     (user ? hasAttachments : generatedPaths.length + linkedFiles.length > 0);
+  // A structured message (a pasted brief, a list, code) reads as Markdown,
+  // the way a bot reply does; anything else stays the typed text it was.
+  const markdownBody = user && !webhookView && userTextIsMarkdown(visibleText);
   const collapsible =
     user && !webhookView && !expanded && (visibleText.length > USER_COLLAPSE_CHARS || visibleText.split("\n").length > USER_COLLAPSE_LINES);
   useEffect(() => {
@@ -520,7 +524,9 @@ const Bubble = memo(function Bubble({
               : attachmentsOnly
                 ? "text-ink"
                 : user
-                  ? "bg-bubble-user px-4 py-2.5 whitespace-pre-wrap text-ink"
+                  ? markdownBody
+                    ? "bg-bubble-user px-4 py-2.5 text-ink"
+                    : "bg-bubble-user px-4 py-2.5 whitespace-pre-wrap text-ink"
                   : "bg-card px-4 py-2.5 text-ink",
           )}
           title={new Date(message.at).toLocaleString()}
@@ -556,13 +562,15 @@ const Bubble = memo(function Bubble({
               {attachments && <AttachmentGallery images={attachments.images} files={attachments.files} message={{ threadId, messageId: message.id }} eager={eagerAttachments} className={!visibleText ? "mb-0" : undefined} />}
               {visibleText && (
                 <div
-                  className={cn("chat-text", collapsible && "max-h-40 overflow-hidden [mask-image:linear-gradient(to_bottom,black_60%,transparent)]")}
+                  className={cn(!markdownBody && "chat-text", collapsible && "max-h-40 overflow-hidden [mask-image:linear-gradient(to_bottom,black_60%,transparent)]")}
                   data-citation-source={message.id}
                   data-citation-owner-type="bot"
                   data-citation-owner={botId}
                   data-citation-thread={threadId}
                 >
-                  <ThreadRefText text={visibleText} peers={mentionPeers} />
+                  {markdownBody
+                    ? <ChatMarkdown text={visibleText} mentionPeers={mentionPeers} />
+                    : <ThreadRefText text={visibleText} peers={mentionPeers} />}
                 </div>
               )}
               {cited && <SentCitations

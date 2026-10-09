@@ -22,6 +22,7 @@ import { effectivePlace, placeLabelKey } from "@/lib/place";
 import { ThreadChip } from "./ThreadChip";
 import { ToolActivity } from "./ToolActivity";
 import { ThreadRefText } from "./ThreadRefs";
+import { userTextIsMarkdown } from "@/lib/user-message-markdown";
 import { TurnPresence } from "./TurnPresence";
 import { showToolCallsEnabled } from "@/lib/feature-flags";
 import { CompactionChip, DigestChip } from "./DigestChip";
@@ -232,6 +233,10 @@ export const Transcript = memo(function Transcript({
         const user = m.role === "user";
         const cited = user && m.text ? splitTranscriptCitations(m.text) : null;
         const attachments = user && m.text ? splitTranscriptAttachments(cited?.display ?? m.text) : null;
+        // Structured text (a pasted brief, a list, code) reads as Markdown like
+        // a bot reply; anything else stays the typed text it was.
+        const userBody = attachments?.display ?? m.text ?? "";
+        const markdownBody = user && userTextIsMarkdown(userBody);
         const newCluster = !prev || prev.role !== m.role || prev.from?.botId !== m.from?.botId || Boolean(prev.comm) || newDay;
         const routineOwner = m.kind === "routine.run" ? memberOf(m.from?.botId) : undefined;
         const routineExecutionThreadId = m.routineRun?.executionThreadId;
@@ -312,7 +317,7 @@ export const Transcript = memo(function Transcript({
                     // A bot message that is only attachments is just the files: no bubble.
                     !user && !m.text?.trim() && !m.replyToId && m.attachments?.length
                       ? "text-ink"
-                      : user ? "chat-text whitespace-pre-wrap bg-bubble-user px-4 py-2.5 text-ink" : "bg-card px-4 py-2.5 text-ink",
+                      : user ? (markdownBody ? "bg-bubble-user px-4 py-2.5 text-ink" : "chat-text whitespace-pre-wrap bg-bubble-user px-4 py-2.5 text-ink") : "bg-card px-4 py-2.5 text-ink",
                   )}
                   title={new Date(m.at).toLocaleString()}
                 >
@@ -340,7 +345,9 @@ export const Transcript = memo(function Transcript({
                         data-citation-owner={group.id}
                         data-citation-thread={group.threadId}
                       >
-                        <ThreadRefText text={attachments?.display ?? m.text ?? ""} peers={members} everyone={!group.dm} />
+                        {markdownBody
+                          ? <ChatMarkdown text={userBody} mentionPeers={members} everyone={!group.dm} />
+                          : <ThreadRefText text={userBody} peers={members} everyone={!group.dm} />}
                       </div>
                       {cited && <SentCitations
                         citations={cited.citations}
