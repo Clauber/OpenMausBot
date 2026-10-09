@@ -8,7 +8,7 @@ import { api } from "@/state/store";
 // server rendering, so the catalog is put in place the way a finished fetch
 // would leave it. Indexes outside the map keep their initial values.
 const fixture = vi.hoisted(() => ({
-  surface: "apps" as "apps" | "mcp",
+  surface: "apps" as "apps" | "mcp" | "access",
   dispatch: vi.fn(),
   bots: [] as unknown[],
   instances: [] as unknown[],
@@ -42,6 +42,9 @@ vi.mock("@/state/store", () => ({
 }));
 vi.mock("./McpServersPanel", () => ({
   McpServersPanel: ({ embedded }: { embedded?: boolean }) => createElement("div", { "data-embedded": String(Boolean(embedded)) }, "MCP inventory"),
+}));
+vi.mock("./AppAccessManager", () => ({
+  AppAccessManager: ({ search }: { search: string }) => createElement("div", { "data-access-manager": "stub", "data-search": search }, "Access manager"),
 }));
 vi.mock("./Avatar", () => ({ BotAvatar: ({ bot }: { bot: Bot }) => createElement("span", { "data-avatar": bot.id }) }));
 import { APPS_PREVIEW_COUNT, PluginsPanel, USED_BY_AVATAR_SIZE, botsUsingService } from "./PluginsPanel";
@@ -217,6 +220,32 @@ describe("Apps settings", () => {
     expect(html).toContain('data-embedded="true"');
     // no separate MCP tab any more
     expect(html).not.toContain('role="tab"');
+  });
+
+  it("opens on the access manager, with the marketplace and its chips only once a Composio key exists", () => {
+    fixture.surface = "access";
+    const configured = render();
+    expect(configured.html).toContain('data-access-manager="stub"');
+    expect(chip(configured.nodes, "access").props["aria-pressed"]).toBe(true);
+    expect(chip(configured.nodes, "all").props["aria-pressed"]).toBe(false);
+    expect(configured.html).not.toContain("data-app-tile");
+    expect(configured.html).not.toContain("MCP inventory");
+    chip(configured.nodes, "access").props.onClick!();
+    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "toggleAppSettings", open: true, section: "apps", appsSurface: "access" });
+  });
+
+  it("hides connected apps entirely when no Composio key is configured", () => {
+    fixture.overrides.set(CONFIGURED, false);
+    for (const surface of ["access", "apps"] as const) {
+      fixture.surface = surface;
+      const { html, nodes: tree } = render();
+      expect(html).toContain('data-access-manager="stub"');
+      expect(html).not.toContain("Connected apps are not set up yet");
+      expect(html).not.toContain("Composio");
+      expect(html).not.toContain("data-app-tile");
+      expect(tree.filter((node) => node.props["data-apps-filter"] !== undefined).map((node) => node.props["data-apps-filter"])).toEqual(["access", "mcp"]);
+      expect(chip(tree, "access").props["aria-pressed"]).toBe(true);
+    }
   });
 
   it("filters with chips, keeping the MCP chip on the store's surface", () => {
