@@ -293,7 +293,7 @@ export function AppAccessManager({ search }: { search: string }) {
   const loadTools = useCallback((forBot: string) => {
     setToolsFor(forBot);
     setToolsState("loading");
-    return api(`/api/bots/${forBot}/mcp-tools`)
+    return api(`/api/bots/${forBot}/mcp-tools`, { method: "POST", body: "{}" })
       .then((result) => { setTools({ servers: result.servers ?? [] }); setToolsState("idle"); })
       .catch(() => setToolsState("error"));
   }, []);

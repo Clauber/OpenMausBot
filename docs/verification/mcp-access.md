@@ -20,7 +20,7 @@ gateway that refuses any key but its placeholder. It proves, in order:
   home's env file, and pins bots that follow "every enabled server" to what
   they had, so the install grants no one else;
 - a granted bot's next turn mounts the app (the fake CLI's dump) and
-  `GET /api/bots/:id/mcp-tools` lists the stub's tools; another bot gets
+  `POST /api/bots/:id/mcp-tools` lists the stub's tools; another bot gets
   neither;
 - revoking removes both on the next turn and leaves the app installed;
 - a missing secret is refused (422, names only) until a one-time value is

@@ -43,7 +43,7 @@ it("installs a catalog app on first grant, then grants and revokes it per bot fo
     return Object.keys(dump.mcpConfig.mcpServers).filter((name) => ["notes", "gog", "vault"].includes(name)).sort();
   };
   const toolsOf = async (bot: Bot) => {
-    const { status, body } = await api("GET", `/api/bots/${bot.id}/mcp-tools`);
+    const { status, body } = await api("POST", `/api/bots/${bot.id}/mcp-tools`, {});
     expect(status).toBe(200);
     return Object.fromEntries((body.servers as Array<{ name: string; ok: boolean; tools: Array<{ name: string }> }>)
       .map((server) => [server.name, server.ok ? server.tools.map((tool) => tool.name).sort() : "failed"]));

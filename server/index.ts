@@ -21972,9 +21972,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
 
     // The tools this bot's next turn will mount from its custom MCP servers:
     // the same selection a turn uses (engineMcpServers + the bot's tool
-    // scope), each server asked for its tools list. Values stay private.
+    // scope), each server asked for its tools list. Values stay private. A
+    // POST because it starts the servers, as the per-server Test does.
     m = path.match(/^\/api\/bots\/([\w-]+)\/mcp-tools$/);
-    if (m && method === "GET") {
+    if (m && method === "POST") {
       const target = store.bot(m[1]!);
       if (!target) return json(res, 404, { error: "no such bot" });
       const mounted = await withMcpSignIn(engineMcpServers(target), mcpOAuth);
