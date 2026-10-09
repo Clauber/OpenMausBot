@@ -47,6 +47,7 @@ import { activityPreview, botEngine } from "@/lib/failed-turn";
 import { activeLocale, t } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { archiveThreads, isThreadRunning } from "./archive-threads";
 import { FullAccessWarning } from "./FullAccessWarning";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import { SidebarActivityIndicator, WorkingDots } from "./WorkingIndicator";
@@ -62,7 +63,7 @@ import { BotProjectDialog, FolderActions, FolderIcon, navigateThreadMenu } from 
 import { BOT_DRAG_TYPE, draggedBot, placeBot, type BotDrag } from "@/lib/bot-order";
 import { draggedFolder, FOLDER_DRAG_TYPE, moveFolder, placeFolder } from "@/lib/folder-order";
 import { folderUnreadThreadIds, markFolderRead } from "@/lib/folder-read";
-import { orderedThreadList, SidebarThreadRow, stampClock, threadRecency, useRelativeNow, useSnoozeExpiry, visibleSidebarThreads } from "./SidebarThreadRow";
+import { isArchived, orderedThreadList, SidebarThreadRow, type ClickModifiers, stampClock, threadRecency, useRelativeNow, useSnoozeExpiry, visibleSidebarThreads } from "./SidebarThreadRow";
 import {
   loadCollapsedSections,
   loadSectionOrder,
@@ -1002,6 +1003,11 @@ export function BotThreadList({ bot, selected, density, query, pendingQueued, re
   const [folderDrop, setFolderDrop] = useState<{ id: string; place: "before" | "after" } | null>(null);
   const draggingFolder = useRef<string | null>(null);
   const [showAll, setShowAll] = useState(false);
+  // Bulk selection: shift+click a range, Cmd/Ctrl+click toggles one.
+  const [selection, setSelection] = useState<ReadonlySet<string>>(new Set());
+  const [confirmingBulk, setConfirmingBulk] = useState(false);
+  const selectionAnchor = useRef<string | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const [permissionRefresh, setPermissionRefresh] = useState<{ threadId: string; kind: "full" | "local-auto" } | null>(null);
   const currentProjectId = tasks.find((task) => task.threadId === bot.threadId)?.projectId;
   useEffect(() => {
@@ -1058,10 +1064,61 @@ export function BotThreadList({ bot, selected, density, query, pendingQueued, re
   }), [botId, dispatch, generatedTitles]);
   const renderThread = (task: (typeof tasks)[number]) => {
     const thread = currentTaskBot(bot, task.threadId);
-    return <SidebarThreadRow key={task.threadId} task={{ ...task, busy: thread.busy, activity: thread.activity, waitingForTeammates: thread.waitingForTeammates }} ownerId={bot.id} current={selected && task.threadId === bot.threadId} compact={density === "compact"} folders={projects}
-      activityLabel={task.threadId === bot.threadId ? activityLabel : undefined} now={stampClock(threadRecency(task), now)} locale={locale} {...actions} />;
+    return <SidebarThreadRow key={task.threadId} task={{ ...task, busy: thread.busy, activity: thread.activity, waitingForTeammates: thread.waitingForTeammates }} ownerId={bot.id} current={selected && task.threadId === bot.threadId} selected={selection.has(task.threadId)} compact={density === "compact"} folders={projects}
+      activityLabel={task.threadId === bot.threadId ? activityLabel : undefined} now={stampClock(threadRecency(task), now)} locale={locale} {...actions} onSelect={onPick} />;
   };
   const ungrouped = visibleTasks.filter((task) => !projects.some((project) => project.id === task.projectId));
+  // Rows in the order they are drawn: open folders first, then the rest.
+  const displayedIds = [
+    ...orderedProjects.filter((project) => query || !collapsed.has(project.id)).flatMap((project) => visibleTasks.filter((task) => task.projectId === project.id)),
+    ...ungrouped,
+  ].map((task) => task.threadId);
+  const pick = useRef<(task: { threadId: string }, modifiers?: ClickModifiers) => void>(() => {});
+  const onPick = useCallback((task: { threadId: string }, modifiers?: ClickModifiers) => pick.current(task, modifiers), []);
+  pick.current = (task, modifiers) => {
+    const toggle = modifiers?.metaKey || modifiers?.ctrlKey;
+    if (modifiers?.shiftKey) {
+      const from = displayedIds.indexOf(selectionAnchor.current ?? bot.threadId);
+      const to = displayedIds.indexOf(task.threadId);
+      const [low, high] = from < 0 ? [to, to] : [Math.min(from, to), Math.max(from, to)];
+      if (selectionAnchor.current === null) selectionAnchor.current = displayedIds[from < 0 ? to : from] ?? task.threadId;
+      setSelection(new Set(displayedIds.slice(low, high + 1)));
+    } else if (toggle) {
+      selectionAnchor.current = task.threadId;
+      setSelection((previous) => {
+        const next = new Set(previous);
+        if (!next.delete(task.threadId)) next.add(task.threadId);
+        return next;
+      });
+    } else {
+      selectionAnchor.current = null;
+      setSelection((previous) => (previous.size ? new Set() : previous));
+      actions.onSelect(task);
+    }
+  };
+  const clearSelection = () => { selectionAnchor.current = null; setSelection(new Set()); };
+  // Rows that left the list (archived, deleted, folded away) leave the selection.
+  useEffect(() => {
+    setSelection((previous) => {
+      const next = new Set([...previous].filter((id) => displayedIds.includes(id)));
+      return next.size === previous.size ? previous : next;
+    });
+  }, [displayedIds.join("\n")]);
+  useEffect(() => {
+    if (selection.size === 0 || confirmingBulk) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") clearSelection(); };
+    const onDown = (event: MouseEvent) => {
+      if (event.target instanceof Node && !listRef.current?.contains(event.target)) clearSelection();
+    };
+    window.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onDown);
+    return () => { window.removeEventListener("keydown", onKey); document.removeEventListener("mousedown", onDown); };
+  }, [selection.size, confirmingBulk]);
+  const archivableSelected = [...selection].filter((id) => {
+    const task = tasks.find((candidate) => candidate.threadId === id);
+    return task && !isArchived(task) && !isThreadRunning(bot, id);
+  });
+  const skippedSelected = selection.size - archivableSelected.length;
   const projectToEdit = projects.find((project) => project.id === editingProject);
   const projectIds = projects.map((project) => project.id);
   const saveOrder = (ids: string[], onSaved?: () => void) => {
@@ -1085,10 +1142,40 @@ export function BotThreadList({ bot, selected, density, query, pendingQueued, re
     } finally { setMarkingRead(false); }
   };
   return (
-    <div hidden={hidden} className="mb-2 space-y-0.5" role="group" aria-label={t("task.namedList", { name: bot.name })}
+    <div ref={listRef} hidden={hidden} className="mb-2 space-y-0.5" role="group" aria-label={t("task.namedList", { name: bot.name })}
       onDragOver={(event) => { if (event.dataTransfer.types.includes(FOLDER_DRAG_TYPE)) event.stopPropagation(); }}
       onDrop={(event) => { if (event.dataTransfer.types.includes(FOLDER_DRAG_TYPE)) { event.preventDefault(); event.stopPropagation(); resetFolderDrag(); } }}>
       {!hidden && <>
+      {selection.size > 0 && <div data-sidebar-bulk-bar="" className="mx-1 mb-1 flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 py-1 pl-2.5 pr-1 text-[11.5px] text-ink">
+        <span role="status" className="min-w-0 flex-1 truncate">
+          {t("task.bulk.selected", { count: selection.size })}
+          {skippedSelected > 0 && <span className="text-ink-secondary"> · {t("task.bulk.skipped", { count: skippedSelected })}</span>}
+        </span>
+        <button type="button" data-sidebar-bulk-archive="" aria-disabled={archivableSelected.length === 0 || undefined}
+          title={archivableSelected.length === 0 ? t("chat.archiveThreadRunning") : undefined}
+          onClick={() => { if (archivableSelected.length) setConfirmingBulk(true); }}
+          className={cn("flex shrink-0 items-center gap-1 rounded px-2 py-1 font-medium outline-none focus-visible:ring-2 focus-visible:ring-accent", archivableSelected.length ? "text-ink hover:bg-raised" : "cursor-not-allowed text-ink-tertiary")}>
+          <Archive size={12} aria-hidden="true" />{archivableSelected.length === 1 ? t("task.bulk.archiveOne") : t("task.bulk.archive", { count: archivableSelected.length })}
+        </button>
+        <button type="button" data-sidebar-bulk-clear="" aria-label={t("task.bulk.clear")} title={t("task.bulk.clear")} onClick={clearSelection}
+          className="flex size-6 shrink-0 items-center justify-center rounded text-ink-secondary outline-none hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent">
+          <X size={12} aria-hidden="true" />
+        </button>
+      </div>}
+      <ConfirmDialog
+        open={confirmingBulk}
+        tone="neutral"
+        icon={<Archive size={18} />}
+        title={archivableSelected.length === 1 ? t("task.bulk.confirmTitleOne") : t("task.bulk.confirmTitle", { count: archivableSelected.length })}
+        body={t("task.bulk.confirmBody")}
+        confirmLabel={t("task.archive")}
+        onCancel={() => setConfirmingBulk(false)}
+        onConfirm={() => {
+          setConfirmingBulk(false);
+          archiveThreads(dispatch, bot, archivableSelected);
+          clearSelection();
+        }}
+      />
       {orderedProjects.map((project) => {
         const index = projects.indexOf(project);
         const projectTasks = tasks.filter((task) => task.projectId === project.id);

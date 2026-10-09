@@ -4,14 +4,8 @@ import { useStore, type Bot } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { isArchived, isWorking, orderedThreadList } from "./SidebarThreadRow";
-
-/** Where the person lands once the current thread is put away: the most
- * recent other thread that is still on the list, or null when none is left. */
-export function archiveThreadDestination(bot: Bot): string | null {
-  const open = (bot.tasks ?? []).filter((task) => task.threadId !== bot.threadId && !isArchived(task));
-  return orderedThreadList(open)[0]?.threadId ?? null;
-}
+import { isArchived, isWorking } from "./SidebarThreadRow";
+import { archiveThreads, isThreadRunning } from "./archive-threads";
 
 /** Header shortcut for the sidebar's "Archive" thread action: the same
  * updateTask archivedAt patch, behind the same confirmation the bot archive
@@ -23,7 +17,7 @@ export function ArchiveThreadButton({ bot }: { bot: Bot }) {
   const task = bot.tasks?.find((candidate) => candidate.threadId === bot.threadId);
   if (task && isArchived(task)) return null;
   const title = task?.title || t("chat.archiveThreadUntitled");
-  const running = Boolean(bot.busy) || (task ? isWorking(task) : false);
+  const running = Boolean(bot.busy) || isThreadRunning(bot, bot.threadId) || (task ? isWorking(task) : false);
   const label = running ? t("chat.archiveThreadRunning") : t("chat.archiveThread");
   return (
     <>
@@ -51,12 +45,7 @@ export function ArchiveThreadButton({ bot }: { bot: Bot }) {
         onCancel={() => setConfirming(false)}
         onConfirm={() => {
           setConfirming(false);
-          // Same patch the sidebar menu sends. The open thread always stays
-          // on the sidebar list, so move off it or "archived" would show nothing.
-          dispatch({ type: "updateTask", botId: bot.id, threadId: bot.threadId, patch: { archivedAt: Date.now() } });
-          const next = archiveThreadDestination(bot);
-          if (next) dispatch({ type: "switchTask", botId: bot.id, threadId: next });
-          else dispatch({ type: "newTask", botId: bot.id });
+          archiveThreads(dispatch, bot, [bot.threadId]);
         }}
       />
     </>

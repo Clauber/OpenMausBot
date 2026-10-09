@@ -9,13 +9,18 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Bot } from "@/state/store";
 
-const fixture = vi.hoisted(() => ({ dispatch: vi.fn() }));
+const fixture = vi.hoisted(() => ({ dispatch: vi.fn(), shared: [] as unknown[][] }));
+vi.mock("./archive-threads", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./archive-threads")>();
+  return { ...original, archiveThreads: (...args: Parameters<typeof original.archiveThreads>) => { fixture.shared.push(args); return original.archiveThreads(...args); } };
+});
 vi.mock("@/state/store", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/state/store")>(),
   useStore: () => ({ state: {}, dispatch: fixture.dispatch }),
 }));
 
-const { ArchiveThreadButton, archiveThreadDestination } = await import("./ArchiveThreadButton");
+const { ArchiveThreadButton } = await import("./ArchiveThreadButton");
+const { archiveThreadDestination } = await import("./archive-threads");
 const { t } = await import("@/lib/i18n");
 
 const bot = (over: Partial<Bot> = {}): Bot => ({
@@ -38,6 +43,7 @@ const click = (el: HTMLElement) => flushSync(() => el.click());
 
 beforeEach(() => {
   fixture.dispatch.mockClear();
+  fixture.shared.length = 0;
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -89,6 +95,9 @@ describe("Archive thread button", () => {
       [{ type: "updateTask", botId: "bot", threadId: "current", patch: { archivedAt: 1234 } }],
       [{ type: "switchTask", botId: "bot", threadId: "older" }],
     ]);
+    // the very helper the sidebar's bulk archive calls
+    expect(fixture.shared).toHaveLength(1);
+    expect(fixture.shared[0]![2]).toEqual(["current"]);
     now.mockRestore();
   });
 
