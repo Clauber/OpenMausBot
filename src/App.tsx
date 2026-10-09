@@ -162,7 +162,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
         e.preventDefault();
         dispatch({ type: "toggleNewBot", open: true });
       } else if (matchesShortcut(e, "jump-bot")) {
-        const target = bots[Number(e.key) - 1];
+        const target = bots[Number(/^Digit[1-9]$/.test(e.code) ? e.code.slice(5) : e.key) - 1];
         if (target) {
           e.preventDefault();
           dispatch({ type: "select", id: target.id });

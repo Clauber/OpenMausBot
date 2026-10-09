@@ -17,6 +17,11 @@ describe("editable shortcuts", () => {
     expect(matchesShortcut(event("}", { ctrlKey: true, shiftKey: true, code: "BracketRight" }), "switch-bot", {}, false)).toBe(true);
     expect(matchesShortcut(event("3", { ctrlKey: true }), "jump-bot", {}, false)).toBe(true);
   });
+  it("matches shifted digits and rejects their equivalent duplicate chords", () => {
+    const bindings = { win: { "jump-bot": ["Ctrl", "Shift", "1–9"] } };
+    expect(matchesShortcut(event("!", { ctrlKey: true, shiftKey: true, code: "Digit1" }), "jump-bot", bindings, false)).toBe(true);
+    expect(bindingConflict("terminal-panel", ["Ctrl", "Shift", "!"], bindings, false)?.id).toBe("jump-bot");
+  });
   it("rejects malformed bindings and detects overlapping fixed/family bindings", () => {
     expect(parseShortcutBinding("Ctrl+Shift+T", "terminal-panel", false)).toEqual(["Ctrl", "Shift", "T"]);
     expect(parseShortcutBinding("T", "terminal-panel", false)).toBeNull();

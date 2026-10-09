@@ -287,9 +287,17 @@ export function parseShortcutBinding(value: string, id: string, isMac = isMacPla
   return [...["meta", "ctrl", "alt", "shift"].filter(key => modifiers.includes(key)).map(key => labels[key as keyof typeof labels]), last.length === 1 ? last.toUpperCase() : last];
 }
 
+const shiftedKeys: Record<string, string> = { "!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6", "&": "7", "*": "8", "(": "9", ")": "0", "~": "`", "_": "-", "+": "=", "{": "[", "}": "]", "|": "\\", ":": ";", '"': "'", "<": ",", ">": ".", "?": "/" };
+
+function chordKey(key: string, shift: boolean): string {
+  const normalized = normalizedKey(key);
+  return shift ? shiftedKeys[normalized] ?? normalized : normalized;
+}
+
 function bindingSignatures(keys: string[]): string[] {
-  const mods = keys.slice(0, -1).map(modifier).sort().join("+");
-  return expandedKeys(keys).map(key => `${mods}:${key}`);
+  const modifiers = keys.slice(0, -1).map(modifier);
+  const mods = [...modifiers].sort().join("+");
+  return expandedKeys(keys).map(key => `${mods}:${chordKey(key, modifiers.includes("shift"))}`);
 }
 
 export function bindingConflict(id: string, keys: string[], bindings = readShortcutBindings(), isMac = isMacPlatform()): ShortcutItem | undefined {
@@ -327,12 +335,12 @@ export function matchesShortcut(event: KeyboardEvent, id: string, bindings = rea
   const mods = keys.slice(0, -1).map(modifier);
   if (event.metaKey !== mods.includes("meta") || event.ctrlKey !== mods.includes("ctrl") || event.altKey !== mods.includes("alt") || event.shiftKey !== mods.includes("shift")) return false;
   const key = event.code === "BracketLeft" ? "[" : event.code === "BracketRight" ? "]" : event.code === "Backquote" ? "`" : event.key === " " ? "space" : event.key;
-  return expandedKeys(keys).includes(normalizedKey(key));
+  return expandedKeys(keys).some(binding => chordKey(binding, event.shiftKey) === chordKey(key, event.shiftKey));
 }
 
 export function shortcutPairIndex(event: KeyboardEvent, id: string): number {
   const item = SHORTCUT_GROUPS.flatMap(group => group.items).find(item => item.id === id);
   if (!item) return -1;
   const key = event.code === "BracketLeft" ? "[" : event.code === "BracketRight" ? "]" : event.key;
-  return expandedKeys(shortcutKeysForPlatform(item)).indexOf(normalizedKey(key));
+  return expandedKeys(shortcutKeysForPlatform(item)).findIndex(binding => chordKey(binding, event.shiftKey) === chordKey(key, event.shiftKey));
 }
