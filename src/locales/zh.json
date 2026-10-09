@@ -755,9 +755,9 @@
   "composer.queued.list": "排队的消息",
   "composer.queued.capacity": "已排入队列——等这个机器人有空闲的对话名额时就会开始。",
   "composer.queued.groupTurn": "已排入队列——这个机器人的聊天室回合一次只会执行一个，结束后就会开始。",
-  "settings.threads.title": "平行对话",
-  "settings.threads.subtitle": "选择每个机器人一次可以处理多少工作。",
-  "settings.threads.label": "每个机器人同时运行的对话上限",
+  "settings.threads.title": "默认平行对话",
+  "settings.threads.subtitle": "选择每个机器人默认一次可以处理多少工作。机器人可在自己的设置中覆盖此值。",
+  "settings.threads.label": "每个机器人默认同时运行的对话上限",
   "settings.threads.help": "多出的消息会排入队列，直到有名额空出。等待核准的对话也会占用一个名额。调低这个上限不会停止运行中的工作；模型限制与共用电脑的保护机制仍然适用。",
   "settings.threads.saving": "正在保存…",
   "settings.threads.error": "无法保存对话上限。请再试一次。",
@@ -2436,5 +2436,9 @@
   "computer.badge.autoBoat": "云 boat · 自动 · 只读",
   "computer.addBoatKey": "添加 Boat API 密钥即可为此机器人提供云电脑——它就在这里启动。",
   "call.live.disclosureCloud": "实时通话会将你的语音连同此聊天的近期消息、机器人的回复以及其请求审批的详细信息一并发送给 OpenAI。OpenAI 密钥始终保存在你的 Cloud 上。",
-  "mcp.probe.filter": "筛选工具"
+  "mcp.probe.filter": "筛选工具",
+  "botSettings.threads.title": "平行对话",
+  "botSettings.threads.label": "此机器人可同时运行的对话数",
+  "botSettings.threads.useDefault": "使用默认值（{limit}）",
+  "botSettings.threads.help": "仅为此机器人覆盖默认上限。多出的消息会排入队列，直到有名额空出；调低上限不会停止运行中的工作。"
 }

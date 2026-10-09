@@ -9,6 +9,7 @@ import { X } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { useStore, type Bot } from "@/state/store";
 import { useBotEditor } from "./BotEditorContext";
+import { ParallelThreadsCard } from "./ParallelThreadsCard";
 import { ProposalStatus } from "./ProposalStatus";
 
 export function ModelSection({ bot }: { bot: Bot }) {
@@ -53,6 +54,7 @@ export function ModelSection({ bot }: { bot: Bot }) {
         }
       />
       {!draft && <FallbackChain bot={bot} onChange={(fallback) => dispatch({ type: "updateBot", botId: bot.id, patch: { fallback } })} />}
+      {!draft && <ParallelThreadsCard bot={bot} />}
       {!draft && (
         <div className="rounded-xl bg-card p-4">
           <div className="text-[15px] font-medium text-ink">Thinking</div>

@@ -17,7 +17,9 @@ describe("ThreadConcurrencySettings", () => {
     expect(markup.match(/<option /g)).toHaveLength(10);
     expect(markup).toContain('value="10"');
     expect(markup).toContain("Extra messages queue until a slot opens.");
-    expect(markup).toContain("Maximum running threads per bot");
+    expect(markup).toContain("Default maximum running threads per bot");
+    expect(markup).toContain("Default parallel threads");
+    expect(markup).toContain("A bot can override this in its own settings.");
   });
   it("shows the confirmed server value", () => {
     fixture.limit = 10;

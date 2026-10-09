@@ -1492,5 +1492,9 @@
   "computer.badge.autoBoat": "クラウドボート · 自動 · 読み取り専用",
   "computer.addBoatKey": "Boat の API キーを追加すると、このボットにクラウドコンピューターが用意されます。ここで起動します。",
   "call.live.disclosureCloud": "ライブ通話では、音声に加えて、チャットの最近のメッセージ、ボットの回答、ボットが求める承認の詳細が OpenAI に送信されます。OpenAI キーはお使いの Cloud に保存されたままです。",
-  "mcp.probe.filter": "ツールを絞り込む"
+  "mcp.probe.filter": "ツールを絞り込む",
+  "botSettings.threads.title": "並列スレッド",
+  "botSettings.threads.label": "このボットが同時に実行できるスレッド数",
+  "botSettings.threads.useDefault": "既定値を使用（{limit}）",
+  "botSettings.threads.help": "このボットに限り、既定の上限を上書きします。超過したメッセージは空きができるまで待機します。上限を下げても実行中の作業は停止しません。"
 }

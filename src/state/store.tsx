@@ -454,6 +454,9 @@ export interface Bot {
   memoryEnabled?: boolean;
   /** Store reasoning with settled replies (off by default). */
   includeThinking?: boolean;
+  /** This bot's own cap on parallel threads (1-10); absent follows the
+   * workspace default (config.threads.maxConcurrentPerBot). */
+  maxConcurrentThreads?: number;
   pinned?: boolean;
   hidden?: boolean;
   /** Sidebar section this bot renders under; absent = unsectioned. */
@@ -2258,6 +2261,7 @@ export function reducer(state: AppState, action: Action): AppState {
         computer,
         connectorTools,
         connectorScopes,
+        maxConcurrentThreads,
         ...rest
       } = action.patch;
       const botPatch: Partial<Bot> = { ...rest };
@@ -2269,6 +2273,9 @@ export function reducer(state: AppState, action: Action): AppState {
       else if (connectorTools !== undefined) botPatch.connectorTools = connectorTools;
       if (connectorScopes === null) botPatch.connectorScopes = undefined;
       else if (connectorScopes !== undefined) botPatch.connectorScopes = connectorScopes;
+      // null returns the bot to the workspace default: an absent field.
+      if (maxConcurrentThreads === null) botPatch.maxConcurrentThreads = undefined;
+      else if (maxConcurrentThreads !== undefined) botPatch.maxConcurrentThreads = maxConcurrentThreads;
       return updateBot(next, action.botId, (b) => ({ ...b, ...botPatch }));
     }
     case "threadActive": {

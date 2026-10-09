@@ -1508,5 +1508,9 @@
   "computer.badge.autoBoat": "Cloud-Boat · Auto · nur lesen",
   "computer.addBoatKey": "Füg einen Boat-API-Schlüssel hinzu, damit dieser Bot einen Cloud-Computer bekommt — er startet direkt hier.",
   "call.live.disclosureCloud": "Bei einem Live-Anruf werden deine Stimme sowie die letzten Nachrichten des Chats, die Antworten des Bots und die Details aller von ihm angefragten Freigaben an OpenAI gesendet. Der OpenAI-Schlüssel bleibt in deiner Cloud.",
-  "mcp.probe.filter": "Tools filtern"
+  "mcp.probe.filter": "Tools filtern",
+  "botSettings.threads.title": "Parallele Threads",
+  "botSettings.threads.label": "Threads, die dieser Bot gleichzeitig ausführen kann",
+  "botSettings.threads.useDefault": "Standard verwenden ({limit})",
+  "botSettings.threads.help": "Überschreibt das Standardlimit nur für diesen Bot. Weitere Nachrichten warten in der Warteschlange, bis ein Platz frei wird; ein niedrigeres Limit beendet laufende Arbeit nicht."
 }
