@@ -28,6 +28,7 @@ import type { TeamSetupRequest, TeamSetupResult } from "../shared/team-setup.ts"
 import type { GroupGoalRunCardData } from "../shared/group-goal-run.ts";
 import { isMentionBoundary, isMentionNameContinuation } from "../shared/mention-boundary.ts";
 import type { HandedState } from "./delta-context.ts";
+import { pastedTextTitleLine } from "./thread-title.ts";
 import type { AgentPart, PartPair, RoomPart } from "./package-parts.ts";
 import type {
   BotActivity, GroupDefaultResponder, GroupTask as GroupTaskRecord, MausColor,
@@ -337,9 +338,10 @@ export function threadTitleFrom(title?: string): string {
   return title?.trim().slice(0, TASK_TITLE_MAX) || UNTITLED_THREAD;
 }
 
-/** A task's name, taken from the first thing you asked it to do. */
+/** A task's name, taken from the first thing you asked it to do. A message
+ * that opens with a paste is named from the pasted content, not its wrapper. */
 export function titleFromMessage(text: string): string {
-  const line = text.trim().split("\n")[0]!.trim();
+  const line = pastedTextTitleLine(text) ?? text.trim().split("\n")[0]!.trim();
   return line.length > 48 ? `${line.slice(0, 47)}…` : line || UNTITLED_TASK;
 }
 
