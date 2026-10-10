@@ -5596,11 +5596,31 @@ describe("harness HTTP API", () => {
       const bot = (await isolatedApi("POST", "/api/bots", {
         name: "Operator target", modelSelection: selection, requireAvailableModel: true,
       })).body.bot;
-      expect((await isolatedApi("PATCH", `/api/bots/${bot.id}`, { approvalMode: "full" })).status).toBe(400);
+      const refusedFull = await isolatedApi("PATCH", `/api/bots/${bot.id}`, { approvalMode: "full" });
+      expect(refusedFull.status).toBe(400);
+      expect(refusedFull.body.error).toBe("Confirm the Full access warning first (confirmFullAccess)");
       const granted = await isolatedApi("PATCH", `/api/bots/${bot.id}`,
         { approvalMode: "full", confirmFullAccess: true, applyToAllThreads: true });
       expect(granted.status).toBe(200);
       expect(granted.body.bot).toMatchObject({ approvalMode: "full", autoApprove: false });
+      // Sidebar edits preserve an existing Full grant; they never grant access.
+      for (const pinned of [true, false, true]) {
+        const saved = await isolatedApi("PATCH", `/api/bots/${bot.id}`, { pinned });
+        expect(saved.status).toBe(200);
+        expect(saved.body.bot).toMatchObject({ pinned, approvalMode: "full", autoApprove: false });
+      }
+      const reordered = await isolatedApi("PATCH", `/api/bots/${bot.id}`, { section: "Pinned team" });
+      expect(reordered.status).toBe(200);
+      expect(reordered.body.bot).toMatchObject({ section: "Pinned team", approvalMode: "full" });
+      // Consent on an unrelated edit cannot widen a grant to other threads.
+      const askSibling = (await isolatedApi("POST", `/api/bots/${bot.id}/tasks`, { title: "Ask only" })).body.task;
+      expect((await isolatedApi("PATCH", `/api/bots/${bot.id}/tasks/${askSibling.threadId}`, { approvalMode: "ask" })).status).toBe(200);
+      const inertConsent = await isolatedApi("PATCH", `/api/bots/${bot.id}`,
+        { pinned: false, confirmFullAccess: true, applyToAllThreads: true });
+      expect(inertConsent.status).toBe(200);
+      const tasks = (await isolatedApi("GET", "/api/bots?messages=0")).body.bots.find((candidate: { id: string }) => candidate.id === bot.id).tasks;
+      expect(tasks.find((task: { threadId: string }) => task.threadId === askSibling.threadId).approvalMode).toBe("ask");
+      expect((await isolatedApi("PATCH", `/api/bots/${bot.id}`, { approvalMode: "full" })).status).toBe(400);
       const refusedCustom = await isolatedApi("PATCH", `/api/bots/${bot.id}`, { approvalMode: "custom", confirmFullAccess: true });
       expect(refusedCustom.status).toBe(400);
       expect(refusedCustom.body.error).toMatch(/does not support the selected approval level/i);
