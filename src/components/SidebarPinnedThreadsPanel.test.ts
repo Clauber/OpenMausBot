@@ -65,6 +65,14 @@ describe("pinned threads panel", () => {
     expect(markup).toBe("");
   });
 
+  it("offers an empty drop target and makes pinned bot threads draggable back to Bots", () => {
+    const props = { density: "comfortable" as const, now: 1, onUnpin: vi.fn(), onJump: vi.fn(), collapsed: false, acceptBotDrop: true, onDrop: vi.fn(), onThreadDragStart: vi.fn() };
+    const empty = renderToStaticMarkup(createElement(SidebarPinnedThreadsPanel, { ...props, entries: [] }));
+    expect(empty).toContain(t("sidebar.bots.dropToPin"));
+    const pinned = renderToStaticMarkup(createElement(SidebarPinnedThreadsPanel, { ...props, entries: [entry] }));
+    expect(pinned).toContain('data-pinned-thread-id="pinned-1" draggable="true"');
+  });
+
   it("renders the pinned rows under the Pinned threads name", () => {
     const { markup } = renderPanel();
     expect(markup).toContain(t("sidebar.pinnedThreads.title"));
@@ -106,6 +114,7 @@ describe("pinned thread rows", () => {
     expect(markup).not.toContain("lucide-circle-alert");
     expect(markup).not.toContain("lucide-loader");
     expect(markup).toContain("Atlas · just now");
+    expect(markup).not.toContain("data-sidebar-activity=");
   });
 
   it("shows the live status icon and word for an actively working pinned thread", () => {
@@ -114,7 +123,8 @@ describe("pinned thread rows", () => {
       task: { threadId: "pinned-2", title: "Build report", createdAt: 1, queued: false, busy: true, activity: "working" },
     };
     const { markup } = renderRows([working]);
-    expect(markup).toContain("lucide-loader");
+    expect(markup).toContain('data-sidebar-activity="working"');
+    expect(markup).toContain("animate-status-pulse");
     expect(markup).not.toContain("lucide-pin ");
     expect(markup).toContain("Atlas · " + t("chat.activity.working"));
   });
@@ -127,6 +137,8 @@ describe("pinned thread rows", () => {
     const { markup } = renderRows([waiting]);
     expect(markup).toContain("lucide-circle-alert");
     expect(markup).toContain("Atlas · " + t("task.waiting"));
+    expect(markup).toContain('data-sidebar-activity="waiting"');
+    expect(markup).not.toContain("animate-status-pulse");
   });
 
   it("calls onUnpin for the row's own entry, not onJump, from the per-row unpin button", () => {

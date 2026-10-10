@@ -249,14 +249,14 @@ describe("Settings → Appearance", () => {
     fixture.section = "desktopWorkspaces";
     vi.stubGlobal("window", { ogb: { environments: {} } });
     const local = render();
-    expect(local).toContain('<option value="desktopWorkspaces" selected="">Servers</option>');
+    expect(local).toContain('<option value="servers" selected="">Servers</option>');
     expect(local).toContain("Server address or pairing link");
     expect(local).toContain("Name (optional)");
     expect(local).toContain("Your servers");
     expect(local).toContain("npx openmausbot pair --label");
     fixture.section = "general";
     vi.stubGlobal("window", { ogb: { workspaces: {} } });
-    expect(render()).not.toContain('<option value="desktopWorkspaces"');
+    expect(render()).toContain('<option value="servers"');
   });
 
   it("offers optional Organisation settings only through the local desktop bridge", () => {

@@ -1510,5 +1510,8 @@
   "botSettings.threads.title": "Threads em paralelo",
   "botSettings.threads.label": "Threads que este bot pode executar ao mesmo tempo",
   "botSettings.threads.useDefault": "Usar o padrão ({limit})",
-  "botSettings.threads.help": "Substitui o limite padrão somente para este bot. Mensagens extras ficam na fila até uma vaga abrir; reduzir o limite não interrompe o trabalho em andamento."
+  "botSettings.threads.help": "Substitui o limite padrão somente para este bot. Mensagens extras ficam na fila até uma vaga abrir; reduzir o limite não interrompe o trabalho em andamento.",
+  "settings.section.servers": "Servidores",
+  "settings.section.keyboardShortcuts": "Atalhos de teclado",
+  "settings.section.apps": "Aplicativos"
 }

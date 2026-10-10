@@ -4,6 +4,8 @@
 // committing through React. Long-lived indicators must stay this cheap.
 import { useEffect, useRef } from "react";
 import { cn } from "@/lib/cn";
+import { CircleAlert } from "lucide-react";
+import { t } from "@/lib/i18n";
 import { formatElapsed } from "@/lib/working-time";
 
 export function WorkingDots({ size = 4, className }: { size?: number; className?: string }) {
@@ -18,6 +20,17 @@ export function WorkingDots({ size = 4, className }: { size?: number; className?
       ))}
     </span>
   );
+}
+
+/** The same typing dots and waiting marker at every sidebar avatar size. */
+export function SidebarActivityIndicator({ working, waiting, className }: { working: boolean; waiting: boolean; className?: string }) {
+  if (!working && !waiting) return null;
+  const state = waiting ? "waiting" : "working";
+  const label = t(waiting ? "sidebar.preview.waiting" : "sidebar.preview.working");
+  return <span data-sidebar-activity={state} data-testid={waiting ? "waiting-dot" : "working-dot"} role="status" aria-label={label} title={label}
+    className={cn("flex shrink-0 items-center justify-center", waiting ? "text-warning" : "text-success", className)}>
+    {waiting ? <CircleAlert size={12} aria-hidden="true" /> : <WorkingDots size={3.5} />}
+  </span>;
 }
 
 /** Self-ticking elapsed readout — counts up from `since` (epoch ms). */

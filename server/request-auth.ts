@@ -70,6 +70,7 @@ export const SERVICE_ALLOW: ReadonlyArray<{ methods: readonly string[]; path: Re
   { methods: ["GET"], path: /^\/api\/edition$/ },
   { methods: ["GET"], path: /^\/api\/brand$/ },
   { methods: ["GET"], path: /^\/api\/bots$/ },
+  { methods: ["PATCH"], path: /^\/api\/bots\/order$/ },
   { methods: ["GET"], path: /^\/api\/threads\/[\w-]+\/messages$/ },
   { methods: ["GET"], path: /^\/api\/attachments\/[\w.-]+$/ },
   { methods: ["POST"], path: /^\/api\/bots\/[\w-]+\/tasks$/ },

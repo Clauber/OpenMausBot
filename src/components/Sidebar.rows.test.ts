@@ -165,6 +165,16 @@ describe("sidebar rows", () => {
     expect(document.querySelector('[data-sidebar-thread-row="atlas-now"]')?.getAttribute("aria-current")).toBeNull();
   });
 
+  it("moves the keyed bot subtree without remounting its expanded thread rows", async () => {
+    const subtree = document.querySelector('[data-sidebar-bot-id="atlas"]');
+    const threadRow = document.querySelector('[data-sidebar-thread-row="atlas-earlier"]');
+    await update(current => reducer(current, { type: "botsOrdered", botIds: ["pepper", "atlas", "scout"] }))();
+    expect([...document.querySelectorAll("[data-sidebar-bot-id]")].map(row => row.getAttribute("data-sidebar-bot-id"))).toEqual(["pepper", "atlas", "scout"]);
+    expect(document.querySelector('[data-sidebar-bot-id="atlas"]')).toBe(subtree);
+    expect(subtree?.contains(threadRow)).toBe(true);
+    expect(document.querySelector('[data-sidebar-thread-row="atlas-earlier"]')).toBe(threadRow);
+  });
+
   it("re-renders every row when the app language changes", async () => {
     try {
       setLocale("de");

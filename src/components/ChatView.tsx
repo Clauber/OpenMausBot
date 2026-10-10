@@ -1,3 +1,4 @@
+import { matchesShortcut } from "@/lib/keyboard-shortcuts";
 import { Component, createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type ReactNode } from "react";
 import { useAdvancedMode } from "@/lib/interface-mode";
 import {
@@ -44,6 +45,7 @@ import {
   type Message,
   type AppState,
 } from "@/state/store";
+import { ArchiveThreadButton } from "./ArchiveThreadButton";
 import { EngineSetup } from "./EngineSetup";
 import { CHATGPT_USAGE_URL } from "./ChatGptPlanStatus";
 import { openExternalLink } from "@/lib/app-links";
@@ -1063,7 +1065,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   useEffect(() => setFindOpen(false), [bot.threadId]);
   useEffect(() => {
     const onFind = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+      if (matchesShortcut(event, "find-conversation")) {
         event.preventDefault();
         setFindOpen(true);
       }
@@ -1317,6 +1319,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
         >
           {/* below md the sidebar (and its Live call pill) is hidden */}
           <LiveCallChip currentBotId={bot.id} onOpen={(botId, threadId) => openThread(dispatch, { botId, threadId }, state)} />
+          <ArchiveThreadButton bot={bot} />
           <button
             data-tour="computer"
             onClick={() => dispatch({ type: "toggleComputer" })}

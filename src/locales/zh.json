@@ -2442,5 +2442,8 @@
   "botSettings.threads.title": "平行对话",
   "botSettings.threads.label": "此机器人可同时运行的对话数",
   "botSettings.threads.useDefault": "使用默认值（{limit}）",
-  "botSettings.threads.help": "仅为此机器人覆盖默认上限。多出的消息会排入队列，直到有名额空出；调低上限不会停止运行中的工作。"
+  "botSettings.threads.help": "仅为此机器人覆盖默认上限。多出的消息会排入队列，直到有名额空出；调低上限不会停止运行中的工作。",
+  "settings.section.servers": "服务器",
+  "settings.section.keyboardShortcuts": "键盘快捷键",
+  "settings.section.apps": "应用"
 }

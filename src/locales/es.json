@@ -1496,5 +1496,8 @@
   "botSettings.threads.title": "Hilos en paralelo",
   "botSettings.threads.label": "Hilos que este bot puede ejecutar a la vez",
   "botSettings.threads.useDefault": "Usar el valor predeterminado ({limit})",
-  "botSettings.threads.help": "Reemplaza el límite predeterminado solo para este bot. Los mensajes adicionales esperan en cola hasta que se libere un hueco; bajar el límite no detiene el trabajo en curso."
+  "botSettings.threads.help": "Reemplaza el límite predeterminado solo para este bot. Los mensajes adicionales esperan en cola hasta que se libere un hueco; bajar el límite no detiene el trabajo en curso.",
+  "settings.section.servers": "Servidores",
+  "settings.section.keyboardShortcuts": "Atajos de teclado",
+  "settings.section.apps": "Apps"
 }

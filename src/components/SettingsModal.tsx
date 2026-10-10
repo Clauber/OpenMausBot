@@ -3,7 +3,7 @@
 // is the stuff shared by every bot: who you are, your keys, and the
 // machine your bots can borrow.
 import { useEffect, useRef, useState } from "react";
-import { Archive, CircleUser, Coins, FlaskConical, KeyRound, Monitor, Palette, ScrollText, Search, Sparkles, TabletSmartphone, Terminal, User, Users, X, Building2, Zap, BookOpen } from "lucide-react";
+import { Puzzle, Keyboard, Archive, CircleUser, Coins, FlaskConical, KeyRound, Monitor, Palette, ScrollText, Search, Sparkles, TabletSmartphone, Terminal, User, Users, X, Building2, Zap, BookOpen } from "lucide-react";
 import { api, useStore, type AppSettingsSection, type ConfigStatus } from "@/state/store";
 import { analyticsEnabled, setAnalyticsEnabled } from "@/lib/analytics";
 import { browserAvailable, browserUnavailableReason, builtInBrowserEnabled, routinesInConversationEnabled, showToolCallsEnabled, skillAuthoringEnabled, skillsLibraryEnabled } from "@/lib/feature-flags";
@@ -25,7 +25,9 @@ import { currentPhonePairingTarget, phonePairingSettingsAction } from "@/lib/pho
 import { CustomDomainSettings } from "./CustomDomainSettings";
 import { BrowserProfilesManager } from "./BrowserProfilesManager";
 import { RemoteComputerSection } from "./RemoteComputerSection";
-import { ConnectedWorkspacesSettings } from "./ConnectedWorkspacesSettings";
+import { PluginsPanel } from "./PluginsPanel";
+import { ServersSettings } from "./ServersSettings";
+import { KeyboardShortcutSettings } from "./KeyboardShortcutSettings";
 import { OrganizationSettings } from "./OrganizationSettings";
 import { CloudAccountSettings } from "./CloudAccountSettings";
 import { ProSettingsCard } from "./ProIntroduction";
@@ -79,13 +81,15 @@ export const SECTIONS: Array<{
   keywords: string[];
 }> = [
   { id: "general", group: "you", labelKey: "settings.section.general", icon: User, keywords: ["profile", "name", "email", "about me", "about", "suggestions", "suggested", "memory", "analytics", "updates", "effort", "new bots", "reasoning", "threads", "parallel", "concurrency", "cleanup", "retention", "event log", "event-log", "log size", "automatic recovery", "backup model", "fallback", "routines", "conversation", "schedule"] },
+  { id: "keyboardShortcuts", group: "you", labelKey: "settings.section.keyboardShortcuts", icon: Keyboard, keywords: ["keyboard", "shortcuts", "keys", "bindings", "terminal", "hotkeys"] },
+  { id: "servers", group: "computers", labelKey: "settings.section.servers", icon: Building2, keywords: ["server", "servers", "switch", "add", "workspace", "cloud", "computer", "connect"] },
   { id: "appearance", group: "you", labelKey: "settings.section.appearance", icon: Palette, keywords: ["skin", "theme", "appearance", "tools", "tool calls", "threads", "show threads", "hide threads", "sidebar", "density", "compact", "comfortable", "avatars", "display", "run", "this run", "run card", "commands", "notifications", "sound", "sounds", "mute", "silent", "chime", "pinned", "circles", "universal", "groups", "top"] },
   { id: "companion", group: "you", labelKey: "settings.section.companion", icon: TabletSmartphone, keywords: ["companion", "device", "phone", "desktop", "client", "host", "pair", "pairing", "mobile", "https", "secure", "tailscale", "wifi", "remote", "advanced", "domain", "dns", "self-hosted", "server", "caddy"] },
   { id: "engines", group: "ai", labelKey: "settings.section.engines", icon: Terminal, keywords: ["models", "model providers", "engines", "claude", "codex", "grok", "providers", "cli", "sign in", "subscription"] },
+  { id: "apps", group: "ai", labelKey: "settings.section.apps", icon: Puzzle, keywords: ["apps", "connected", "connectors", "mcp", "servers", "marketplace", "integrations"] },
   { id: "connections", group: "ai", labelKey: "settings.section.connections", icon: KeyRound, keywords: ["keys", "api", "api key", "api keys", "connections", "composio", "box", "xai", "mistral", "cerebras", "vps", "router", "openrouter", "base url", "openai", "anthropic", "groq", "opencode", "provider"] },
   { id: "decisionModel", group: "ai", labelKey: "settings.section.decisionModel", icon: Zap, keywords: ["decision", "jev", "typesafe", "routing", "auto", "rooms", "who answers"] },
   { id: "skills", group: "ai", labelKey: "settings.section.skills", icon: BookOpen, keywords: ["skills", "library", "assign", "agent skills", "skill md"] },
-  { id: "desktopWorkspaces", group: "computers", labelKey: "settings.section.desktopWorkspaces", icon: Building2, keywords: ["workspace", "cloud", "hosted", "vps", "server", "servers", "connect", "pair", "switch", "local"] },
   { id: "computer", group: "computers", labelKey: "settings.section.computer", icon: Monitor, keywords: ["vm", "virtual", "desktop", "browser", "built-in browser", "profiles", "browser profiles"] },
   { id: "cloudAccount", group: "account", labelKey: "settings.section.cloudAccount", icon: User, keywords: ["cloud", "account", "personal", "sign in", "pro", "subscription", "billing"] },
   { id: "organization", group: "account", labelKey: "settings.section.organization", icon: Building2, keywords: ["company", "organization", "organisation", "sign in", "enroll", "managed", "models", "disconnect"] },
@@ -105,13 +109,16 @@ export type SimpleSettingsPage = {
   sections: AppSettingsSection[];
 };
 
-/** Simple mode's rail: at most five pages. A page is drawn only when one of
+/** Simple mode's rail: focused pages and grouped computer/account settings. A page is drawn only when one of
  * its sections passes the same visibility filters the Advanced rail uses. */
 export const SIMPLE_PAGES: SimpleSettingsPage[] = [
   { id: "general", labelKey: "settings.section.general", icon: User, sections: ["general"] },
   { id: "appearance", labelKey: "settings.section.appearance", icon: Palette, sections: ["appearance"] },
+  { id: "keyboardShortcuts", labelKey: "settings.section.keyboardShortcuts", icon: Keyboard, sections: ["keyboardShortcuts"] },
+  { id: "servers", labelKey: "settings.section.servers", icon: Building2, sections: ["servers"] },
+  { id: "apps", labelKey: "settings.section.apps", icon: Puzzle, sections: ["apps"] },
   { id: "ai", labelKey: "settings.group.ai", icon: Sparkles, sections: ["engines", "connections", "decisionModel"] },
-  { id: "computers", labelKey: "settings.group.computers", icon: Monitor, sections: ["companion", "desktopWorkspaces", "computer"] },
+  { id: "computers", labelKey: "settings.group.computers", icon: Monitor, sections: ["companion", "computer"] },
   { id: "account", labelKey: "settings.group.account", icon: CircleUser, sections: ["cloudAccount", "organization", "people", "activity"] },
 ];
 
@@ -783,7 +790,8 @@ export function SettingsModal() {
   const advanced = useAdvancedMode();
   const remoteActive = window.ogb?.remoteClient?.active === true;
   const section: AppSettingsSection =
-    (remoteActive && !["appearance", "desktopWorkspaces"].includes(state.appSettingsSection)) || state.appSettingsSection === "remote"
+    state.appSettingsSection === "desktopWorkspaces" ? "servers" :
+    (remoteActive && !["appearance", "desktopWorkspaces", "servers", "keyboardShortcuts", "apps"].includes(state.appSettingsSection)) || state.appSettingsSection === "remote"
       ? "companion"
       : state.appSettingsSection;
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -793,8 +801,7 @@ export function SettingsModal() {
   useEffect(() => window.ogb?.onOpenAppSettings?.(() => setQuery("")), []);
   const q = query.trim().toLowerCase();
   const ownerOrAdmin = useOwnerOrAdmin();
-  const baseSections = SECTIONS.filter((entry) => !remoteActive || entry.id === "companion" || entry.id === "appearance" || entry.id === "desktopWorkspaces")
-    .filter((entry) => entry.id !== "desktopWorkspaces" || Boolean(window.ogb?.environments))
+  const baseSections = SECTIONS.filter((entry) => !remoteActive || entry.id === "companion" || entry.id === "appearance" || entry.id === "servers" || entry.id === "keyboardShortcuts" || entry.id === "apps")
     .filter((entry) => entry.id !== "organization" || Boolean(window.ogb?.organization))
     // On the person's own Cloud in this app's window, the plan shows read only (cloudPlan);
     // never on any other server open here (a VPS, a hosted workspace, someone else's).
@@ -891,8 +898,12 @@ export function SettingsModal() {
    * stacked Simple page. */
   const renderSection = (id: AppSettingsSection) => {
     switch (id) {
-      case "desktopWorkspaces":
-        return <ConnectedWorkspacesSettings />;
+      case "apps":
+        return <PluginsPanel />;
+      case "servers":
+        return <ServersSettings />;
+      case "keyboardShortcuts":
+        return <KeyboardShortcutSettings />;
       case "organization":
         return window.ogb?.organization && !remoteActive ? <OrganizationSettings /> : null;
       case "cloudAccount":
@@ -1112,6 +1123,7 @@ export function SettingsModal() {
                   <button
                     key={id}
                     data-settings-section={id}
+                    data-tour={id === "apps" ? "settings-apps" : undefined}
                     onClick={() => openSection(id)}
                     aria-current={section === id ? "page" : undefined}
                     className={cn(
@@ -1134,6 +1146,7 @@ export function SettingsModal() {
                   <button
                     key={page.id}
                     data-settings-page={page.id}
+                    data-tour={page.id === "apps" ? "settings-apps" : undefined}
                     onClick={() => openSection(page.sections[0]!)}
                     aria-current={current ? "page" : undefined}
                     className={cn(

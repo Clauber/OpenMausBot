@@ -183,6 +183,12 @@ describe("live frames for a member", () => {
   });
   const seen = (): StreamSeen => ({ bots: new Set(["pub", "corp"]), groups: new Set(["room-pub"]) });
 
+  it("filters roster order to visible bots and treats the order route as a collection", () => {
+    const bob = new VisibleSet(bots, groups, BOB);
+    expect(frameForMember({ kind: "bots.order", botIds: ["hr", "pub", "corp"] }, context(bob), seen())).toEqual({ kind: "bots.order", botIds: ["pub", "corp"] });
+    expect(pathSubject("/api/bots/order")).toBeNull();
+  });
+
   it("drops every frame about a hidden bot, thread or room", () => {
     const bob = new VisibleSet(bots, groups, BOB);
     const ctx = context(bob);

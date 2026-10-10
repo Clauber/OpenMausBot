@@ -1517,7 +1517,10 @@
       "botSettings.threads.title": "377781a721e65a3e8a550664d99eac6bf6241390748d4dd06878115abea69ff5",
       "botSettings.threads.label": "33cd11306d4688e638a8548716f525faf697a562a12c2805f4cca6c6d1f2c039",
       "botSettings.threads.useDefault": "d99a104c74925a4a0a277adb773c653b12be42d3553c492b410c66ee4c59dde6",
-      "botSettings.threads.help": "db8a879d47dae74b38a7c65436593d0168f5446f7bd20e59a44a2168b0d13a43"
+      "botSettings.threads.help": "db8a879d47dae74b38a7c65436593d0168f5446f7bd20e59a44a2168b0d13a43",
+      "settings.section.servers": "68d7beb6df59ee85bc11a6679c29ac3e6aab738833c6871c6df29ae0246d5d98",
+      "settings.section.keyboardShortcuts": "59cdaa26dd9dcd4cbcded97a7b91029b396bcfdbfd927356facbeb163283a3df",
+      "settings.section.apps": "89dd748442c194857825848e1500abbbc5f52fb067ad27fb05dc9fb23eebba3b"
     },
     "es": {
       "pro.getPro": "12657108fe5682e937f179e5f394191b99fad614dbb3bf8759376d5da35d4992",
@@ -3017,7 +3020,10 @@
       "botSettings.threads.title": "377781a721e65a3e8a550664d99eac6bf6241390748d4dd06878115abea69ff5",
       "botSettings.threads.label": "33cd11306d4688e638a8548716f525faf697a562a12c2805f4cca6c6d1f2c039",
       "botSettings.threads.useDefault": "d99a104c74925a4a0a277adb773c653b12be42d3553c492b410c66ee4c59dde6",
-      "botSettings.threads.help": "db8a879d47dae74b38a7c65436593d0168f5446f7bd20e59a44a2168b0d13a43"
+      "botSettings.threads.help": "db8a879d47dae74b38a7c65436593d0168f5446f7bd20e59a44a2168b0d13a43",
+      "settings.section.servers": "68d7beb6df59ee85bc11a6679c29ac3e6aab738833c6871c6df29ae0246d5d98",
+      "settings.section.keyboardShortcuts": "59cdaa26dd9dcd4cbcded97a7b91029b396bcfdbfd927356facbeb163283a3df",
+      "settings.section.apps": "89dd748442c194857825848e1500abbbc5f52fb067ad27fb05dc9fb23eebba3b"
     },
     "fr": {
       "pro.getPro": "12657108fe5682e937f179e5f394191b99fad614dbb3bf8759376d5da35d4992",
@@ -4517,7 +4523,10 @@
       "botSettings.threads.title": "377781a721e65a3e8a550664d99eac6bf6241390748d4dd06878115abea69ff5",
       "botSettings.threads.label": "33cd11306d4688e638a8548716f525faf697a562a12c2805f4cca6c6d1f2c039",
       "botSettings.threads.useDefault": "d99a104c74925a4a0a277adb773c653b12be42d3553c492b410c66ee4c59dde6",
-      "botSettings.threads.help": "db8a879d47dae74b38a7c65436593d0168f5446f7bd20e59a44a2168b0d13a43"
+      "botSettings.threads.help": "db8a879d47dae74b38a7c65436593d0168f5446f7bd20e59a44a2168b0d13a43",
+      "settings.section.servers": "68d7beb6df59ee85bc11a6679c29ac3e6aab738833c6871c6df29ae0246d5d98",
+      "settings.section.keyboardShortcuts": "59cdaa26dd9dcd4cbcded97a7b91029b396bcfdbfd927356facbeb163283a3df",
+      "settings.section.apps": "89dd748442c194857825848e1500abbbc5f52fb067ad27fb05dc9fb23eebba3b"
     },
     "hi": {
       "pro.getPro": "12657108fe5682e937f179e5f394191b99fad614dbb3bf8759376d5da35d4992",
@@ -6017,7 +6026,10 @@
       "botSettings.threads.title": "377781a721e65a3e8a550664d99eac6bf6241390748d4dd06878115abea69ff5",
       "botSettings.threads.label": "33cd11306d4688e638a8548716f525faf697a562a12c2805f4cca6c6d1f2c039",
       "botSettings.threads.useDefault": "d99a104c74925a4a0a277adb773c653b12be42d3553c492b410c66ee4c59dde6",
-      "botSettings.threads.help": "db8a879d47dae74b38a7c65436593d0168f5446f7bd20e59a44a2168b0d13a43"
+      "botSettings.threads.help": "db8a879d47dae74b38a7c65436593d0168f5446f7bd20e59a44a2168b0d13a43",
+      "settings.section.servers": "68d7beb6df59ee85bc11a6679c29ac3e6aab738833c6871c6df29ae0246d5d98",
+      "settings.section.keyboardShortcuts": "59cdaa26dd9dcd4cbcded97a7b91029b396bcfdbfd927356facbeb163283a3df",
+      "settings.section.apps": "89dd748442c194857825848e1500abbbc5f52fb067ad27fb05dc9fb23eebba3b"
     },
     "ja": {
       "pro.getPro": "12657108fe5682e937f179e5f394191b99fad614dbb3bf8759376d5da35d4992",
@@ -7519,7 +7531,10 @@
       "botSettings.threads.title": "377781a721e65a3e8a550664d99eac6bf6241390748d4dd06878115abea69ff5",
       "botSettings.threads.label": "33cd11306d4688e638a8548716f525faf697a562a12c2805f4cca6c6d1f2c039",
       "botSettings.threads.useDefault": "d99a104c74925a4a0a277adb773c653b12be42d3553c492b410c66ee4c59dde6",
-      "botSettings.threads.help": "db8a879d47dae74b38a7c65436593d0168f5446f7bd20e59a44a2168b0d13a43"
+      "botSettings.threads.help": "db8a879d47dae74b38a7c65436593d0168f5446f7bd20e59a44a2168b0d13a43",
+      "settings.section.servers": "68d7beb6df59ee85bc11a6679c29ac3e6aab738833c6871c6df29ae0246d5d98",
+      "settings.section.keyboardShortcuts": "59cdaa26dd9dcd4cbcded97a7b91029b396bcfdbfd927356facbeb163283a3df",
+      "settings.section.apps": "89dd748442c194857825848e1500abbbc5f52fb067ad27fb05dc9fb23eebba3b"
     },
     "pt-br": {
       "pro.getPro": "12657108fe5682e937f179e5f394191b99fad614dbb3bf8759376d5da35d4992",
@@ -9033,7 +9048,10 @@
       "botSettings.threads.title": "377781a721e65a3e8a550664d99eac6bf6241390748d4dd06878115abea69ff5",
       "botSettings.threads.label": "33cd11306d4688e638a8548716f525faf697a562a12c2805f4cca6c6d1f2c039",
       "botSettings.threads.useDefault": "d99a104c74925a4a0a277adb773c653b12be42d3553c492b410c66ee4c59dde6",
-      "botSettings.threads.help": "db8a879d47dae74b38a7c65436593d0168f5446f7bd20e59a44a2168b0d13a43"
+      "botSettings.threads.help": "db8a879d47dae74b38a7c65436593d0168f5446f7bd20e59a44a2168b0d13a43",
+      "settings.section.servers": "68d7beb6df59ee85bc11a6679c29ac3e6aab738833c6871c6df29ae0246d5d98",
+      "settings.section.keyboardShortcuts": "59cdaa26dd9dcd4cbcded97a7b91029b396bcfdbfd927356facbeb163283a3df",
+      "settings.section.apps": "89dd748442c194857825848e1500abbbc5f52fb067ad27fb05dc9fb23eebba3b"
     },
     "zh": {
       "pro.getPro": "12657108fe5682e937f179e5f394191b99fad614dbb3bf8759376d5da35d4992",
@@ -11479,7 +11497,10 @@
       "botSettings.threads.title": "377781a721e65a3e8a550664d99eac6bf6241390748d4dd06878115abea69ff5",
       "botSettings.threads.label": "33cd11306d4688e638a8548716f525faf697a562a12c2805f4cca6c6d1f2c039",
       "botSettings.threads.useDefault": "d99a104c74925a4a0a277adb773c653b12be42d3553c492b410c66ee4c59dde6",
-      "botSettings.threads.help": "db8a879d47dae74b38a7c65436593d0168f5446f7bd20e59a44a2168b0d13a43"
+      "botSettings.threads.help": "db8a879d47dae74b38a7c65436593d0168f5446f7bd20e59a44a2168b0d13a43",
+      "settings.section.servers": "68d7beb6df59ee85bc11a6679c29ac3e6aab738833c6871c6df29ae0246d5d98",
+      "settings.section.keyboardShortcuts": "59cdaa26dd9dcd4cbcded97a7b91029b396bcfdbfd927356facbeb163283a3df",
+      "settings.section.apps": "89dd748442c194857825848e1500abbbc5f52fb067ad27fb05dc9fb23eebba3b"
     },
     "zh-tw": {
       "pro.getPro": "12657108fe5682e937f179e5f394191b99fad614dbb3bf8759376d5da35d4992",
@@ -13925,7 +13946,10 @@
       "botSettings.threads.title": "377781a721e65a3e8a550664d99eac6bf6241390748d4dd06878115abea69ff5",
       "botSettings.threads.label": "33cd11306d4688e638a8548716f525faf697a562a12c2805f4cca6c6d1f2c039",
       "botSettings.threads.useDefault": "d99a104c74925a4a0a277adb773c653b12be42d3553c492b410c66ee4c59dde6",
-      "botSettings.threads.help": "db8a879d47dae74b38a7c65436593d0168f5446f7bd20e59a44a2168b0d13a43"
+      "botSettings.threads.help": "db8a879d47dae74b38a7c65436593d0168f5446f7bd20e59a44a2168b0d13a43",
+      "settings.section.servers": "68d7beb6df59ee85bc11a6679c29ac3e6aab738833c6871c6df29ae0246d5d98",
+      "settings.section.keyboardShortcuts": "59cdaa26dd9dcd4cbcded97a7b91029b396bcfdbfd927356facbeb163283a3df",
+      "settings.section.apps": "89dd748442c194857825848e1500abbbc5f52fb067ad27fb05dc9fb23eebba3b"
     },
     "uk": {
       "pro.getPro": "12657108fe5682e937f179e5f394191b99fad614dbb3bf8759376d5da35d4992",
@@ -15974,7 +15998,10 @@
       "botSettings.threads.title": "377781a721e65a3e8a550664d99eac6bf6241390748d4dd06878115abea69ff5",
       "botSettings.threads.label": "33cd11306d4688e638a8548716f525faf697a562a12c2805f4cca6c6d1f2c039",
       "botSettings.threads.useDefault": "d99a104c74925a4a0a277adb773c653b12be42d3553c492b410c66ee4c59dde6",
-      "botSettings.threads.help": "db8a879d47dae74b38a7c65436593d0168f5446f7bd20e59a44a2168b0d13a43"
+      "botSettings.threads.help": "db8a879d47dae74b38a7c65436593d0168f5446f7bd20e59a44a2168b0d13a43",
+      "settings.section.servers": "68d7beb6df59ee85bc11a6679c29ac3e6aab738833c6871c6df29ae0246d5d98",
+      "settings.section.keyboardShortcuts": "59cdaa26dd9dcd4cbcded97a7b91029b396bcfdbfd927356facbeb163283a3df",
+      "settings.section.apps": "89dd748442c194857825848e1500abbbc5f52fb067ad27fb05dc9fb23eebba3b"
     }
   }
 }

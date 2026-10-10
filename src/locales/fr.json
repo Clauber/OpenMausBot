@@ -1496,5 +1496,8 @@
   "botSettings.threads.title": "Fils parallèles",
   "botSettings.threads.label": "Fils que ce bot peut exécuter simultanément",
   "botSettings.threads.useDefault": "Utiliser la valeur par défaut ({limit})",
-  "botSettings.threads.help": "Remplace la limite par défaut pour ce bot uniquement. Les messages supplémentaires attendent en file jusqu'à ce qu'une place se libère ; réduire la limite n'arrête pas le travail en cours."
+  "botSettings.threads.help": "Remplace la limite par défaut pour ce bot uniquement. Les messages supplémentaires attendent en file jusqu'à ce qu'une place se libère ; réduire la limite n'arrête pas le travail en cours.",
+  "settings.section.servers": "Serveurs",
+  "settings.section.keyboardShortcuts": "Raccourcis clavier",
+  "settings.section.apps": "Applications"
 }

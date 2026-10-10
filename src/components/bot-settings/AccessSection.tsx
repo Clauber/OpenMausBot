@@ -134,7 +134,7 @@ function McpServersCard({ bot, patch }: { bot: Bot; patch: (patch: { mcpServers:
   };
   const openPlugins = () => {
     dispatch({ type: "toggleSettings", open: false });
-    dispatch({ type: "togglePlugins", open: true, surface: "mcp" });
+    dispatch({ type: "toggleAppSettings", open: true, section: "apps", appsSurface: "mcp" });
   };
 
   return (
@@ -695,7 +695,7 @@ export function AccessSection({
             type="button"
             onClick={() => {
               dispatch({ type: "toggleSettings", open: false });
-              dispatch({ type: "togglePlugins", open: true, surface: "apps" });
+              dispatch({ type: "toggleAppSettings", open: true, section: "apps", appsSurface: "apps" });
             }}
             className="mt-3 flex items-center gap-1.5 rounded-lg bg-control px-3 py-2 text-[13px] text-ink hover:bg-raised-hover"
           >

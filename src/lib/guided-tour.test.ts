@@ -43,7 +43,8 @@ describe("guided tour", () => {
   it("rebuilds the scene on enter so a reload mid-tour resumes cleanly", () => {
     expect(step("tour.computer-browser").onEnter).toBe("openComputer");
     expect(step("tour.computer-browser").fallbackAnchor).toBe("computer-tabs");
-    expect(step("tour.apps").onEnter).toBe("openTools");
+    expect(step("tour.apps").onEnter).toBe("openApps");
+    expect(step("tour.apps").anchor).toBe("settings-apps");
     expect(step("tour.apps-panel").onEnter).toBe("openApps");
     expect(step("tour.automations-page").onEnter).toBe("openAutomations");
   });

@@ -316,6 +316,7 @@ export const ACTIVITY_BUSY: ReadonlySet<BotActivity> = new Set(["working", "wait
 
 export type StoreChange =
   | { type: "sections" }
+  | { type: "bots.order" }
   | { type: "message"; threadId: string; message: Message }
   | { type: "message.patch"; threadId: string; message: Message }
   | { type: "thread"; threadId: string; activeLeafId: string }
@@ -2415,6 +2416,18 @@ export class Store {
     this.saveBots();
     this.emit({ type: "bot", botId });
     return project;
+  }
+
+  /** Persist first, then publish the same roster order to every device. */
+  reorderBots(botIds: string[]): boolean {
+    if (botIds.length !== this.bots.length || new Set(botIds).size !== this.bots.length) return false;
+    const byId = new Map(this.bots.map(bot => [bot.id, bot]));
+    if (botIds.some(id => !byId.has(id))) return false;
+    const next = botIds.map(id => byId.get(id)!);
+    this.saveBots(next);
+    this.bots = next;
+    this.emit({ type: "bots.order" });
+    return true;
   }
 
   /** The stored array is the sidebar order; only a full owned permutation is valid. */

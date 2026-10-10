@@ -2442,5 +2442,8 @@
   "botSettings.threads.title": "平行對話",
   "botSettings.threads.label": "此機器人可同時執行的對話數",
   "botSettings.threads.useDefault": "使用預設值（{limit}）",
-  "botSettings.threads.help": "僅為此機器人覆寫預設上限。多出的訊息會排入佇列，直到有名額空出；調低上限不會停止執行中的工作。"
+  "botSettings.threads.help": "僅為此機器人覆寫預設上限。多出的訊息會排入佇列，直到有名額空出；調低上限不會停止執行中的工作。",
+  "settings.section.servers": "伺服器",
+  "settings.section.keyboardShortcuts": "鍵盤快捷鍵",
+  "settings.section.apps": "應用程式"
 }

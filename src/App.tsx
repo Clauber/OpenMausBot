@@ -16,7 +16,7 @@ import { BotSettingsDialog } from "@/components/BotSettingsDialog";
 import { SIDEBAR_AND_PANEL_FIT, TWO_SIDE_PANELS_FIT, useMediaQuery } from "@/lib/use-media-query";
 import { RemoteAgentSettingsPanel } from "@/components/RemoteAgentSettingsPanel";
 import { NewBotDialog } from "@/components/NewBotDialog";
-import { PluginsPanel, preloadConnectedApps } from "@/components/PluginsPanel";
+import { preloadConnectedApps } from "@/components/PluginsPanel";
 import { TriggersPanel } from "@/components/TriggersPanel";
 import { ComputerPanel } from "@/components/ComputerPanel";
 import { RemoteDesktopPanel } from "@/components/remote-desktop-panel";
@@ -41,7 +41,7 @@ import { KeyboardShortcutsModal } from "@/components/KeyboardShortcutsModal";
 import { LocalVmWorkspace } from "@/components/LocalVmWorkspace";
 import { TeamMapPage } from "@/components/TeamMapPage";
 import { setLocale } from "@/lib/i18n";
-import { shouldOpenKeyboardShortcuts } from "@/lib/keyboard-shortcuts";
+import { matchesShortcut, shortcutPairIndex, shouldOpenKeyboardShortcuts } from "@/lib/keyboard-shortcuts";
 import { effectiveLanguage, useLanguageChoice } from "@/lib/language-preference";
 import { botShowsUnread } from "@/lib/bot-unread";
 import { phonePairingSettingsAction, takePhonePairingRequest } from "@/lib/phone-pairing";
@@ -68,7 +68,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
         target.searchParams.set(panel === "copy" ? "copy-to" : "share-computer", computerId);
         window.history.replaceState(null, "", `${target.pathname}${target.search}${target.hash}`);
       }
-      dispatch({ type: "toggleAppSettings", open: true, section: "desktopWorkspaces" });
+      dispatch({ type: "toggleAppSettings", open: true, section: "servers" });
     };
     const url = new URL(window.location.href);
     const requestedSettings = url.searchParams.get("desktop-settings");
@@ -152,21 +152,24 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
         return;
       }
 
-      const mod = e.metaKey || e.ctrlKey;
-      if (!mod) return;
+      if (matchesShortcut(e, "open-settings")) {
+        e.preventDefault();
+        dispatch({ type: "toggleAppSettings", open: true });
+        return;
+      }
       const bots = state.bots.filter((b) => !b.hidden);
-      if (e.key === "n" && !e.shiftKey) {
+      if (matchesShortcut(e, "new-bot")) {
         e.preventDefault();
         dispatch({ type: "toggleNewBot", open: true });
-      } else if (/^[1-9]$/.test(e.key)) {
-        const target = bots[Number(e.key) - 1];
+      } else if (matchesShortcut(e, "jump-bot")) {
+        const target = bots[Number(/^Digit[1-9]$/.test(e.code) ? e.code.slice(5) : e.key) - 1];
         if (target) {
           e.preventDefault();
           dispatch({ type: "select", id: target.id });
         }
-      } else if (e.shiftKey && (e.key === "[" || e.key === "]")) {
+      } else if (matchesShortcut(e, "switch-bot")) {
         const idx = bots.findIndex((b) => b.id === state.selectedId);
-        const next = bots[(idx + (e.key === "]" ? 1 : -1) + bots.length) % bots.length];
+        const next = bots[(idx + (shortcutPairIndex(e, "switch-bot") === 1 ? 1 : -1) + bots.length) % bots.length];
         if (next) {
           e.preventDefault();
           dispatch({ type: "select", id: next.id });
@@ -177,13 +180,12 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [state.bots, state.selectedId, state.shortcutsOpen, dispatch]);
 
-  // Ctrl+` toggles the terminal dock. Capture phase on purpose: xterm's
+  // The configured terminal shortcut toggles the dock. Capture phase on purpose: xterm's
   // textarea must never see the chord, or a closing panel also feeds the
   // shell a stray control byte.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
-      if (e.key !== "`" && e.code !== "Backquote") return;
+      if (!matchesShortcut(e, "terminal-panel")) return;
       e.preventDefault();
       e.stopPropagation();
       dispatch({ type: "toggleTerminal" });
@@ -207,12 +209,12 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   // Picking a conversation closes the drawer: on a phone the chat is what you
   // asked for, and leaving the list up would hide it. Watching activeView too
   // catches re-selecting the bot that is already current from another view —
-  // the reducer switches the view without changing selectedId. pluginsOpen
+  // the reducer switches the view without changing selectedId. appSettingsOpen
   // and settingsOpen cover the same idea from a different trigger: close the
   // drawer whenever an action opens something over the chat.
   useEffect(() => {
     setDrawerOpen(false);
-  }, [state.selectedId, bot?.threadId, group?.threadId, state.activeView, state.pluginsOpen, state.settingsOpen]);
+  }, [state.selectedId, bot?.threadId, group?.threadId, state.activeView, state.appSettingsOpen, state.settingsOpen]);
 
   useEffect(() => {
     if (state.activeView === "routines" && previousViewRef.current !== "routines") {
@@ -260,7 +262,6 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
     state.inspectorOpen ||
     state.activityOpen ||
     state.appSettingsOpen ||
-    state.pluginsOpen ||
     state.triggersOpen;
 
   // The macOS app menu's Preferences… item lives in the desktop shell, so the
@@ -399,7 +400,6 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
       {/* On the person's Cloud: its setup checklist, and after it Move to
           Cloud's one-time card on an empty Cloud (desktop app only). */}
       <CloudSetup viewer={viewer} />
-      {state.pluginsOpen && <PluginsPanel />}
       {state.triggersOpen && <TriggersPanel />}
       {state.newBotOpen && <NewBotDialog />}
       {state.shortcutsOpen && (

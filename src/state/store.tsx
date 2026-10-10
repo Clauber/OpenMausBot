@@ -882,6 +882,9 @@ export interface InstanceInfo {
 
 export type AppSettingsSection =
   | "general"
+  | "apps"
+  | "servers"
+  | "keyboardShortcuts"
   | "desktopWorkspaces"
   | "organization"
   | "cloudAccount"
@@ -961,10 +964,9 @@ export interface AppState {
    *  localStorage cache, not the empty array, is what the machine knows. */
   customSkinsLoaded: boolean;
   settingsOpen: boolean;
-  pluginsOpen: boolean;
-  /** Which tab the Plugins panel opens on; "mcp" when a bot's tools
+  /** Which tab Settings → Apps opens on; "mcp" when a bot's tools
    * sent the user there to add a server. */
-  pluginsSurface: "apps" | "mcp";
+  appsSurface: "apps" | "mcp";
   /** The Triggers pop-up (webhooks, as a sentence: when this happens, that
    * bot should…). */
   triggersOpen: boolean;
@@ -1246,6 +1248,8 @@ export type Action =
   | { type: "createProject"; botId: string; name: string; emoji?: string | null; onCreated?: (project: BotProject) => void; onError?: (message: string) => void }
   | { type: "updateProject"; botId: string; projectId: string; patch: ProjectUpdatePatch; onSaved?: () => void; onError?: (message: string) => void }
   | { type: "deleteProject"; botId: string; projectId: string; onDeleted?: () => void; onError?: (message: string) => void }
+  | { type: "botsOrdered"; botIds: string[] }
+  | { type: "reorderBots"; botIds: string[]; onSaved?: () => void; onError?: (message: string) => void }
   | { type: "reorderProjects"; botId: string; projectIds: string[]; onSaved?: () => void; onError?: (message: string) => void }
   | { type: "botAdded"; bot: Bot; preserveSelection?: boolean }
   | { type: "deleteBot"; botId: string }
@@ -1268,7 +1272,6 @@ export type Action =
   | { type: "notice"; notice: AppState["notice"] }
   | { type: "revealThread"; threadId: string }
   | { type: "toggleSettings"; open?: boolean; section?: BotSettingsSection; botId?: string }
-  | { type: "togglePlugins"; open?: boolean; surface?: "apps" | "mcp" }
   | { type: "toggleTriggers"; open?: boolean }
   | { type: "toggleNewBot"; open?: boolean }
   | { type: "toggleComputer"; open?: boolean }
@@ -1281,7 +1284,7 @@ export type Action =
   | { type: "toggleTerminal"; open?: boolean }
   | { type: "focusMessage"; threadId: string; messageId: string; matchText?: string }
   | { type: "focusMessageConsumed"; nonce: number }
-  | { type: "toggleAppSettings"; open?: boolean; section?: AppSettingsSection; cloudLink?: boolean; phonePairing?: boolean }
+  | { type: "toggleAppSettings"; open?: boolean; section?: AppSettingsSection; cloudLink?: boolean; phonePairing?: boolean; appsSurface?: "apps" | "mcp" }
   | { type: "toggleShortcuts"; open?: boolean }
   | { type: "toggleWelcome"; open?: boolean }
   | { type: "toggleTour"; open?: boolean }
@@ -1567,6 +1570,12 @@ export function reducer(state: AppState, action: Action): AppState {
         bots: state.bots.map(bot => bot.section === action.section ? { ...bot, section: undefined } : bot),
         groups: state.groups.map(group => group.section === action.section ? { ...group, section: undefined } : group),
       };
+    case "botsOrdered": {
+      const byId = new Map(state.bots.map(bot => [bot.id, bot]));
+      const ordered = [...new Set(action.botIds)].flatMap(id => byId.has(id) ? [byId.get(id)!] : []);
+      const known = new Set(action.botIds);
+      return { ...state, bots: [...ordered, ...state.bots.filter(bot => !known.has(bot.id))] };
+    }
     case "sections":
       return { ...state, sections: action.sections };
     case "botQueues":
@@ -1582,7 +1591,6 @@ export function reducer(state: AppState, action: Action): AppState {
         activityOpen: false,
         fileViewerOpen: false,
         appSettingsOpen: false,
-        pluginsOpen: false,
         triggersOpen: false,
       };
     case "showChat":
@@ -1597,7 +1605,6 @@ export function reducer(state: AppState, action: Action): AppState {
         activityOpen: false,
         fileViewerOpen: false,
         appSettingsOpen: false,
-        pluginsOpen: false,
         triggersOpen: false,
       };
     case "routinesHydrated":
@@ -2066,21 +2073,12 @@ export function reducer(state: AppState, action: Action): AppState {
         appSettingsOpen: open ? false : state.appSettingsOpen,
       };
     }
-    case "togglePlugins": {
-      const open = action.open ?? !state.pluginsOpen;
-      return {
-        ...state,
-        pluginsOpen: open,
-        pluginsSurface: action.surface ?? state.pluginsSurface,
-        ...(open ? { settingsOpen: false, appSettingsOpen: false, newBotOpen: false, shortcutsOpen: false, triggersOpen: false } : {}),
-      };
-    }
     case "toggleTriggers": {
       const open = action.open ?? !state.triggersOpen;
       return {
         ...state,
         triggersOpen: open,
-        ...(open ? { settingsOpen: false, appSettingsOpen: false, newBotOpen: false, shortcutsOpen: false, pluginsOpen: false } : {}),
+        ...(open ? { settingsOpen: false, appSettingsOpen: false, newBotOpen: false, shortcutsOpen: false } : {}),
       };
     }
     case "botCreationPending":
@@ -2089,7 +2087,7 @@ export function reducer(state: AppState, action: Action): AppState {
       const open = action.open ?? !state.newBotOpen;
       return {
         ...state, newBotOpen: open,
-        ...(open ? { settingsOpen: false, appSettingsOpen: false, pluginsOpen: false, shortcutsOpen: false, triggersOpen: false } : {}),
+        ...(open ? { settingsOpen: false, appSettingsOpen: false, shortcutsOpen: false, triggersOpen: false } : {}),
       };
     }
     case "notice":
@@ -2204,12 +2202,12 @@ export function reducer(state: AppState, action: Action): AppState {
         activityOpen: open ? false : state.activityOpen,
         fileViewerOpen: open ? false : state.fileViewerOpen,
         appSettingsSection: action.section ?? state.appSettingsSection,
+        appsSurface: action.appsSurface ?? state.appsSurface,
         appSettingsCloudLink: action.cloudLink && open ? state.appSettingsCloudLink + 1 : 0,
         appSettingsPhonePairing: action.phonePairing && open ? state.appSettingsPhonePairing + 1 : 0,
         settingsOpen: open ? false : state.settingsOpen,
         computerOpen: open ? false : state.computerOpen,
         inspectorOpen: open ? false : state.inspectorOpen,
-        pluginsOpen: open ? false : state.pluginsOpen,
         triggersOpen: open ? false : state.triggersOpen,
       };
     }
@@ -2480,6 +2478,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case "createProject":
     case "updateProject":
     case "deleteProject":
+    case "reorderBots":
     case "reorderProjects":
     case "interrupt":
     case "createGroup":
@@ -2543,8 +2542,7 @@ export const initialState: AppState = {
   customSkins: [],
   customSkinsLoaded: false,
   settingsOpen: false,
-  pluginsOpen: false,
-  pluginsSurface: "apps",
+  appsSurface: "apps",
   triggersOpen: false,
   newBotOpen: false,
   botCreationPending: false,
@@ -3656,6 +3654,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             .then(({ bot }) => { dispatch({ type: "botPatched", bot }); action.onDeleted?.(); })
             .catch((error) => { showError(error); action.onError?.(error instanceof Error ? error.message : String(error)); });
           break;
+        case "reorderBots": {
+          const previous = stateRef.current.bots.map(bot => bot.id);
+          rawDispatch({ type: "botsOrdered", botIds: action.botIds });
+          api("/api/bots/order", { method: "PATCH", body: JSON.stringify({ botIds: action.botIds }) })
+            .then(({ botIds }) => { rawDispatch({ type: "botsOrdered", botIds }); action.onSaved?.(); })
+            .catch(async (error) => {
+              // Reconcile a failed write against the server, including concurrent changes from another device.
+              try {
+                const { bots } = await api("/api/bots?messages=0");
+                rawDispatch({ type: "botsOrdered", botIds: bots.map((bot: Bot) => bot.id) });
+              } catch { rawDispatch({ type: "botsOrdered", botIds: previous }); }
+              showError(error);
+              action.onError?.(error instanceof Error ? error.message : String(error));
+            });
+          break;
+        }
         case "reorderProjects":
           api(`/api/bots/${action.botId}/projects/order`, { method: "PATCH", body: JSON.stringify({ projectIds: action.projectIds }) })
             .then(({ bot }) => { dispatch({ type: "botPatched", bot }); action.onSaved?.(); })
@@ -3968,6 +3982,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         bumpPeripheralVersion("webhooks");
       }
       switch (frame.kind) {
+        case "bots.order":
+          rawDispatch({ type: "botsOrdered", botIds: frame.botIds });
+          break;
         case "sections":
           rawDispatch({ type: "sections", sections: frame.sections });
           break;

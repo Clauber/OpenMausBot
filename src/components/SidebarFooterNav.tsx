@@ -1,9 +1,5 @@
-// The places at the foot of the sidebar, as direct rows: Routines (the
-// Automations page), Triggers and Apps (the two glass pop-ups). They used to
-// hide behind a hover "Tools" menu; three rows cost little and each is one
-// click instead of a hover and a click. Team map is an Advanced-mode place:
-// a fourth row there, no menu.
-import { CalendarDays, Network, Puzzle, Zap } from "lucide-react";
+// Direct sidebar destinations. Apps are managed in Settings.
+import { CalendarDays, Network, Zap } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { cn } from "@/lib/cn";
@@ -88,15 +84,6 @@ export function SidebarFooterNav({ density }: { density: SidebarDensity }) {
         active={state.triggersOpen}
         icon={(active) => <Zap size={iconSize} className={tone(active)} />}
         onClick={() => dispatch({ type: "toggleTriggers", open: true })}
-      />
-      <NavRow
-        id="apps"
-        label={t("sidebar.nav.apps")}
-        tourId="nav-apps"
-        iconsOnly={iconsOnly}
-        active={state.pluginsOpen}
-        icon={(active) => <Puzzle size={iconSize} className={tone(active)} />}
-        onClick={() => dispatch({ type: "togglePlugins", open: true })}
       />
       {advanced && (
         <NavRow
