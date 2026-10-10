@@ -558,6 +558,8 @@
   "inspector.run.screen": "已观察画面",
   "inspector.run.response": "已记录回应",
   "chat.copyMessage": "复制消息",
+  "clipboard.copyFailed": "复制失败",
+  "clipboard.copyFailedHint": "无法复制。请选取文本后手动复制。",
   "chat.showRawMarkdown": "显示原始 Markdown",
   "chat.showRenderedMarkdown": "显示渲染后的 Markdown",
   "chat.retry": "重试",

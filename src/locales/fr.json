@@ -287,6 +287,8 @@
   "chat.timeline.title": "Chronologie d'exécution",
   "chat.timeline.titleRunning": "Chronologie d'exécution · en cours",
   "chat.copyMessage": "Copier le message",
+  "clipboard.copyFailed": "Échec de la copie",
+  "clipboard.copyFailedHint": "Impossible de copier. Sélectionnez le texte et copiez-le manuellement.",
   "chat.retry": "Réessayer",
   "chat.error.signedOut": "{name} n’est pas encore connecté. Connectez-vous ci-dessous, puis renvoyez votre message.",
   "chat.error.details": "Détails",
