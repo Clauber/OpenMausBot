@@ -311,6 +311,9 @@ export interface WireBot {
   includeThinking?: boolean;
   /** Queue direct-chat messages behind outstanding delegated work. */
   parkDirectMessages?: boolean;
+  /** This bot's own cap on parallel threads (1-10). Absent follows the
+   * workspace default (`threads.maxConcurrentPerBot`). */
+  maxConcurrentThreads?: number;
   /** true after an edit/branch-switch rewound the visible conversation. */
   rewound?: boolean;
   pinned?: boolean;

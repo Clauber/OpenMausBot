@@ -48,6 +48,9 @@ export type BotUpdatePatch = Partial<
    * an absent field. */
   connectorTools?: Bot["connectorTools"] | null;
   connectorScopes?: Bot["connectorScopes"] | null;
+  /** null is the wire representation for returning to the workspace default
+   * thread limit; Bot state keeps that as an absent field. */
+  maxConcurrentThreads?: Bot["maxConcurrentThreads"] | null;
   /** Rides the PATCH body only: the server's proof that the local-auto
    * warning dialog was shown (see server/index.ts's consent gate). It must
    * reach the wire inside the coalesced body and must never fold into bot
@@ -64,11 +67,12 @@ export type BotUpdatePatch = Partial<
 /** A wire patch after clear-only values have been normalized for Bot state. */
 export type BotStatePatch = Omit<
   BotUpdatePatch,
-  "computer" | "connectorTools" | "connectorScopes" | "acknowledgeLocalAuto" | "confirmFullAccess" | "applyToAllThreads"
+  "computer" | "connectorTools" | "connectorScopes" | "maxConcurrentThreads" | "acknowledgeLocalAuto" | "confirmFullAccess" | "applyToAllThreads"
 > & {
   computer?: Bot["computer"];
   connectorTools?: Bot["connectorTools"];
   connectorScopes?: Bot["connectorScopes"];
+  maxConcurrentThreads?: Bot["maxConcurrentThreads"];
 };
 
 interface BotPatchQueueEntry {
@@ -127,6 +131,7 @@ const stateOverlay = (patch: BotUpdatePatch): BotStatePatch => {
     computer,
     connectorTools,
     connectorScopes,
+    maxConcurrentThreads,
     ...fields
   } = patch;
   const normalized: BotStatePatch = { ...fields };
@@ -136,6 +141,8 @@ const stateOverlay = (patch: BotUpdatePatch): BotStatePatch => {
   else if (connectorTools !== undefined) normalized.connectorTools = connectorTools;
   if (connectorScopes === null) normalized.connectorScopes = undefined;
   else if (connectorScopes !== undefined) normalized.connectorScopes = connectorScopes;
+  if (maxConcurrentThreads === null) normalized.maxConcurrentThreads = undefined;
+  else if (maxConcurrentThreads !== undefined) normalized.maxConcurrentThreads = maxConcurrentThreads;
   return normalized;
 };
 

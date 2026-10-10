@@ -54,6 +54,8 @@ export type BotPatch = Partial<
    * all-tools boolean. */
   connectorTools?: Bot["connectorTools"] | null;
   connectorScopes?: Bot["connectorScopes"] | null;
+  /** null returns the bot to the workspace default thread limit. */
+  maxConcurrentThreads?: Bot["maxConcurrentThreads"] | null;
   acknowledgeLocalAuto?: boolean;
   confirmFullAccess?: boolean;
   acknowledgePeerScope?: boolean;

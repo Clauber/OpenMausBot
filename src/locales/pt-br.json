@@ -1506,5 +1506,9 @@
   "computer.badge.autoBoat": "boat na nuvem · Automático · somente leitura",
   "computer.addBoatKey": "Adicione uma chave de API do Boat para dar um computador na nuvem a este bot — ele sobe aqui mesmo.",
   "call.live.disclosureCloud": "Uma chamada Live envia sua voz para a OpenAI, junto com as mensagens recentes do chat, as respostas do bot e os detalhes de qualquer aprovação que ele solicitar. A chave da OpenAI permanece no seu Cloud.",
-  "mcp.probe.filter": "Filtrar ferramentas"
+  "mcp.probe.filter": "Filtrar ferramentas",
+  "botSettings.threads.title": "Threads em paralelo",
+  "botSettings.threads.label": "Threads que este bot pode executar ao mesmo tempo",
+  "botSettings.threads.useDefault": "Usar o padrão ({limit})",
+  "botSettings.threads.help": "Substitui o limite padrão somente para este bot. Mensagens extras ficam na fila até uma vaga abrir; reduzir o limite não interrompe o trabalho em andamento."
 }

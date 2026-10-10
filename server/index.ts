@@ -162,7 +162,9 @@ import {
   parseConfigPatch,
   roomTurnTimeoutMinutes,
   threadEventLogMaxBytes,
+  MAX_CONCURRENT_BOT_THREADS,
   maxConcurrentBotThreads,
+  maxConcurrentThreadsFor,
   threadEventLogRetentionDays,
   saveConfig,
   showToolCallsEnabled,
@@ -546,6 +548,7 @@ import {
   RetiredTurnRegistry,
   guardTurnDispatch,
   isTurnAdmissionBlocked,
+  threadLimitError,
   isTurnEventQuarantined,
 } from "./turn-dispatch-guard.ts";
 import { createGracefulShutdown } from "./graceful-shutdown.ts";
@@ -2757,10 +2760,16 @@ function parksBehindCoordination(botId: string, threadId: string): boolean {
   return (store.projectBotForTask(botId, threadId) ?? store.bot(botId))?.parkDirectMessages === true;
 }
 
+/** The parallel-thread limit that applies to this bot: its own override, else
+ * the workspace default. */
+function threadLimitFor(botId: string): number {
+  return maxConcurrentThreadsFor(cfg, store.bot(botId) ?? undefined);
+}
+
 function botAtThreadCapacity(botId: string): boolean {
   // Setup/dispatch reservations still occupy a slot even if an early
   // completion event has already cleared the stored busy flag.
-  return store.tasks(botId).filter((task) => threadBusy(botId, task.threadId)).length >= maxConcurrentBotThreads(cfg);
+  return store.tasks(botId).filter((task) => threadBusy(botId, task.threadId)).length >= threadLimitFor(botId);
 }
 
 /** A card waiting on the person still owns fresh coordinated work, even
@@ -9581,7 +9590,7 @@ async function startTurn(
     throw Object.assign(new Error("the bot is already working in a channel — wait for it to finish"), { status: 409, code: "thread_busy" });
   }
   if (botAtThreadCapacity(botId)) {
-    throw Object.assign(new Error(`this bot has reached its limit of ${maxConcurrentBotThreads(cfg)} parallel threads — wait for one to finish`), { status: 409, code: "thread_limit" });
+    throw threadLimitError(threadLimitFor(botId));
   }
   // Steering is never a cancel. A message sent while teammates are working
   // runs now, with their assignments still attached: they keep running and
@@ -18372,7 +18381,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             botId: from.id,
             botName: from.name,
             self: true,
-            limit: maxConcurrentBotThreads(cfg),
+            limit: threadLimitFor(from.id),
             ...outcome,
           });
         }
@@ -18422,7 +18431,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // An honest forecast, not a promise: the handoff starts when this
         // turn ends, and by then the target's slots are taken by whatever is
         // running there plus the threads this turn already opened ahead.
-        const limit = maxConcurrentBotThreads(cfg);
+        const limit = threadLimitFor(target.id);
         const running = store.tasks(target.id).filter((candidate) => threadBusy(target.id, candidate.threadId)).length;
         const ahead = pendingDelegationSnapshot().filter(
           (pending) => pending.toBotId === target.id && pending.targetThreadId !== undefined && pending.targetThreadId !== task.threadId,
@@ -21478,6 +21487,14 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (body.parkDirectMessages !== undefined) {
         if (typeof body.parkDirectMessages !== "boolean") return json(res, 400, { error: "parkDirectMessages must be true or false" });
         patch.parkDirectMessages = body.parkDirectMessages;
+      }
+      // Per-bot cap on parallel threads; null returns to the workspace default.
+      if (body.maxConcurrentThreads !== undefined) {
+        const limit = body.maxConcurrentThreads;
+        if (limit !== null && !(Number.isInteger(limit) && limit >= 1 && limit <= MAX_CONCURRENT_BOT_THREADS)) {
+          return json(res, 400, { error: `maxConcurrentThreads must be a whole number from 1 to ${MAX_CONCURRENT_BOT_THREADS}, or null` });
+        }
+        patch.maxConcurrentThreads = limit ?? undefined;
       }
       // Per-bot selection of app-wide MCP servers. Omitted keeps the current
       // selection; null restores all enabled servers; [] explicitly mounts none.

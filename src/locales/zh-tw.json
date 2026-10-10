@@ -757,9 +757,9 @@
   "composer.queued.list": "佇列中的訊息",
   "composer.queued.capacity": "已排入佇列——等這個機器人有空閒的對話名額時就會開始。",
   "composer.queued.groupTurn": "已排入佇列——這個機器人的聊天室回合一次只會執行一個，結束後就會開始。",
-  "settings.threads.title": "平行對話",
-  "settings.threads.subtitle": "選擇每個機器人一次可以處理多少工作。",
-  "settings.threads.label": "每個機器人同時執行的對話上限",
+  "settings.threads.title": "預設平行對話",
+  "settings.threads.subtitle": "選擇每個機器人預設一次可以處理多少工作。機器人可在自己的設定中覆寫此值。",
+  "settings.threads.label": "每個機器人預設同時執行的對話上限",
   "settings.threads.help": "此上限適用於機器人的 1 對 1 對話；多出的訊息會排入佇列，直到有名額空出。聊天室回合在每個機器人一次只會執行一個，直接訊息會排在它後面。受指派的工作會等待有空閒的對話。等待核准的對話也會佔用一個名額。調低這個上限不會停止執行中的工作；模型限制與共用電腦的保護機制仍然適用。",
   "settings.threads.saving": "正在儲存…",
   "settings.threads.error": "無法儲存對話上限。請再試一次。",
@@ -2438,5 +2438,9 @@
   "computer.badge.autoBoat": "雲端 Boat · Auto · 唯讀",
   "computer.addBoatKey": "新增 Boat API 金鑰，即可為這個機器人提供雲端電腦 — 它會直接在這裡啟動。",
   "call.live.disclosureCloud": "即時通話會將你的語音傳送給 OpenAI，同時傳送的還有此對話的近期訊息、機器人的回覆，以及其要求核准之項目的詳細資訊。OpenAI 金鑰會保留在你的 Cloud 上。",
-  "mcp.probe.filter": "篩選工具"
+  "mcp.probe.filter": "篩選工具",
+  "botSettings.threads.title": "平行對話",
+  "botSettings.threads.label": "此機器人可同時執行的對話數",
+  "botSettings.threads.useDefault": "使用預設值（{limit}）",
+  "botSettings.threads.help": "僅為此機器人覆寫預設上限。多出的訊息會排入佇列，直到有名額空出；調低上限不會停止執行中的工作。"
 }

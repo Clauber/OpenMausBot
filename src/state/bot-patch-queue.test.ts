@@ -208,6 +208,7 @@ describe("bot patch queue", () => {
           computer: patch.computer ?? undefined,
           connectorTools: patch.connectorTools ?? undefined,
           connectorScopes: patch.connectorScopes ?? undefined,
+          maxConcurrentThreads: patch.maxConcurrentThreads ?? undefined,
         });
       },
       reconcile: async () => bot(),

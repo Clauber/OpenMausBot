@@ -1492,5 +1492,9 @@
   "computer.badge.autoBoat": "क्लाउड बोट · ऑटो · केवल-पठन",
   "computer.addBoatKey": "इस बॉट को क्लाउड कंप्यूटर देने के लिए Boat API कुंजी जोड़ें — वह यहीं शुरू हो जाता है।",
   "call.live.disclosureCloud": "Live कॉल आपकी आवाज़ को OpenAI पर भेजती है, साथ ही चैट के हाल के संदेश, बॉट के जवाब और उसके द्वारा माँगी गई किसी भी स्वीकृति का विवरण भी भेजती है। OpenAI कुंजी आपके Cloud पर ही रहती है।",
-  "mcp.probe.filter": "टूल फ़िल्टर करें"
+  "mcp.probe.filter": "टूल फ़िल्टर करें",
+  "botSettings.threads.title": "समानांतर थ्रेड",
+  "botSettings.threads.label": "यह बॉट एक साथ कितने थ्रेड चला सकता है",
+  "botSettings.threads.useDefault": "डिफ़ॉल्ट उपयोग करें ({limit})",
+  "botSettings.threads.help": "केवल इस बॉट के लिए डिफ़ॉल्ट सीमा बदलता है। अतिरिक्त संदेश तब तक कतार में रहते हैं जब तक कोई स्लॉट खाली न हो; सीमा घटाने से चल रहा काम नहीं रुकता।"
 }
