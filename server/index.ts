@@ -13,7 +13,8 @@ import { writeFileAtomic } from "./atomic.ts";
 import { rm as removeDirectory } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { ToolResults, TOOL_RESULT_MAX_CHARS } from "./tool-results.ts";
-import { extname, join } from "node:path";
+import { homedir } from "node:os";
+import { basename, extname, join } from "node:path";
 import { authorizeExternalRuntime, externalRuntimeIsActive, type ExternalRuntimeGrant } from "./external-runtime.ts";
 
 import { z } from "zod";
@@ -113,7 +114,7 @@ import { cloudComputerRpc } from "./cloud-computer-tools.ts";
 import { TeamComputers, teamComputerAssignment, teamComputerCreate, teamComputerOwner, type TeamComputerRecord } from "./team-computers.ts";
 import { isEffortLevel, type BotVisibility, type CardAnswerer, type ResolvedSender, type SteerQueueReason, type WireBot, type WireGroup, type WireTask } from "../shared/wire.ts";
 import { isPersistentQuestionCard, QUESTION_DISMISS_MESSAGE, shouldSettleRequestCard } from "../shared/ask-question.ts";
-import { parseToolScope, toolScopeWidens } from "../shared/tool-scope.ts";
+import { canUseMcpServer, parseToolScope, toolScopeWidens } from "../shared/tool-scope.ts";
 import type { TeamComputersPayload } from "../shared/team-computer.ts";
 import { boatCreateRecoverySnapshot, retireDeletedBoatCreate } from "./boat-create-idempotency.ts";
 import { boatDeletionSnapshot } from "./boat-delete-journal.ts";
@@ -243,6 +244,9 @@ import {
 } from "./mcp-registry.ts";
 import { McpOAuthError, McpSignInError, McpOAuthManager, mcpOAuthRedirectUri, withMcpSignIn, withoutPendingSignIn } from "./mcp-oauth.ts";
 import { probeMcpServer } from "./mcp-probe.ts";
+import { BUILTIN_MCP_CATALOG } from "./mcp-catalog-data.ts";
+import { createEnvLookup, installCatalogEntry, listCatalog, loadUserCatalog, mergeCatalogs } from "./mcp-catalog.ts";
+import { buildSkillSourceCatalog, importSkillSources, normalizeSkillMd, type SkillSourceDef } from "./skill-sources.ts";
 import {
   GROUP_GOAL_MAX_TURNS,
   groupGoalAssignmentKey,
@@ -15715,6 +15719,17 @@ const providerInstancesChanging = new Set<string>();
 let mcpConfigBusy = false;
 const MAX_CONCURRENT_MCP_PROBES = 2;
 let mcpProbesInFlight = 0;
+
+/** Where an install may find a secret a catalog entry names (never printed):
+ * this process's environment, then the user's own env files. */
+const catalogSecretLookup = createEnvLookup([join(homedir(), "ai", ".env"), join(homedir(), ".claude", ".env")]);
+/** The skill folders mirrored under <data dir>/skill-sources, in priority order. */
+const SKILL_SOURCES: SkillSourceDef[] = [
+  { id: "shared", label: "Shared harness skills" },
+  { id: "hermes", label: "Hermes skills" },
+];
+/** The built-in catalog plus whatever the person keeps in <data dir>/mcp-catalog.json. */
+const mcpCatalog = () => mergeCatalogs(BUILTIN_MCP_CATALOG, loadUserCatalog(join(DATA_DIR, "mcp-catalog.json")));
 // One updater per executable: multiple Claude instances can point at the same
 // install, and running two self-updates against it would race its files.
 const claudeUpdatesInFlight = new Set<string>();
@@ -21978,6 +21993,42 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       return json(res, result.status, result.body);
     }
 
+    // The tools this bot's next turn will mount from its custom MCP servers:
+    // the same selection a turn uses (engineMcpServers + the bot's tool
+    // scope), each server asked for its tools list. Values stay private. A
+    // POST because it starts the servers, as the per-server Test does.
+    m = path.match(/^\/api\/bots\/([\w-]+)\/mcp-tools$/);
+    if (m && method === "POST") {
+      const target = store.bot(m[1]!);
+      if (!target) return json(res, 404, { error: "no such bot" });
+      const mounted = await withMcpSignIn(engineMcpServers(target), mcpOAuth);
+      const controller = new AbortController();
+      const disconnect = () => { if (!res.writableEnded) controller.abort(); };
+      res.once("close", disconnect);
+      const servers: Array<{ name: string; ok: boolean; tools: Array<{ name: string; description?: string }>; error?: string; auth?: "required" }> = [];
+      try {
+        for (const [name, spec] of Object.entries(mounted)) {
+          if (!canUseMcpServer(target.toolScope, name)) continue;
+          if (mcpProbesInFlight >= MAX_CONCURRENT_MCP_PROBES) {
+            servers.push({ name, ok: false, tools: [], error: "Two MCP connection tests are already running. Try again in a moment." });
+            continue;
+          }
+          mcpProbesInFlight += 1;
+          try {
+            const result = await probeMcpServer({ ...spec, enabled: true } as Parameters<typeof probeMcpServer>[0], undefined, controller.signal);
+            servers.push(result.ok
+              ? { name, ok: true, tools: result.tools }
+              : { name, ok: false, tools: [], error: result.error, ...(result.auth ? { auth: result.auth } : {}) });
+          } finally {
+            mcpProbesInFlight -= 1;
+          }
+        }
+      } finally {
+        res.off("close", disconnect);
+      }
+      return json(res, 200, { servers });
+    }
+
     // ── bot skills: imported Agent Skills (SKILL.md) ────────────────────
     // Import lands DISABLED; the UI shows SKILL.md + scan warnings and a
     // person enables after reading. See server/skills.ts for the policy.
@@ -22067,6 +22118,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           ...(listing.license ? { license: listing.license } : {}),
           ...(listing.compatibility ? { compatibility: listing.compatibility } : {}),
           warnings: listing.warnings,
+          skippedFiles: listing.skippedFiles,
           assignedBots: store.bots
             .filter((bot) => bot.assignedSkills?.includes(listing.name))
             .map((bot) => ({ id: bot.id, name: bot.name })),
@@ -22109,6 +22161,33 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const result = setLibrarySkillReviewState(m[1]!, parsed.data.enabled ? "approved" : "disabled");
       if ("error" in result) return json(res, 404, { error: result.error });
       return json(res, 200, { skill: result });
+    }
+    // Skill sources: other machines' skill folders, mirrored into
+    // <data dir>/skill-sources/<id> by scripts/mirror-skills.ts (pull-only),
+    // listed here and imported into the library on request.
+    if (path === "/api/skill-sources" && method === "GET") {
+      if (!skillsLibraryEnabled(cfg)) return json(res, 404, { error: "skills library is not enabled" });
+      const { root: _root, ...catalog } = buildSkillSourceCatalog(join(DATA_DIR, "skill-sources"), SKILL_SOURCES);
+      const index = readSkillLibraryIndex();
+      const skills = catalog.skills.map((skill) => {
+        let libraryState: "same" | "changed" | null = null;
+        const entry = index[skill.name];
+        if (entry && !skill.error) {
+          try {
+            const text = normalizeSkillMd(readFileSync(join(DATA_DIR, "skill-sources", skill.source, skill.relPath, "SKILL.md"), "utf8"), basename(skill.relPath)).text;
+            libraryState = entry.sha256 === createHash("sha256").update(text).digest("hex") ? "same" : "changed";
+          } catch { libraryState = "changed"; }
+        }
+        return { ...skill, libraryState };
+      });
+      return json(res, 200, { sources: catalog.sources, skills });
+    }
+    if (path === "/api/skill-sources/import" && method === "POST") {
+      if (!skillsLibraryEnabled(cfg)) return json(res, 404, { error: "skills library is not enabled" });
+      const names = z.array(z.string().min(1).max(64)).max(500);
+      const parsed = z.object({ all: z.boolean().optional(), names: names.optional(), include: names.optional(), reviewedSecrets: names.optional() }).safeParse(await readBody(req));
+      if (!parsed.success || (!parsed.data.all && !parsed.data.names?.length)) return json(res, 400, { error: "send all: true, or the names to import" });
+      return json(res, 200, importSkillSources(buildSkillSourceCatalog(join(DATA_DIR, "skill-sources"), SKILL_SOURCES), parsed.data));
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/skills-library$/);
     if (m && method === "PUT") {
@@ -24543,6 +24622,62 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (refused.length) return json(res, 403, { error: `${mcpPolicyRefusal(refused[0]!, parsed.servers[refused[0]!] as object)} Not approved: ${refused.join(", ")}.`, code: "managed_policy" });
         persistMcpServers({ ...current, ...parsed.servers });
         return json(res, 201, { ...mcpServerResponse(), added: names });
+      } finally {
+        mcpConfigBusy = false;
+      }
+    }
+
+    // ── connector access: the built-in catalog, and turning an app on ──
+    if (method === "GET" && path === "/api/mcp/catalog") {
+      return json(res, 200, { entries: listCatalog(mcpCatalog(), cfg.mcpServers, catalogSecretLookup) });
+    }
+
+    // Make an app available to bots: install it from the catalog when it is
+    // not stored yet (one ordinary mcpServers entry), or switch a stored one
+    // on. Bots that follow "every enabled server" are first pinned to the
+    // servers they have today, so turning an app on grants it to no one by
+    // itself; the grant is the per-bot list (PATCH /api/bots/:id).
+    const mcpAppEnable = /^\/api\/mcp\/apps\/([a-z][a-z0-9_-]{0,31})\/enable$/.exec(path);
+    if (method === "POST" && mcpAppEnable) {
+      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+        return json(res, 415, { error: "content-type must be application/json" });
+      }
+      if (mcpConfigBusy) return json(res, 409, { error: "MCP servers are already being updated." });
+      mcpConfigBusy = true;
+      try {
+        const name = mcpAppEnable[1]!;
+        const body = await readBody(req);
+        const provided = body?.secrets && typeof body.secrets === "object" && !Array.isArray(body.secrets)
+          ? Object.fromEntries(Object.entries(body.secrets as Record<string, unknown>).filter((pair): pair is [string, string] => typeof pair[1] === "string"))
+          : undefined;
+        const current = cfg.mcpServers ?? {};
+        let next = current;
+        if (Object.hasOwn(current, name)) {
+          const stored = parseStoredMcpServer(name, current[name]);
+          if (!stored.ok) return json(res, 400, { error: stored.error });
+          const refusal = mcpPolicyRefusal(name, stored.server);
+          if (refusal) return json(res, 403, { error: refusal, code: "managed_policy" });
+          if (!stored.server.enabled) next = { ...current, [name]: { ...stored.server, enabled: true } };
+        } else {
+          const entry = mcpCatalog().find((candidate) => candidate.name === name);
+          if (!entry) return json(res, 404, { error: "No such app in the catalog." });
+          const installed = installCatalogEntry(current, entry, { provided, lookup: catalogSecretLookup });
+          if (!installed.ok) return json(res, installed.status, { error: installed.error, ...(installed.missing ? { missing: installed.missing } : {}) });
+          const refusal = mcpPolicyRefusal(name, installed.server);
+          if (refusal) return json(res, 403, { error: refusal, code: "managed_policy" });
+          next = installed.next;
+        }
+        const pinned: string[] = [];
+        if (next !== current) {
+          const today = Object.keys(customMcpServers(cfg));
+          for (const bot of store.bots) {
+            if (bot.mcpServers != null) continue;
+            store.patchBot(bot.id, { mcpServers: [...today] });
+            pinned.push(bot.id);
+          }
+          persistMcpServers(next);
+        }
+        return json(res, 200, { ...mcpServerResponse(), pinned });
       } finally {
         mcpConfigBusy = false;
       }

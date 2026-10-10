@@ -48,6 +48,8 @@ Use only mapped, tested commands:
 - [Work summaries and engine hooks](digests.md)
 - [OpenAI-compatible structured tools](openai-tools.md)
 - [Per-bot tool selection and local-model checks](tool-selection.md)
+- [Apps access manager: which bot may use which app](mcp-access.md)
+- [Skills library: Hermes and shared skills, assigned per bot](skills-library.md)
 - [OpenCode model variants through ACP](opencode-variants.md)
 - [Bot setup, model scope, and file continuity](bot-continuity.md)
 - [Reviewed Chief team setup and scoped deletion](team-setup.md)

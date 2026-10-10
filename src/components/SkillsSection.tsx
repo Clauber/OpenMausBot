@@ -10,6 +10,10 @@ import { t } from "@/lib/i18n";
 import { useModalDialog } from "@/hooks/use-modal-dialog";
 import { useStore } from "@/state/store";
 import { Card, Switch } from "./SettingsPrimitives";
+import { SkillAssignManager } from "./SkillAssignManager";
+import { SkillSourcesCard } from "./SkillSourcesCard";
+import { skillBadges } from "@/lib/skill-assign";
+import { GrantBadgeChips } from "./GrantGrid";
 import type { SkillsLibrarySkillWire } from "../../shared/wire";
 
 /** Pure browse filter: the query matches name, description and source;
@@ -56,6 +60,7 @@ export function SkillsSection() {
   const [importMessage, setImportMessage] = useState("");
   const [assignBot, setAssignBot] = useState("");
   const busy = useRef(false);
+  const [tab, setTab] = useState<"library" | "assign">("library");
 
   const bots = state.bots.filter((bot) => !bot.hidden);
   const tags = useMemo(
@@ -191,8 +196,50 @@ export function SkillsSection() {
   const inputClass =
     "w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink placeholder:text-ink-secondary focus:outline-none";
 
+  const tabs = (
+    <div className="flex gap-2" role="group" aria-label={t("skills.library.title")}>
+      {(["library", "assign"] as const).map((id) => (
+        <button
+          key={id}
+          type="button"
+          data-skills-tab={id}
+          aria-pressed={tab === id}
+          onClick={() => setTab(id)}
+          className={tab === id ? "rounded-full bg-accent px-3.5 py-1.5 text-[12.5px] font-medium text-accent-ink" : "rounded-full bg-control/70 px-3.5 py-1.5 text-[12.5px] font-medium text-ink-secondary hover:text-ink"}
+        >
+          {t(id === "library" ? "skills.assign.tab.library" : "skills.assign.tab.assign")}
+        </button>
+      ))}
+    </div>
+  );
+
+  if (tab === "assign") {
+    return (
+      <div className="flex flex-col gap-4">
+        {tabs}
+        <div className="flex items-center gap-2">
+          <Search size={15} className="shrink-0 text-ink-secondary" />
+          <input
+            className={inputClass}
+            placeholder={t("skills.library.searchPlaceholder")}
+            aria-label={t("skills.library.searchPlaceholder")}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+        {error && <div role="alert" className="text-[12px] text-danger">{error}</div>}
+        {loading ? (
+          <div className="text-[12px] text-ink-secondary">{t("skills.library.loading")}</div>
+        ) : (
+          <SkillAssignManager skills={skills} bots={bots} query={query} onChanged={refresh} />
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-4">
+      {tabs}
       <Card title={t("skills.library.title")} subtitle={t("skills.library.subtitle")}>
         <div className="flex flex-col gap-3">
           <div className="flex items-center gap-2">
@@ -247,7 +294,7 @@ export function SkillsSection() {
                 <div key={skill.name} className="px-3 py-2.5">
                   <div className="flex items-center gap-2">
                     <button type="button" onClick={() => void view(skill)} className="min-w-0 flex-1 text-left" aria-label={t("skills.library.view", { skill: skill.name })}>
-                      <div className="truncate font-mono text-[12.5px] text-ink">{skill.name}</div>
+                      <div className="truncate font-mono text-[12.5px] text-ink">{skill.name}<GrantBadgeChips badges={skillBadges(skill)} /></div>
                       <div className="mt-0.5 line-clamp-2 text-[11.5px] text-ink-secondary">{skill.description}</div>
                     </button>
                     <Switch
@@ -258,6 +305,11 @@ export function SkillsSection() {
                     />
                   </div>
                   <LibrarySkillMeta skill={skill} />
+                  {skill.skippedFiles && skill.skippedFiles.length > 0 && (
+                    <div className="mt-1 text-[10.5px] text-ink-secondary" title={skill.skippedFiles.join(", ")}>
+                      {t("skills.library.skipped", { files: `${skill.skippedFiles.slice(0, 3).join(", ")}${skill.skippedFiles.length > 3 ? ` +${skill.skippedFiles.length - 3}` : ""}` })}
+                    </div>
+                  )}
                   {skill.warnings.length > 0 && (
                     <div className="mt-1 text-[10.5px] text-warning">{skill.warnings.join(" · ")}</div>
                   )}
@@ -313,6 +365,8 @@ export function SkillsSection() {
           {error && <div role="alert" className="mt-2 text-[12px] text-danger">{error}</div>}
         </div>
       </Card>
+
+      <SkillSourcesCard onImported={refresh} />
 
       <Card title={t("skills.library.importTitle")} subtitle={t("skills.library.importHint")}>
         <form

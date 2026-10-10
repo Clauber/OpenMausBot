@@ -850,6 +850,8 @@ export interface InstanceInfo {
     computerMcp?: boolean;
     agentsMcp?: boolean;
     composioMcp?: boolean;
+    /** the engine can mount the app-wide MCP servers (config.json mcpServers) */
+    customMcp?: boolean;
     browserMcp?: boolean;
     images?: boolean;
     effortLevels?: readonly EffortLevel[];
@@ -964,9 +966,10 @@ export interface AppState {
    *  localStorage cache, not the empty array, is what the machine knows. */
   customSkinsLoaded: boolean;
   settingsOpen: boolean;
-  /** Which tab Settings → Apps opens on; "mcp" when a bot's tools
-   * sent the user there to add a server. */
-  appsSurface: "apps" | "mcp";
+  /** Which tab Settings → Apps opens on: "access" (which bot may use which
+   * app) by default; "mcp" when a bot's tools sent the user there to add a
+   * server. */
+  appsSurface: "apps" | "mcp" | "access";
   /** The Triggers pop-up (webhooks, as a sentence: when this happens, that
    * bot should…). */
   triggersOpen: boolean;
@@ -1284,7 +1287,7 @@ export type Action =
   | { type: "toggleTerminal"; open?: boolean }
   | { type: "focusMessage"; threadId: string; messageId: string; matchText?: string }
   | { type: "focusMessageConsumed"; nonce: number }
-  | { type: "toggleAppSettings"; open?: boolean; section?: AppSettingsSection; cloudLink?: boolean; phonePairing?: boolean; appsSurface?: "apps" | "mcp" }
+  | { type: "toggleAppSettings"; open?: boolean; section?: AppSettingsSection; cloudLink?: boolean; phonePairing?: boolean; appsSurface?: "apps" | "mcp" | "access" }
   | { type: "toggleShortcuts"; open?: boolean }
   | { type: "toggleWelcome"; open?: boolean }
   | { type: "toggleTour"; open?: boolean }
@@ -2542,7 +2545,7 @@ export const initialState: AppState = {
   customSkins: [],
   customSkinsLoaded: false,
   settingsOpen: false,
-  appsSurface: "apps",
+  appsSurface: "access",
   triggersOpen: false,
   newBotOpen: false,
   botCreationPending: false,
