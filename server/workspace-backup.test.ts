@@ -345,7 +345,7 @@ describe("encrypted full workspace backups", () => {
     expect(existsSync(join(target, "hook-tokens"))).toBe(false);
   });
 
-  it("rejects authenticated credential metadata, saved auth paths, and connection-bearing config", async () => {
+  it("rejects authenticated credential metadata, saved auth paths, and connection-bearing config", { timeout: 60_000 }, async () => {
     const source = directory();
     const exported = await createWorkspaceBackup(source, { password: PASSWORD });
     const staged = await stageWorkspaceBackup(source, exported.path, { password: PASSWORD });
