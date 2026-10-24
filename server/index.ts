@@ -12205,7 +12205,7 @@ const outboundRequests = new OutboundRequestService();
 const outboundCounts = new OutboundCounts(join(DATA_DIR, "outbound-counts.json"));
 const OUTBOUND_HOLD_MS = 9 * 60_000;
 
-async function authorizeInternalAction(capability: InternalCapability, tool: string, args: unknown, proposal = false): Promise<void> {
+async function authorizeInternalAction(capability: InternalCapability, tool: string, args: unknown, confirmation: "none" | "policy" | "owner" = "none"): Promise<void> {
   const bot = store.bot(capability.botId);
   if (!bot || !internalCapabilityIsActive(capability)) throw effectRefusal("effect_unavailable", "This action's turn has ended.");
   const rule = approvalRule(tool, args, bot.approvalRules, cfg.approvalRules);
@@ -12226,7 +12226,7 @@ async function authorizeInternalAction(capability: InternalCapability, tool: str
     const summary = (JSON.stringify(redactSecrets(args)) ?? "{}").slice(0, 2000);
     const card = store.appendMessage(capability.threadId, { role: "bot", kind: "options",
       from: { botId: bot.id, name: bot.name, color: bot.color }, card: { title: "Approval needed", subtitle: summary,
-        options: ["Allow", "Deny"], requestId: held.requestId, tool, effectKey: key, autoReview: review ?? undefined,
+        options: ["Allow", "Deny"], requestId: held.requestId, tool, effectKey: confirmation === "owner" ? undefined : key, autoReview: review ?? undefined,
         held: rule.decision === "require_approval" ? "An approval rule requires your confirmation." : review?.reasoning,
         outboundRequest: { tool, app: null } } });
     appendDecision(DATA_DIR, { threadId: capability.threadId, requestId: held.requestId, botId: bot.id, tool,
@@ -12243,9 +12243,7 @@ async function authorizeInternalAction(capability: InternalCapability, tool: str
   if (!internalCapabilityIsActive(capability)) throw effectRefusal("effect_unavailable", "This action's turn has ended.");
   const freshRule = approvalRule(tool, args, store.bot(bot.id)?.approvalRules, cfg.approvalRules);
   if (JSON.stringify(freshRule) !== JSON.stringify(rule)) throw effectRefusal("effect_unavailable", "Approval rules changed; propose this action again.");
-  // Existing proposal services retain their own detailed card and validators
-  // when no action rule/judge answered. Their confirmer claims the bound key.
-  const deferred = proposal && approved === undefined && !fullAccessForSource(bot.id, capability.threadId);
+  const deferred = confirmation === "owner" || (confirmation === "policy" && approved === undefined && !fullAccessForSource(bot.id, capability.threadId));
   if (!deferred && key && !effectLedger.claim(key)) throw effectRefusal();
   const sendCount = outboundCallsIn(tool, args).length;
   if (sendCount) {
@@ -17162,13 +17160,16 @@ const handleRequestInScope = async (req: IncomingMessage, res: ServerResponse) =
         kind: z.enum(["agents", "connectors", "computer"]).default("agents"),
         depth: z.number().int().min(0).max(MAX_COMMS_DEPTH).default(0),
         skillAuthoring: z.boolean().default(false),
+        activeTurn: z.boolean().default(false),
       }).strict().safeParse(await readBody(req));
       if (!parsed.success || !store.bot(parsed.data.botId)) {
         return json(res, 400, { error: "invalid test capability" });
       }
-      const generation = beginInternalCapabilityGeneration(parsed.data.threadId);
+      const { activeTurn, ...capability } = parsed.data;
+      const generation = beginInternalCapabilityGeneration(capability.threadId);
+      if (activeTurn) liveTurnByThread.set(capability.threadId, generation);
       const token = mintInternalCapability({
-        ...parsed.data,
+        ...capability,
         generation,
         createdBots: 0,
         openedThreads: 0,
@@ -17241,7 +17242,9 @@ const handleRequestInScope = async (req: IncomingMessage, res: ServerResponse) =
           }
         }
         const tool = internalActionTool(path, body);
-        if (tool) await authorizeInternalAction(internalCapability, `mcp__agents__${tool}`, body, path.endsWith("-requests"));
+        const confirmation = tool === "propose_bot_deletion" && isMasterChief(internalSender) ? "owner"
+          : path.endsWith("-requests") ? "policy" : "none";
+        if (tool) await authorizeInternalAction(internalCapability, `mcp__agents__${tool}`, body, confirmation);
         return body;
       };
       const requireActiveInternalCapability = () => {

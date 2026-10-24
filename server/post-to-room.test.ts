@@ -55,11 +55,11 @@ const api = async (method: string, path: string, body?: unknown): Promise<ApiRes
 };
 
 /** A new turn for this bot on this thread, and the agents bearer it holds. */
-const startTurn = async (botId: string, threadId: string): Promise<string> => {
+const startTurn = async (botId: string, threadId: string, activeTurn = true): Promise<string> => {
   const minted = await fetch(`${BASE}/api/testing/internal-capability`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-openmausbot-test-capability": TEST_CAPABILITY_KEY },
-    body: JSON.stringify({ botId, threadId, kind: "agents", skillAuthoring: true }),
+    body: JSON.stringify({ botId, threadId, kind: "agents", skillAuthoring: true, activeTurn }),
   });
   return (await minted.json() as { token: string }).token;
 };
@@ -470,6 +470,19 @@ describe("list_rooms discovery", () => {
 describe("post_to_room", () => {
   const post = (fromBotId: string, fromThreadId: string, groupId: string, message: string) =>
     internal("POST", "/api/internal/post-to-room", { fromBotId, fromThreadId, groupId, message });
+
+  it("refuses a consequential post when the capability has no live turn", async () => {
+    const poster = await makeBot("Idle Poster", "Idle");
+    const mate = await makeBot("Idle Mate", "Idle");
+    const room = await makeRoom("Idle room", [poster.id, mate.id], "Idle");
+    const token = await startTurn(poster.id, poster.threadId, false);
+    const refused = await asTurn(token, "POST", "/api/internal/post-to-room", {
+      fromBotId: poster.id, fromThreadId: poster.threadId, groupId: room.id, message: "No active turn",
+    });
+    expect(refused.status).toBe(409);
+    expect(refused.body).toMatchObject({ error: "This action has no active turn." });
+    expect(await messagesOf(room.threadId)).toHaveLength(0);
+  });
 
   it("writes a bot-authored message and starts nobody's turn", async () => {
     const poster = await makeBot("Poster", "Posting");

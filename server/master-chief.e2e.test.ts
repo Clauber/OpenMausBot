@@ -162,6 +162,28 @@ it("manages General bots through injected tools, keeps deletion confirmed, and a
     await request("POST", `/api/threads/${master.threadId}/respond`, { requestId: card!.requestId, behavior: "allow" }, 403);
     await request("POST", `/api/threads/${master.threadId}/respond`, { requestId: card!.requestId, behavior: "allow" }, 200, owner);
     expect((await bots()).some(bot => bot.id === pam.id)).toBe(false);
+    const duplicate = await request("POST", `/api/threads/${master.threadId}/respond`, { requestId: card!.requestId, behavior: "allow" }, 409, owner);
+    expect(duplicate).toMatchObject({ code: "effect_replayed" });
+    for (const decision of ["always_allow", "require_approval"] as const) {
+      await expect.poll(async () => (await bots()).find(bot => bot.id === master.id)?.tasks?.some(task => task.busy), { timeout: 15_000 }).toBe(false);
+      const target = await create(`Deletion ${decision}`);
+      await request("PATCH", `/api/bots/${master.id}`, { approvalRules: { tools: { "mcp:agents:propose_bot_deletion": decision } } }, 200, owner);
+      const pending = run(master, [{ tool: "propose_bot_deletion", arguments: { bot_id: target.id, reason: `Confirm ${decision} deletion` } }], `${decision} deletion pending`);
+      const cards = async () => cardPage.parse(await request("GET", `/api/threads/${master.threadId}/messages?limit=50`)).messages
+        .flatMap(message => message.card && !message.card.answered && !message.card.dismissed ? [message.card] : []);
+      if (decision === "require_approval") {
+        await expect.poll(async () => (await cards()).some(card => card.outboundRequest), { timeout: 15_000 }).toBe(true);
+        const preliminary = (await cards()).find(card => card.outboundRequest)!;
+        expect(preliminary.effectKey).toBeUndefined();
+        await request("POST", `/api/threads/${master.threadId}/respond`, { requestId: preliminary.requestId, behavior: "allow" }, 200, owner);
+      }
+      await pending;
+      expect((await bots()).some(bot => bot.id === target.id)).toBe(true);
+      const confirmation = (await cards()).find(card => card.teamSetupRequest)!;
+      expect(confirmation.effectKey).toEqual(expect.any(String));
+      await request("POST", `/api/threads/${master.threadId}/respond`, { requestId: confirmation.requestId, behavior: "allow" }, 200, owner);
+      expect((await bots()).some(bot => bot.id === target.id)).toBe(false);
+    }
     const audit = z.object({ entries: z.array(z.object({ changes: z.array(z.object({ targetId: z.string(), after: z.unknown() })) })) })
       .parse(await request("GET", "/api/fleet/audit", undefined, 200, owner));
     expect(audit.entries.some(row => row.changes.some(change => change.targetId === pam.id && change.after === null))).toBe(true);
