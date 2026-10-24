@@ -7,6 +7,7 @@ import { AttachedFileChip, type MessageAttachmentContext } from "./AttachmentPre
 import { shortPath } from "@/lib/short-path";
 import { t } from "@/lib/i18n";
 import { openBotSettings } from "./bot-panel/panel-link";
+import { BotFolderBrowser } from "./BotFolderBrowser";
 
 const MAX_FILES = 20;
 
@@ -107,6 +108,7 @@ export function ComputerFilesPane({ bot }: { bot: Bot }) {
         </div>
         {pinned !== undefined && <p className="mt-2 text-[12px] leading-5 text-ink-secondary">{t("computer.files.pinnedFolderHint")}</p>}
       </div>
+      <BotFolderBrowser bot={bot} home={home} />
       <div className="mt-3 rounded-xl bg-card p-4">
         <div className="text-[13px] font-medium text-ink">{t("computer.files.recent")}</div>
         {files.length === 0 ? (

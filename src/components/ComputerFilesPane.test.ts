@@ -10,6 +10,8 @@ vi.mock("@/state/store", async (original) => ({
   useStore: () => ({ dispatch: vi.fn() }),
 }));
 
+vi.mock("./BotFolderBrowser", () => ({ BotFolderBrowser: () => null }));
+
 import { ComputerFilesPane, recentChangedFiles, sharedFileReferences } from "./ComputerFilesPane";
 
 const reply = (id: string, text: string, patch: Partial<Message> = {}) =>

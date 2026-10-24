@@ -155,11 +155,11 @@ describe("Computer panel tab", () => {
 
   it("marks the selected trigger and only that one", async () => {
     await open(makeBot());
-    expect(tabs().map((candidate) => candidate.getAttribute("aria-selected"))).toEqual(["true", "false", "false", "false"]);
+    expect(tabs().map((candidate) => candidate.getAttribute("aria-selected"))).toEqual(["true", "false", "false", "false", "false"]);
 
     flushSync(() => tab("Data").click());
     await settle();
-    expect(tabs().map((candidate) => candidate.getAttribute("aria-selected"))).toEqual(["false", "false", "false", "true"]);
+    expect(tabs().map((candidate) => candidate.getAttribute("aria-selected"))).toEqual(["false", "false", "false", "true", "false"]);
   });
 
   it("keeps one Tab stop and moves it with the arrow, Home and End keys", async () => {
@@ -180,16 +180,16 @@ describe("Computer panel tab", () => {
     // Wraps around the row's ends.
     press("Screen", "ArrowLeft");
     await settle();
-    expect(selected()).toBe("Data");
-    press("Data", "ArrowRight");
+    expect(selected()).toBe("Files");
+    press("Files", "ArrowRight");
     await settle();
     expect(selected()).toBe("Screen");
 
     press("Screen", "End");
     await settle();
-    expect(selected()).toBe("Data");
-    expect(document.activeElement).toBe(tab("Data"));
-    press("Data", "Home");
+    expect(selected()).toBe("Files");
+    expect(document.activeElement).toBe(tab("Files"));
+    press("Files", "Home");
     await settle();
     expect(selected()).toBe("Screen");
     expect(document.activeElement).toBe(tab("Screen"));
@@ -208,7 +208,7 @@ describe("Computer panel tab", () => {
   it("moves over an Android tab that appeared", async () => {
     fixture.android = true;
     await open(makeBot());
-    expect(tabLabels()).toEqual(["Screen", "Routines", "Android", "Browser", "Data"]);
+    expect(tabLabels()).toEqual(["Screen", "Routines", "Android", "Browser", "Data", "Files"]);
     press("Routines", "ArrowRight");
     await settle();
     expect(selected()).toBe("Android");

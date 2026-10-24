@@ -347,7 +347,7 @@ export function mimeFor(path: string): string {
 }
 
 /** Canonicalised before and after opening, and the handle compared with the post-open path, to reject symlink escapes and directory swaps. */
-export async function openMessageFile(href: string, roots: readonly string[]): Promise<OpenedMessageFile> {
+export async function openMessageFile(href: string, roots: readonly string[], maxBytes = MESSAGE_FILE_MAX_BYTES): Promise<OpenedMessageFile> {
   const requested = referencedPath(href);
   const canonicalRoots = (await Promise.all(roots.map(async (root) => {
     try {
@@ -384,8 +384,8 @@ export async function openMessageFile(href: string, roots: readonly string[]): P
       const opened = await handle.stat();
       if (opened.isDirectory()) throw statusError(400, "the link points to a folder, not a file", "directory");
       if (!opened.isFile()) throw statusError(400, "the link does not point to a regular file");
-      if (opened.size > MESSAGE_FILE_MAX_BYTES) {
-        throw statusError(413, `file exceeds ${MESSAGE_FILE_MAX_BYTES} bytes`);
+      if (opened.size > maxBytes) {
+        throw statusError(413, `file exceeds ${maxBytes} bytes`);
       }
 
       const canonicalAfter = await realpath(candidate);
@@ -461,8 +461,26 @@ export interface MessageFolderListing {
 }
 
 export async function listMessageFolder(href: string, roots: readonly string[]): Promise<MessageFolderListing> {
-  const { path: _path, ...listing } = await readMessageFolder(href, roots);
+  const { path: _path, folders: _folders, ...listing } = await readMessageFolder(href, roots);
   return listing;
+}
+
+/** A path the person browses inside one root: the root's own names joined by "/", never "." or "..". */
+function browsedHref(relativePath: string, root: string): string {
+  const segments = relativePath === "" ? [] : relativePath.split("/");
+  if (segments.some((segment) => segment === "" || segment === "." || segment === ".." || /[\\\0]/.test(segment))) {
+    throw statusError(400, "path must name a place inside the folder");
+  }
+  return pathToFileURL(join(root, ...segments)).href;
+}
+
+export async function browseFolder(relativePath: string, root: string): Promise<{ folders: string[]; entries: MessageFolderEntry[]; truncated: boolean }> {
+  const { folders, entries, truncated } = await readMessageFolder(browsedHref(relativePath, root), [root]);
+  return { folders, entries, truncated };
+}
+
+export async function openBrowsedFile(relativePath: string, root: string): Promise<OpenedMessageFile> {
+  return openMessageFile(browsedHref(relativePath, root), [root], Number.POSITIVE_INFINITY);
 }
 
 export async function openMessageFolderEntry(
@@ -480,7 +498,7 @@ export async function openMessageFolderEntry(
 async function readMessageFolder(
   href: string,
   roots: readonly string[],
-): Promise<MessageFolderListing & { path: string }> {
+): Promise<MessageFolderListing & { path: string; folders: string[] }> {
   const requested = referencedPath(href);
   const canonicalRoots = (await Promise.all(roots.map(async (root) => {
     try {
@@ -512,26 +530,29 @@ async function readMessageFolder(
 
     const names = (await readdir(folder)).sort((a, b) => a.localeCompare(b));
     const entries: MessageFolderEntry[] = [];
+    const folders: string[] = [];
     let truncated = false;
     for (const name of names) {
       const child = join(folder, name);
       try {
         const own = await lstat(child);
-        if (!own.isFile() && !own.isSymbolicLink()) continue;
+        if (!own.isFile() && !own.isDirectory() && !own.isSymbolicLink()) continue;
         const target = await realpath(child);
         if (!containedBy(root, target)) continue;
         const info = await stat(target);
-        if (!info.isFile()) continue;
-        if (entries.length >= MESSAGE_FOLDER_MAX_ENTRIES) {
+        if (!info.isFile() && !info.isDirectory()) continue;
+        const list = info.isDirectory() ? folders : entries;
+        if (list.length >= MESSAGE_FOLDER_MAX_ENTRIES) {
           truncated = true;
-          break;
+          continue;
         }
-        entries.push({ name, bytes: info.size, mime: mimeFor(target) });
+        if (info.isDirectory()) folders.push(name);
+        else entries.push({ name, bytes: info.size, mime: mimeFor(target) });
       } catch {
         continue;
       }
     }
-    return { name: basename(folder), entries, truncated, path: folder };
+    return { name: basename(folder), entries, folders, truncated, path: folder };
   }
 
   if (sawOutsideRoot) throw outsideWorkspace();

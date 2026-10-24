@@ -214,11 +214,11 @@ describe("Computer panel tabs", () => {
   it("includes Audit with the Advanced tabs", () => {
     fixture.advanced = true;
     fixture.android = true;
-    expect(tabs(render(makeBot()))).toEqual(["Screen", "Routines", "Android", "Browser", "Data", "Audit"]);
+    expect(tabs(render(makeBot()))).toEqual(["Screen", "Routines", "Android", "Browser", "Data", "Files", "Audit"]);
     fixture.config = {};
     fixture.android = false;
     // The Browser tab now stays in Advanced too, with its own switch.
-    expect(tabs(render(makeBot()))).toEqual(["Screen", "Routines", "Browser", "Data", "Audit"]);
+    expect(tabs(render(makeBot()))).toEqual(["Screen", "Routines", "Browser", "Data", "Files", "Audit"]);
   });
 
   it("reads a Routines view stored by Advanced as the Computer tab in Simple", () => {

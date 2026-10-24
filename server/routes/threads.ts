@@ -12,7 +12,7 @@ import type { WorkspaceAccess } from "../enterprise.ts";
 import type { GroupUsageReader } from "../group-thread-usage.ts";
 import { searchMessagesAsync } from "../message-db.ts";
 import {
-  listMessageFolder, messageAttachmentName, messageFileDisposition, messageFileDownloadName, messageFolderEntryName,
+  browseFolder, listMessageFolder, openBrowsedFile, messageAttachmentName, messageFileDisposition, messageFileDownloadName, messageFolderEntryName,
   messageImageTargetAt, messageReferencesFile, openMessageFile, openMessageFolderEntry, referencedFileName,
 } from "../message-file.ts";
 import { resolveRequestAuth, type RequestAuth, type ResolveOptions } from "../request-auth.ts";
@@ -144,6 +144,59 @@ export function createThreadRoutes(deps: ThreadRouteDeps): RouteHandler {
         "cache-control": "private, max-age=31536000, immutable",
       });
       return res.end(bytes);
+    }
+
+    // Security: browsing reaches only the bot's own folders for one of its conversations, and a Team Cloud member, who
+    // sees a bot but not the disk of the person running it, gets no folder at all.
+    m = path.match(/^\/api\/bots\/([\w-]+)\/files(\/raw)?$/);
+    if (m && method === "GET") {
+      const bot = store.bot(m[1]!);
+      if (!bot || viewerFor(auth).kind === "member") return json(res, 404, { error: "no such bot" });
+      const threadId = url.searchParams.get("threadId") || bot.threadId;
+      if (threadId !== bot.threadId && !store.taskByThread(bot.id, threadId)) return json(res, 404, { error: "no such conversation" });
+      const roots = messageFileRootsForThread(bot.id, threadId).filter((root) => root !== ATTACHMENTS_DIR);
+      const rootIndex = Number(url.searchParams.get("root") ?? "0");
+      const root = Number.isInteger(rootIndex) ? roots[rootIndex] : undefined;
+      if (!root) return json(res, 404, { error: "no such folder" });
+      const relativePath = url.searchParams.get("path") ?? "";
+      if (!m[2]) {
+        res.setHeader("cache-control", "private, no-store");
+        return json(res, 200, { roots, root: rootIndex, path: relativePath, ...(await browseFolder(relativePath, root)) });
+      }
+      const file = await openBrowsedFile(relativePath, root);
+      const headers = {
+        "content-type": file.mime,
+        "content-disposition": url.searchParams.get("download") === "1" ? messageFileDisposition(file.name) : "inline",
+        "cache-control": "private, no-store",
+        "accept-ranges": "bytes",
+        "x-content-type-options": "nosniff",
+        // Chromium (Electron 43) refuses to render a PDF under a CSP sandbox; mimeFor never names HTML or SVG.
+        ...(file.mime === "application/pdf" ? {} : { "content-security-policy": "sandbox; default-src 'none'" }),
+      };
+      const rawRange = Array.isArray(req.headers.range) ? req.headers.range[0] : req.headers.range;
+      const range = parseAudioRange(rawRange, file.bytes);
+      if (range.kind === "unsatisfiable") {
+        await file.handle.close();
+        res.writeHead(416, { ...headers, "content-range": `bytes */${file.bytes}` });
+        return res.end();
+      }
+      if (file.bytes === 0) {
+        await file.handle.close();
+        res.writeHead(200, { ...headers, "content-length": "0" });
+        return res.end();
+      }
+      const start = range.kind === "range" ? range.start : 0;
+      const end = range.kind === "range" ? range.end : file.bytes - 1;
+      res.writeHead(range.kind === "range" ? 206 : 200, {
+        ...headers,
+        "content-length": String(end - start + 1),
+        ...(range.kind === "range" ? { "content-range": `bytes ${start}-${end}/${file.bytes}` } : {}),
+      });
+      const stream = file.handle.createReadStream({ start, end, autoClose: true });
+      stream.on("error", () => res.destroy());
+      res.on("close", () => stream.destroy());
+      stream.pipe(res);
+      return;
     }
 
     // Only a file this exact stored message grants; deliberately not a general path reader.

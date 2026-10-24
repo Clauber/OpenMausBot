@@ -5,7 +5,9 @@ import { pathToFileURL } from "node:url";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  browseFolder,
   MESSAGE_FILE_MAX_BYTES,
+  openBrowsedFile,
   messageFileDisposition,
   messageFileDownloadName,
   messageAttachmentName,
@@ -370,6 +372,34 @@ describe("message-linked files", () => {
     expect(messageFolderEntryName("nested/deep.txt")).toBeNull();
     expect(messageFolderEntryName("..")).toBeNull();
     expect(messageFolderEntryName("a.md")).toBe("a.md");
+  });
+
+  it("browses a root's folders and files without leaving it", async () => {
+    mkdirSync(join(workspace, "renders", "b"), { recursive: true });
+    mkdirSync(join(workspace, "renders", "a"));
+    writeFileSync(join(workspace, "renders", "clip.mp4"), "mp4");
+    symlinkSync(outside, join(workspace, "renders", "escape"));
+
+    await expect(browseFolder("renders", workspace)).resolves.toEqual({
+      folders: ["a", "b"],
+      entries: [{ name: "clip.mp4", bytes: 3, mime: "video/mp4" }],
+      truncated: false,
+    });
+    await expect(browseFolder("", workspace)).resolves.toMatchObject({ folders: ["renders"], entries: [] });
+    await expect(listMessageFolder("renders", [workspace])).resolves.not.toHaveProperty("folders");
+    for (const bad of ["..", "renders/../..", "renders/escape", "/etc", "renders\\a"]) {
+      await expect(browseFolder(bad, workspace)).rejects.toMatchObject({ status: expect.any(Number) });
+    }
+  });
+
+  it("opens a browsed file past the message size limit only when asked", async () => {
+    writeFileSync(join(workspace, "big.mp4"), "");
+    truncateSync(join(workspace, "big.mp4"), MESSAGE_FILE_MAX_BYTES + 1);
+    const opened = await openBrowsedFile("big.mp4", workspace);
+    await opened.handle.close();
+    expect(opened).toMatchObject({ name: "big.mp4", bytes: MESSAGE_FILE_MAX_BYTES + 1, mime: "video/mp4" });
+    await expect(openMessageFile("big.mp4", [workspace])).rejects.toMatchObject({ status: 413 });
+    await expect(openBrowsedFile("../outside/x", workspace)).rejects.toMatchObject({ status: 400 });
   });
 
   it("refuses a folder outside the root and leaves out symlinks that escape it", async () => {
