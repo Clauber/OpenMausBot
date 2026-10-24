@@ -24,12 +24,16 @@ function validRequest(contract: JobContract): { state: Record<string, unknown>; 
 
 describe("job contracts", () => {
   it("every option-selection job has a contract", () => {
-    expect(Object.keys(JOB_CONTRACTS).sort()).toEqual(DECIDER_JOBS.filter((job) => job !== "roomRouting" && job !== "routineGate").sort());
+    expect(Object.keys(JOB_CONTRACTS).sort()).toEqual(DECIDER_JOBS.filter((job) => job !== "roomRouting" && job !== "autoReview" && job !== "routineGate").sort());
     for (const [job, contract] of Object.entries(JOB_CONTRACTS)) expect(contract.job).toBe(job);
   });
 
-  it("jobs that only add information start on; jobs that change what a bot sees or does start off", () => {
-    expect(DECIDER_JOBS.filter(jobDefaultOn)).toEqual(["roomRouting"]);
+  it("keeps room routing and safety reviews on while optional tool-selection jobs start off", () => {
+    expect(DECIDER_JOBS.filter(jobDefaultOn)).toEqual(["roomRouting", "autoReview", "routineGate"]);
+    for (const job of ["autoReview", "routineGate"] as const) {
+      expect(deciderJobOn({}, job)).toBe(true);
+      expect(deciderJobOn({ decider: { jobs: { [job]: false } } }, job)).toBe(false);
+    }
     expect(deciderJobOn({}, "toolPick")).toBe(false);
     expect(deciderJobOn({ decider: { jobs: { toolPick: true } } }, "toolPick")).toBe(true);
     expect(deciderJobOn({ decider: { jobs: { roomRouting: false } } }, "roomRouting")).toBe(false);

@@ -126,7 +126,7 @@ export const JOB_CONTRACTS: Readonly<Record<Exclude<DeciderJob, "roomRouting" | 
 
 /** Whether a job is on before its switch is touched. */
 export function jobDefaultOn(job: DeciderJob): boolean {
-  if (job === "roomRouting") return true;
+  if (job === "roomRouting" || job === "autoReview" || job === "routineGate") return true;
   return (JOB_CONTRACTS as Partial<Record<string, JobContract>>)[job]?.defaultOn ?? false;
 }
 
