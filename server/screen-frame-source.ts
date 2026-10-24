@@ -10,6 +10,7 @@ export function createScreenFrameSource(input: {
   control: () => { held: boolean; revision: number };
   onFrame: (frame: PrivateScreenFrame) => void;
   minGapMs: number;
+  watching: (surface: Surface) => boolean;
 }) {
   let current: Promise<void> | null = null;
   let lastAt = 0;
@@ -30,6 +31,7 @@ export function createScreenFrameSource(input: {
       while (current) await current;
       if (input.control().held) return;
       const surface = selectedSurface();
+      if (!fresh && !input.watching(surface)) return;
       if (!fresh && attemptedSurface === surface && Date.now() - lastAt < input.minGapMs) return;
       attemptedSurface = surface;
       current = (async () => {
