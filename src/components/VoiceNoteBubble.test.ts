@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, describe, expect, it, vi } from "vitest";
 
 const fixture = vi.hoisted(() => {
-  vi.stubGlobal("window", {});
+  vi.stubGlobal("window", { location: { hash: "" } });
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
   return {};
 });
