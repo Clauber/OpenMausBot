@@ -38,10 +38,10 @@ const bot = async (name: string) => {
   expect(created.status, JSON.stringify(created.body)).toBe(201);
   return created.body.bot;
 };
-const mint = async (botId: string, threadId: string, kind = "connectors") => {
+const mint = async (botId: string, threadId: string, kind = "connectors", activeTurn = true) => {
   const response = await fetch(fixture.info.url + "/api/testing/internal-capability", {
     method: "POST", headers: { "content-type": "application/json", "x-openmausbot-test-capability": key },
-    body: JSON.stringify({ botId, threadId, kind }),
+    body: JSON.stringify({ botId, threadId, kind, activeTurn }),
   });
   expect(response.status).toBe(201);
   return (await response.json() as any).token as string;
@@ -216,9 +216,9 @@ it("reserves a daily slot before provider await, so simultaneous calls cannot ov
   const token = await mint(b.id, b.threadId);
   relayEntered = false;
   blockRelay = () => {};
-  const first = relay(token, "GMAIL_SEND_EMAIL");
+  const first = relay(token, "GMAIL_SEND_EMAIL", { to: "first@example.com" });
   await expect.poll(() => relayEntered, { timeout: 5_000 }).toBe(true);
-  expect((await relay(token, "GMAIL_SEND_EMAIL")).body.result.isError).toBe(true);
+  expect((await relay(token, "GMAIL_SEND_EMAIL", { to: "second@example.com" })).body.result.isError).toBe(true);
   expect((await api("GET", `/api/bots/${b.id}/outbound`)).body.today).toBe(1);
   blockRelay();
   blockRelay = undefined;
@@ -303,7 +303,7 @@ it("settles only the source task after approval or Stop, leaving the selected si
     expect((await api("POST", `/api/bots/${b.id}/messages`, { text: "WAIT_FOR_ACTIVITY_FIXTURE", threadId: b.threadId })).status).toBe(202);
     const state = async () => (await api("GET", "/api/bots")).body.bots.find((row: any) => row.id === b.id);
     await expect.poll(async () => (await state()).tasks.find((row: any) => row.threadId === b.threadId).busy).toBe(true);
-    const token = await mint(b.id, b.threadId);
+    const token = await mint(b.id, b.threadId, "connectors", false);
     const held = relay(token, "GMAIL_SEND_EMAIL");
     const card = await pending(b.threadId);
     expect((await state()).tasks.find((row: any) => row.threadId === b.threadId).activity).toBe("waiting-on-you");
