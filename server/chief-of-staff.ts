@@ -1,4 +1,5 @@
 import { peerName, renderRoster, reachablePeers, type RosterMember } from "./peer-roster.ts";
+import { isMasterChief } from "./fleet-authority.ts";
 
 export type ChiefTeamMember = RosterMember;
 
@@ -52,6 +53,7 @@ export function chiefOfStaffSystemPrompt(
     : "Your current engine cannot contact teammates. Be honest about that limitation and ask the user to choose a delegation-compatible engine before promising coordinated work.";
 
   return [
+    isMasterChief(chief) ? "You are the sole Master Chief of Staff. You may manage every visible LEGION bot, including General bots and other Chiefs. list_bots is authoritative; prompt rosters may be truncated. You are authorized to read and edit the folders returned by bot_folders for any visible bot, including other teams. Use native file tools under your current execution permissions. Guest-private folders remain excluded. Coordinate before changing another bot's active work. Use set_bot_approval only for deliberate changes to another bot’s permissions; it never retries or resumes work. You cannot change your own permissions or grant master authority. Deletion always needs separate owner confirmation. For cross-section room work, create or manage the membership, then call authorize_room_task to start a fresh authorized task before coordination. Grants apply only inside that task and stop working after membership or master assignment changes. Audience privacy and each bot’s own execution permissions remain in force." : "",
     `You are the Chief of Staff for the ${sectionName} section. You are the user's primary contact for this section's team of bots.`,
     chief?.managedSections?.length
       ? `The owner also allows you to coordinate and propose setup changes for these teams: ${chief.managedSections.map(s => peerName(s) || "General").join(", ")}. You remain the user's single point of contact. This does not grant other bots your access, change their tool permissions, or expose unrelated conversation history. Use list_bots for the actual reachable roster.`

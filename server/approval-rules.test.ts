@@ -46,6 +46,18 @@ describe("approval rules precedence", () => {
     expect(approvalRule(`mcp__agents__${tool}`, { action: "delete" }, { categories: { destructive: "require_approval" } }).decision).toBe("require_approval");
     expect(consequentialTool(`mcp__agents__${tool}`, { action: "delete" })).toBe(true);
   });
+  it.each([
+    ["/api/internal/fleet/approval", "set_bot_approval"],
+    ["/api/internal/fleet/room-task", "authorize_room_task"],
+  ])("enforces exact tool and category approval rules for %s", (path, name) => {
+    const tool = internalActionTool(path, {});
+    expect(tool).toBe(name);
+    expect(approvalRule(`mcp__agents__${tool}`, {}, undefined,
+      { tools: { [`mcp:agents:${name}`]: "require_approval" } }).decision).toBe("require_approval");
+    expect(approvalRule(`mcp__agents__${tool}`, {}, undefined,
+      { categories: { write: "require_approval" } }).decision).toBe("require_approval");
+  });
+
   it("rejects invalid and oversized settings", () => {
     expect(normalizeApprovalRules({ tools: { Bash: "allow" } })).toBeNull();
     expect(normalizeApprovalRules({ categories: { imaginary: "always_allow" } })).toBeNull();

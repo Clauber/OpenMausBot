@@ -3,10 +3,9 @@
 // Composio API key is configured, a curated set otherwise. Icons resolve
 // logo → favicon → monogram.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, Loader2, RefreshCw, Search, TriangleAlert, X } from "lucide-react";
+import { Check, Loader2, RefreshCw, Search, TriangleAlert } from "lucide-react";
 import { api, useStore, type Bot, type InstanceInfo } from "@/state/store";
 import { cn } from "@/lib/cn";
-import { glassPopupFrameStyle } from "@/lib/glass-popup";
 import { t } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
 import { readCachedInventory, writeCachedInventory } from "@/lib/connected-apps-cache";
@@ -15,6 +14,7 @@ import { mcpSignInLink } from "@/lib/mcp-sign-in";
 import { managedConnectorUnavailableReason } from "../../shared/connector-availability";
 import { connectorServiceAccess, isConnectorToolGrantShape } from "@/lib/connector-grants";
 import { BotAvatar } from "./Avatar";
+import { AppAccessManager } from "./AppAccessManager";
 import { McpServersPanel } from "./McpServersPanel";
 
 export interface ToolkitCard {
@@ -285,10 +285,12 @@ export interface CatalogPagination {
   reason?: string;
 }
 
-/** The Apps pop-up's chips: every app, only the connected ones, or only
- * your own MCP servers. "mcp" is the store's `pluginsSurface`, so a bot's
- * Tools page can still send someone straight to their servers. */
-export type AppsFilter = "all" | "connected" | "mcp";
+/** The Apps settings filters: which bot may use which app (the default), the
+ * connected-app marketplace (only when a Composio key is configured), the
+ * connected ones, or your own MCP servers. "access" and "mcp" are the store's
+ * `appsSurface`, so a bot's Tools page can still send someone straight to
+ * either. */
+export type AppsFilter = "access" | "all" | "connected" | "mcp";
 
 /** Without a search, the "All" grid shows this many tiles before a
  * "Show all" button. */
@@ -315,14 +317,14 @@ export function botsUsingService(bots: Bot[], instances: InstanceInfo[], slug: s
 export function PluginsPanel() {
   const { state, dispatch } = useStore();
   const remoteClient = window.ogb?.remoteClient?.active === true;
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const surface = state.pluginsSurface;
+  const surface = state.appsSurface;
   const [cards, setCards] = useState<ToolkitCard[] | null>(null);
   const [source, setSource] = useState<"api" | "curated">("curated");
   const [pagination, setPagination] = useState<CatalogPagination | null>(null);
   const [configured, setConfigured] = useState(false);
   const [mode, setMode] = useState<"managed" | "self-hosted" | "unavailable">("unavailable");
-  const [setup, setSetup] = useState<ConnectorSetup | undefined>(undefined);
+  // Not shown: connected apps stay hidden until a key is configured.
+  const [, setSetup] = useState<ConnectorSetup | undefined>(undefined);
   // Paint what we last knew before any request goes out: the module cache if
   // this window already fetched, otherwise the inventory saved on disk. An
   // empty panel is never the first thing a connected user sees.
@@ -468,52 +470,6 @@ export function PluginsPanel() {
     };
   }, [loadConnectionInventory]);
 
-  useEffect(() => {
-    const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const dialog = dialogRef.current;
-    const focusable = () =>
-      Array.from(
-        dialog?.querySelectorAll<HTMLElement>(
-          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-        ) ?? [],
-      ).filter((element) => element.getClientRects().length > 0);
-
-    const controls = focusable();
-    (controls.find((element) => element.matches("input")) ?? controls[0] ?? dialog)?.focus();
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        dispatch({ type: "togglePlugins", open: false });
-        return;
-      }
-      if (event.key !== "Tab" || !dialog) return;
-      const items = focusable();
-      if (items.length === 0) {
-        event.preventDefault();
-        dialog.focus();
-        return;
-      }
-      const first = items[0];
-      const last = items.at(-1)!;
-      if (!items.some((element) => element === document.activeElement)) {
-        event.preventDefault();
-        (event.shiftKey ? last : first).focus();
-      } else if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      returnFocus?.focus();
-    };
-  }, [dispatch]);
-
   const openConnectUrl = async (url: string) => {
     if (opening.current) return;
     const launch = reserveConnectionPage();
@@ -609,7 +565,15 @@ export function PluginsPanel() {
     (c) => !search || `${c.label} ${c.slug} ${c.blurb}`.toLowerCase().includes(search.toLowerCase()),
   );
   const isConnected = (slug: string) => Boolean(status[slug]?.connected || status[slug]?.accounts?.length);
-  const filter: AppsFilter = surface === "mcp" ? "mcp" : tab === "connected" ? "connected" : "all";
+  // Connected apps (Composio) are off until a key is configured: no cards,
+  // no setup banner, no chips. The access manager is the default Apps view.
+  const composioVisible = configured;
+  const filter: AppsFilter = surface === "mcp"
+    ? "mcp"
+    : surface === "access" || !composioVisible
+      ? "access"
+      : tab === "connected" ? "connected" : "all";
+  const marketplace = filter === "all" || filter === "connected";
   // Connected apps lead the grid, so the ones you use are never a scroll away.
   const visible = (filter === "connected" ? matching.filter((card) => isConnected(card.slug)) : matching)
     .map((card, index) => ({ card, index }))
@@ -621,45 +585,29 @@ export function PluginsPanel() {
   const shown = capped ? visible.slice(0, APPS_PREVIEW_COUNT) : visible;
   const connectedCount = Object.values(status).filter((service) => service.connected || service.accounts?.length).length;
   const connectedEmptyCopy = connectedInventoryCopy(inventoryPhase);
-  const close = () => dispatch({ type: "togglePlugins", open: false });
-  // Only worth saying once an app is actually connected and reachable.
-  const setupNotice = connectorSetupNotice({ configured, stale, setup, remoteClient });
-  const botsWithoutApps = hasUsableConnectedApps(configured, inventoryPhase, stale, status)
+  const botsWithoutApps = marketplace && hasUsableConnectedApps(configured, inventoryPhase, stale, status)
     ? botsMissingConnectedApps(state.bots, state.instances)
     : [];
   const chooseFilter = (next: AppsFilter) => {
-    if (next === "mcp") {
-      dispatch({ type: "togglePlugins", open: true, surface: "mcp" });
+    if (next === "mcp" || next === "access") {
+      dispatch({ type: "toggleAppSettings", open: true, section: "apps", appsSurface: next });
       return;
     }
     setTab(next === "connected" ? "connected" : "marketplace");
-    if (surface !== "apps") dispatch({ type: "togglePlugins", open: true, surface: "apps" });
+    if (surface !== "apps") dispatch({ type: "toggleAppSettings", open: true, section: "apps", appsSurface: "apps" });
   };
   const filters: Array<{ id: AppsFilter; label: string }> = [
-    { id: "all", label: t("apps.filter.all") },
-    { id: "connected", label: `${t("apps.filter.connected")}${connectedCount > 0 ? ` ${connectedCount}` : ""}` },
+    { id: "access", label: t("apps.filter.access") },
+    ...(composioVisible ? [
+      { id: "all" as const, label: t("apps.filter.all") },
+      { id: "connected" as const, label: `${t("apps.filter.connected")}${connectedCount > 0 ? ` ${connectedCount}` : ""}` },
+    ] : []),
     { id: "mcp", label: t("apps.filter.mcp") },
   ];
 
   return (
-    <div
-      className="glass-popup-frame"
-      style={glassPopupFrameStyle()}
-      onMouseDown={(event) => event.target === event.currentTarget && close()}
-    >
-      {/* A sibling, not the parent: a backdrop-filter on an ancestor would
-          stop the pop-up's own glass from seeing the app behind it. */}
-      <div aria-hidden="true" className="glass-scrim pointer-events-none absolute inset-0" />
-      <div
-        ref={dialogRef}
-        data-tour="apps-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="plugins-title"
-        tabIndex={-1}
-        className="glass-surface glass-popup animate-pop-in relative flex flex-col overflow-hidden rounded-[24px]"
-      >
-        <header className="flex flex-col gap-4 px-6 pb-3 pt-6 sm:px-8 sm:pt-7">
+    <section data-tour="apps-panel" aria-labelledby="plugins-title" className="flex min-w-0 flex-col">
+        <header className="flex flex-col gap-4 pb-3">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               <h2 id="plugins-title" className="text-[22px] font-semibold tracking-[-0.01em] text-ink">{t("apps.title")}</h2>
@@ -676,22 +624,17 @@ export function PluginsPanel() {
                   className="min-w-0 flex-1 bg-transparent text-[14px] text-ink placeholder:text-ink-secondary focus:outline-none"
                 />
               </label>
-              <button
-                onClick={() => void loadConnectionInventory(true)}
-                disabled={refreshing}
-                className="rounded-lg p-2 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-50"
-                title={t("connectors.refreshTitle")}
-                aria-label={t("connectors.refreshTitle")}
-              >
-                <RefreshCw size={17} className={cn(refreshing && "animate-spin")} />
-              </button>
-              <button data-tour="apps-close"
-                onClick={close}
-                aria-label={t("connectors.closeAria")}
-                className="rounded-lg p-2 text-ink-secondary hover:bg-raised hover:text-ink"
-              >
-                <X size={21} />
-              </button>
+              {composioVisible && (
+                <button
+                  onClick={() => void loadConnectionInventory(true)}
+                  disabled={refreshing}
+                  className="rounded-lg p-2 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-50"
+                  title={t("connectors.refreshTitle")}
+                  aria-label={t("connectors.refreshTitle")}
+                >
+                  <RefreshCw size={17} className={cn(refreshing && "animate-spin")} />
+                </button>
+              )}
             </div>
           </div>
           {/* A narrow window has no room in the header row for the search. */}
@@ -724,8 +667,8 @@ export function PluginsPanel() {
           </div>
         </header>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-7 pt-2 sm:px-8">
-          {stale && (
+        <div className="min-w-0 pt-2">
+          {marketplace && stale && (
             // Say which of the two things is true. Silence here is what makes a
             // remembered list indistinguishable from a confirmed one.
             <div className="mb-2 flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-[12.5px] text-warning">
@@ -733,30 +676,6 @@ export function PluginsPanel() {
               <span>
                 {t("connectors.stale")}
               </span>
-            </div>
-          )}
-          {/* Not set up yet is not an outage: see connectorSetupNotice. */}
-          {setupNotice && filter !== "mcp" && (
-            <div
-              className={cn(
-                "mb-2 rounded-xl px-4 py-3 text-[13px]",
-                setupNotice.tone === "warning" ? "bg-warning/10 text-warning" : "glass-card text-ink-secondary",
-              )}
-            >
-              {t(setupNotice.key)}{" "}
-              <button
-                className={cn(
-                  "font-medium underline underline-offset-2",
-                  setupNotice.tone === "info" && "text-ink",
-                  remoteClient && "hidden",
-                )}
-                onClick={() => {
-                  close();
-                  dispatch({ type: "toggleAppSettings", open: true, section: "connections" });
-                }}
-              >
-                {t("connectors.openSettings")}
-              </button>
             </div>
           )}
           {botsWithoutApps.length > 0 && (
@@ -777,14 +696,13 @@ export function PluginsPanel() {
               </div>
             </div>
           )}
-          {configured && !remoteClient && source === "curated" && mode === "self-hosted" && filter !== "mcp" && (
+          {configured && !remoteClient && source === "curated" && mode === "self-hosted" && marketplace && (
             <div className="mb-2 text-[12px] text-ink-secondary">
               {t("connectors.featuredBefore")}{" "}
               <button
                 className="underline underline-offset-2 hover:text-ink"
                 onClick={() => {
-                  close();
-                  dispatch({ type: "toggleAppSettings", open: true });
+                  dispatch({ type: "toggleAppSettings", open: true, section: "connections" });
                 }}
               >
                 {t("connectors.updateKey")}
@@ -794,9 +712,11 @@ export function PluginsPanel() {
           )}
           {error && <div role="alert" className="mb-2 mt-1 rounded-lg bg-danger/10 px-3 py-2 text-[12px] text-danger">{typeof error === "string" ? error : t(error.key)}</div>}
 
-          {filter !== "mcp" && (
+          {filter === "access" && <AppAccessManager search={search} />}
+
+          {marketplace && (
             <section data-apps-grid aria-labelledby="apps-grid-title" className="@container pt-3">
-              {/* @container: the tile columns follow the pop-up's width, not the window's (3, then 2, then 1) */}
+              {/* @container: the tile columns follow the settings pane's width, not the window's (3, then 2, then 1) */}
               <div id="apps-grid-title" className="mb-3 text-[12px] font-medium text-ink-secondary">
                 {filter === "connected"
                   ? t("connectors.section.yours")
@@ -862,14 +782,13 @@ export function PluginsPanel() {
             </section>
           )}
 
-          {filter !== "connected" && (
+          {(filter === "all" || filter === "mcp") && (
             <div className={cn(filter === "all" && "mt-8 border-t border-hairline/30 pt-6", filter === "mcp" && "pt-3")}>
               <McpServersPanel embedded />
             </div>
           )}
         </div>
-      </div>
-    </div>
+    </section>
   );
 
   function renderTile(card: ToolkitCard) {
@@ -1040,7 +959,6 @@ export function PluginsPanel() {
               <button
                 type="button"
                 onClick={() => {
-                  close();
                   dispatch({ type: "toggleSettings", open: true, botId: candidate.id, section: "access" });
                 }}
                 className="font-medium text-ink underline underline-offset-2 hover:text-accent-text"

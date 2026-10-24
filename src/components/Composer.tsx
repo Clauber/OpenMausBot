@@ -33,6 +33,7 @@ import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import { PlaceChip } from "./PlaceChip";
 import { FullAccessWarning } from "./FullAccessWarning";
 import { ApprovalModeSelector } from "./ApprovalModeSelector";
+import { ModelPicker, ThinkingPicker } from "./ModelPicker";
 import { CommandAllowlistDialog } from "./CommandAllowlistDialog";
 import { approvalModeFor, type ApprovalMode } from "../../shared/approval-mode";
 import {
@@ -63,6 +64,7 @@ import { useThreadRefs } from "./ThreadRefs";
 import {
   QueuedComposerMessages,
   composerCanSteerQueuedMessages,
+  composerCanSendQueuedNow,
   doubleEnterSteerWindowExpiresAt,
   doubleEnterSteersQueue,
 } from "./ComposerQueuedMessages";
@@ -72,6 +74,7 @@ import { serializeThreadRefs, threadTokenFromPaste, threadTokenSpacing } from "@
 import {
   composerSlashTrigger,
   goalTextFromComposer,
+  isStopComposerCommand,
   replaceComposerSlashTrigger,
   type ComposerSlashCommand,
 } from "@/lib/composer-commands";
@@ -317,10 +320,11 @@ export function Composer({
           )?.capabilities?.agentsMcp,
       );
     const available: ComposerSlashCommand[] = [];
-    if (group && !group.dm) available.push({
+    if (busy) available.push({ id: "stop", label: "/stop", description: t("composer.command.stopDesc") });
+    if (bot || (group && !group.dm)) available.push({
       id: "goal",
       label: "/goal",
-      description: t("composer.command.goalDesc"),
+      description: bot && !group ? "Work toward a persistent goal in this chat" : t("composer.command.goalDesc"),
     });
     if (
       skillAuthoringEnabled(state.config) &&
@@ -346,7 +350,7 @@ export function Composer({
         command.id.startsWith(query) ||
         command.description.toLowerCase().includes(query),
     );
-  }, [slash, dismissedSlashAt, group, members, bot, state.config, state.instances, locale]);
+  }, [slash, dismissedSlashAt, group, members, bot, busy, state.config, state.instances, locale]);
   const commandPickerOpen = commandCandidates.length > 0;
 
   // Tag another bot; the agent reaches it via ask_bot.
@@ -396,7 +400,14 @@ export function Composer({
 
   const pickCommand = (command: ComposerSlashCommand) => {
     if (!slash) return;
-    const replacement = command.id === "learn" ? "/learn " : command.id === "setup" ? "/setup " : "";
+    if (command.id === "stop") {
+      setDismissedSlashAt(slash.start);
+      interruptTurn();
+      setText("");
+      setAttachments([]);
+      return;
+    }
+    const replacement = command.id === "learn" ? "/learn " : command.id === "setup" ? "/setup " : !group ? "/goal " : "";
     const next = replaceComposerSlashTrigger(text, slash, replacement);
     editText(next.text);
     setCaret(next.caret);
@@ -419,6 +430,9 @@ export function Composer({
     pendingCount,
     Boolean(approval),
   );
+  // A settled 1:1 thread whose words wait only on the bot's room turn has
+  // nothing to steer into; its head control sends them now, beside the room.
+  const sendNowQueued = composerCanSendQueuedNow(Boolean(bot) && !group, busy, locked, Boolean(approval), queuedMessages);
   const [steering, setSteering] = useState(false);
   const interruptTurn = () => {
     if (group) dispatch({ type: "interruptGroup", groupId: group.id, threadId });
@@ -437,7 +451,7 @@ export function Composer({
       // A room whose running engine cannot steer keeps the old behavior:
       // Steer ends the running turn so the next queued message starts.
       dispatch({ type: "interruptGroup", groupId: group.id, threadId, onError: settle });
-    } else if (bot && canSteer) {
+    } else if (bot && (canSteer || sendNowQueued)) {
       // A steer-capable engine folds the queued words into the running turn
       // through the server; it never interrupts the turn to do it.
       dispatch({ type: "steerQueued", botId: bot.id, threadId, queueId: queueHeadId, onError: settle, onSettled: settle });
@@ -610,6 +624,14 @@ export function Composer({
   };
   const send = () => {
     if (locked || attachmentPending) return;
+    // `/stop` is the Stop button typed: it ends the running turn and never
+    // reaches the model or the transcript, exactly like the header control.
+    if (isStopComposerCommand(text)) {
+      interruptTurn();
+      setText("");
+      setAttachments([]);
+      return;
+    }
     if (
       attachments.some((attachment) => attachment.kind === "image") &&
       !imageTargetsSupport(effectiveText, effectiveChannelMode)
@@ -792,8 +814,21 @@ export function Composer({
     setRecording((r) => !r);
   };
 
+  const chatGoal = !group ? bot?.tasks?.find(task => task.threadId === (threadId ?? bot.threadId))?.goal : undefined;
+  const goalControl = (action: "pause" | "resume" | "stop") => {
+    if (bot) dispatch({ type: "send", botId: bot.id, threadId: threadId ?? bot.threadId, text: `/goal ${action}`, sendId: crypto.randomUUID() });
+  };
+
   return (
     <div className="pointer-events-none relative px-5 pb-3">
+      {chatGoal && (
+        <div data-chat-goal className="pointer-events-auto mb-2 flex items-center gap-2 rounded-xl border border-hairline/40 bg-card px-3 py-2 text-[12px]">
+          <span className="min-w-0 flex-1 truncate" title={chatGoal.detail ?? chatGoal.objective}>Goal {chatGoal.status}: {chatGoal.objective}</span>
+          {chatGoal.status === "active" && <button type="button" onClick={() => goalControl("pause")}>Pause goal</button>}
+          {(chatGoal.status === "paused" || chatGoal.status === "blocked") && <button type="button" onClick={() => goalControl("resume")}>Resume goal</button>}
+          {!["completed", "stopped"].includes(chatGoal.status) && <button type="button" onClick={() => goalControl("stop")}>Stop goal</button>}
+        </div>
+      )}
       {/* No fill or hairline on this wrapper — those were the black frame
           in the pill's top corners. The dock overlays the transcript. */}
       {speechError && (
@@ -926,6 +961,7 @@ export function Composer({
               threadId={threadId}
               bot={approvalBot}
               onCancelTurn={interruptTurn}
+              operatorFullAccess={operatorFullAccessEnabled(state.config)}
             />
           </div>
         )}
@@ -952,8 +988,9 @@ export function Composer({
         />
         <QueuedComposerMessages
           items={queuedMessages}
-          onSteer={canSteerQueued ? steerQueued : undefined}
+          onSteer={canSteerQueued || sendNowQueued ? steerQueued : undefined}
           steerInterrupts={!canSteer}
+          sendsNow={sendNowQueued}
           steerMode={group ? "next" : "all"}
           steering={steering}
           onCancel={(queueId) => {
@@ -1187,6 +1224,14 @@ export function Composer({
             className="block max-h-[9rem] min-h-6 w-full resize-none overflow-y-auto bg-transparent px-1 py-1 text-[15px] leading-6 placeholder:text-ink-secondary focus:outline-none"
           />
           <div data-composer-actions className="flex items-center gap-1 @max-[30rem]/composer:ml-auto">
+          {/* The model and how hard it thinks live with the send controls,
+              not in the chat header. Rooms have no single model to show. */}
+          {modeBot && !remoteClient && !locked && (
+            <>
+              <ModelPicker key={modeBot.threadId} bot={modeBot} threadId={modeBot.threadId} dropUp separateEffort />
+              <ThinkingPicker key={`thinking:${modeBot.threadId}`} bot={modeBot} threadId={modeBot.threadId} />
+            </>
+          )}
           {/* Stop stays a stop. Stop-then-steer is named beside the queued
               message above, where its effect is visible before activation. */}
           {busy && !locked && (

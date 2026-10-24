@@ -9,6 +9,7 @@ import { X } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { useStore, type Bot } from "@/state/store";
 import { useBotEditor } from "./BotEditorContext";
+import { ParallelThreadsCard } from "./ParallelThreadsCard";
 import { ProposalStatus } from "./ProposalStatus";
 
 export function ModelSection({ bot }: { bot: Bot }) {
@@ -53,6 +54,24 @@ export function ModelSection({ bot }: { bot: Bot }) {
         }
       />
       {!draft && <FallbackChain bot={bot} onChange={(fallback) => dispatch({ type: "updateBot", botId: bot.id, patch: { fallback } })} />}
+      {!draft && <ParallelThreadsCard bot={bot} />}
+      {!draft && (
+        <div className="rounded-xl bg-card p-4">
+          <div className="text-[15px] font-medium text-ink">Thinking</div>
+          <label className="mt-3 flex items-center gap-2 text-[13px] text-ink">
+            <input
+              type="checkbox"
+              checked={bot.includeThinking === true}
+              onChange={(event) => dispatch({ type: "updateBot", botId: bot.id, patch: { includeThinking: event.target.checked } })}
+            />
+            Include thinking in replies
+          </label>
+          <p className="mt-1 text-[12.5px] text-ink-secondary">
+            Keep the harness's reasoning in this bot's transcript: each reply carries the thinking that led to it under a
+            Thinking disclosure. Off, reasoning streams live but is never stored.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

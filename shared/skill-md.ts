@@ -87,3 +87,19 @@ export function scanSkillText(raw: string): string[] {
   }
   return warnings;
 }
+
+export function yamlFrontmatterValue(value: string): string {
+  const plain =
+    value.length > 0 &&
+    value === value.trim() &&
+    !/[\n\r]/.test(value) &&
+    !value.includes('"') &&
+    !/^["'&*!|>%@`]/.test(value) &&
+    !/^[-?:](\s|$)/.test(value) &&
+    !/^[[\]{}#,]/.test(value) &&
+    !value.includes(": ") &&
+    !value.endsWith(":") &&
+    !value.includes(" #") &&
+    !/["']$/.test(value);
+  return plain ? value : `"${value.replace(/(["\\\n])/g, (c) => (c === "\n" ? "\\n" : `\\${c}`))}"`;
+}

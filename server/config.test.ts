@@ -22,6 +22,7 @@ import { cacheUntilConfigChanges,
   roomHandoffLimits,
   roomTurnTimeoutMinutes,
   maxConcurrentBotThreads,
+  maxConcurrentThreadsFor,
   threadEventLogMaxBytes,
   threadEventLogRetentionDays,
   showToolCallsEnabled,
@@ -39,10 +40,16 @@ import { cacheUntilConfigChanges,
   syncCredentialEnv,
   vpsSshAlias,
   browserEngineAttachCdpUrl,
+  browserStealthEnabled,
+  browserStealthOptions,
+  browserEngineStealthUrl,
   withInstanceCli,
   WORKSPACE_CREDENTIAL_ENV,
   liveSettingsFor,
   LIVE_IDLE_MINUTES_DEFAULT,
+  mergeOpenCodeProviderKeys,
+  openCodeProviderKeys,
+  OPENCODE_PROVIDER_KEY_LIMIT,
   type AppConfig,
 } from "./config.ts";
 
@@ -109,6 +116,15 @@ describe("configuration boundaries", () => {
     for (const value of [0, -1, 11, 1.5, "10", null]) {
       expect(() => parseConfigPatch({ threads: { maxConcurrentPerBot: value } })).toThrow("threads.maxConcurrentPerBot");
     }
+  });
+
+  it("lets a bot's own thread limit win over the global default", () => {
+    const cfg = parseStoredConfig({ threads: { maxConcurrentPerBot: 6 } });
+    expect(maxConcurrentThreadsFor(cfg, {})).toBe(6);
+    expect(maxConcurrentThreadsFor(cfg, undefined)).toBe(6);
+    expect(maxConcurrentThreadsFor(cfg, { maxConcurrentThreads: 1 })).toBe(1);
+    expect(maxConcurrentThreadsFor(cfg, { maxConcurrentThreads: 10 })).toBe(10);
+    expect(maxConcurrentThreadsFor({}, {})).toBe(3);
   });
 
   it("caps per-thread event logs only when a size is configured", () => {
@@ -485,6 +501,37 @@ describe("configuration boundaries", () => {
     expect(browserEngineAttachCdpUrl({ browserEngine: { attachCdpUrl: "" } })).toBeNull();
   });
 
+  it("parses browserEngine.stealth and defaults the built-in stealth options conservatively", () => {
+    expect(browserStealthEnabled({})).toBe(false);
+    expect(browserStealthOptions({})).toEqual({ headed: true, debugPortBase: 9500, cloudflare: true });
+    const configured = { browserEngine: { stealth: { enabled: true, headed: false, debugPortBase: 9700 } } };
+    expect(parseStoredConfig(configured)).toEqual(configured);
+    expect(parseConfigPatch(configured)).toEqual(configured);
+    expect(browserStealthEnabled(configured)).toBe(true);
+    expect(browserStealthOptions(configured)).toEqual({ headed: false, debugPortBase: 9700, cloudflare: true });
+    // Partial settings keep their documented defaults.
+    expect(browserStealthOptions({ browserEngine: { stealth: { enabled: true } } })).toEqual({ headed: true, debugPortBase: 9500, cloudflare: true });
+    expect(browserStealthOptions({ browserEngine: { stealth: { cloudflare: false } } })).toEqual({ headed: true, debugPortBase: 9500, cloudflare: false });
+    // Bad shapes are rejected, not ignored. Unknown keys strip silently, the
+    // same convention as attachCdpUrl: browserEngine is a hand-edited,
+    // server-owned section, so one stray key must not lose the whole file.
+    expect(() => parseConfigPatch({ browserEngine: { stealth: { enabled: "yes" } } })).toThrow("browserEngine");
+    expect(() => parseConfigPatch({ browserEngine: { stealth: { debugPortBase: 80 } } })).toThrow("browserEngine");
+    expect(parseConfigPatch({ browserEngine: { stealth: { surprise: true } } })).toEqual({ browserEngine: { stealth: {} } });
+  });
+
+  it("validates browserEngine.stealthUrl as a plain http(s) base URL", () => {
+    expect(browserEngineStealthUrl({})).toBeNull();
+    for (const value of ["http://127.0.0.1:9379", "https://stealth.internal/"]) {
+      expect(parseStoredConfig({ browserEngine: { stealthUrl: value } })).toEqual({ browserEngine: { stealthUrl: value } });
+      expect(browserEngineStealthUrl({ browserEngine: { stealthUrl: value } })).toBe(value);
+    }
+    for (const value of ["9379", "ws://127.0.0.1:9379", "http://user:pw@127.0.0.1:9379", "http://127.0.0.1:9379/?x=1", "not-a-url"]) {
+      expect(() => parseConfigPatch({ browserEngine: { stealthUrl: value } })).toThrow("browserEngine.stealthUrl");
+    }
+    expect(browserEngineStealthUrl({ browserEngine: { stealthUrl: "" } })).toBeNull();
+  });
+
   it("accepts a persisted global room turn timeout and supplies the legacy default", () => {
     expect(parseStoredConfig({ rooms: { turnTimeoutMinutes: 20 } })).toEqual({
       rooms: { turnTimeoutMinutes: 20 },
@@ -591,8 +638,10 @@ describe("configuration boundaries", () => {
     expect(routinesInConversationEnabled({ features: { routinesInConversation: true } })).toBe(true);
   });
 
-  it("keeps tool-call chips off by default and accepts an explicit opt-in", () => {
-    expect(showToolCallsEnabled({})).toBe(false);
+  it("shows tool calls by default and respects explicit choices", () => {
+    expect(showToolCallsEnabled({})).toBe(true);
+    expect(showToolCallsEnabled({ features: {} })).toBe(true);
+    expect(showToolCallsEnabled({ features: { showToolCalls: false } })).toBe(false);
     expect(parseConfigPatch({ features: { showToolCalls: true } })).toEqual({
       features: { showToolCalls: true },
     });
@@ -635,6 +684,8 @@ describe("saving the newer sections", () => {
     try {
       saveConfig({ anthropic: { key: "sk-ant-fixture" } });
       saveConfig({ budgets: { monthlyUsd: 25, warnAtPercent: 70 } });
+      saveConfig({ routineReview: { enabled: true, model: "fixture-reviewer", baseUrl: "http://127.0.0.1:41000/v1", key: "fixture-only" } });
+      expect(loadConfig().routineReview).toMatchObject({ enabled: true, model: "fixture-reviewer", key: "fixture-only" });
       saveConfig({ billing: { currency: "EUR", prices: { default: { inputPerMillion: 1, outputPerMillion: 2 } } } });
       // a later save of one section leaves the others alone, and replaces the price list whole
       saveConfig({ billing: { prices: { "gpt-5": { inputPerMillion: 3, outputPerMillion: 4 } } } });
@@ -1016,6 +1067,99 @@ describe("OpenCode Go configuration", () => {
     const instances = instanceConfigs(cfg);
     expect(instances.opencode.environment).toEqual({ OPENCODE_API_KEY: "secret-value" });
     expect(instances.grok.environment).toEqual({});
+  });
+
+  // Keys for OpenCode's other providers (Venice, Groq…), saved in Settings
+  // under the name OpenCode reads. A Cloud has no terminal to export them in.
+  it("hands the saved provider keys to OpenCode instances only, under their own names", () => {
+    const cfg: AppConfig = {
+      opencodeGo: { apiKey: "ocg", providerKeys: { VENICE_API_KEY: "venice-secret", ANTHROPIC_API_KEY: "own-anthropic" } },
+      instances: {
+        opencode: { driver: "opencodeGo", environment: { VENICE_API_KEY: "instance-venice" } },
+        grok: { driver: "grokAgent" },
+        codex: { driver: "codex" },
+        compat: { driver: "openai-compat" },
+      },
+    };
+    const instances = instanceConfigs(cfg);
+    expect(instances.opencode.environment).toEqual({
+      OPENCODE_API_KEY: "ocg", VENICE_API_KEY: "venice-secret", ANTHROPIC_API_KEY: "own-anthropic",
+    });
+    for (const id of ["grok", "codex", "compat"]) {
+      expect(JSON.stringify(instances[id].environment ?? {})).not.toMatch(/venice-secret|own-anthropic/);
+    }
+    // Saved keys never become part of a persisted instance.
+    expect(persistableInstanceConfigs(cfg).opencode.environment).toEqual({ VENICE_API_KEY: "instance-venice" });
+  });
+
+  it("skips a hand-edited provider key OpenCode could not be given, without dropping the file", () => {
+    const stored = parseStoredConfig({
+      profile: { name: "Ada" },
+      opencodeGo: { providerKeys: {
+        VENICE_API_KEY: "venice-secret", venice_api_key: "lower", OPENCODE_API_KEY: "shadow", OMB_CLOUD_BOAT_TOKEN: "relay",
+        BOX_TOKEN: "boat", NODE_OPTIONS: "--require x", GROQ_API_KEY: "has space",
+        DEEPSEEK_API_KEY: 42, TOGETHER_API_KEY: null, FIREWORKS_API_KEY: { key: "nested" },
+      } },
+    });
+    expect(stored.profile?.name).toBe("Ada");
+    expect(openCodeProviderKeys(stored)).toEqual({ VENICE_API_KEY: "venice-secret" });
+    expect(instanceConfigs({ ...stored, instances: { opencode: { driver: "opencodeGo" } } }).opencode.environment)
+      .toEqual({ VENICE_API_KEY: "venice-secret" });
+    // Not a map at all: the saved keys are skipped, the OpenCode key and the rest stay.
+    const notAMap = parseStoredConfig({ profile: { name: "Ada" }, opencodeGo: { apiKey: "ocg", providerKeys: "VENICE_API_KEY=x" } });
+    expect(notAMap.profile?.name).toBe("Ada");
+    expect(notAMap.opencodeGo).toEqual({ apiKey: "ocg", providerKeys: {} });
+  });
+});
+
+describe("saving OpenCode provider keys", () => {
+  const saved: AppConfig = { opencodeGo: { providerKeys: { VENICE_API_KEY: "old-venice", GROQ_API_KEY: "groq" } } };
+
+  it("saves, replaces and removes one name at a time, keeping the rest", () => {
+    expect(mergeOpenCodeProviderKeys(saved, { VENICE_API_KEY: "  new-venice ", DEEPSEEK_API_KEY: "deep" }))
+      .toEqual({ ok: true, keys: { DEEPSEEK_API_KEY: "deep", GROQ_API_KEY: "groq", VENICE_API_KEY: "new-venice" } });
+    expect(mergeOpenCodeProviderKeys(saved, { GROQ_API_KEY: "" })).toEqual({ ok: true, keys: { VENICE_API_KEY: "old-venice" } });
+    // Removing a name that was never saved changes nothing.
+    expect(mergeOpenCodeProviderKeys(saved, { NOPE_KEY: "" })).toEqual({ ok: true, keys: saved.opencodeGo!.providerKeys });
+    // A provider OpenCode also reads from a terminal may be saved here too.
+    expect(mergeOpenCodeProviderKeys({}, { ANTHROPIC_API_KEY: "sk-ant" })).toEqual({ ok: true, keys: { ANTHROPIC_API_KEY: "sk-ant" } });
+  });
+
+  it("refuses names OpenCode does not read or that OpenMaus keeps, with the fix", () => {
+    const refused = (name: string) => {
+      const result = mergeOpenCodeProviderKeys(saved, { [name]: "a-key" });
+      expect(result.ok, name).toBe(false);
+      return result.ok ? "" : result.error;
+    };
+    for (const name of ["venice_api_key", "VENICE", "NODE_OPTIONS", "PATH", "LD_PRELOAD", "1_API_KEY", "__proto__", `${"A".repeat(70)}_KEY`]) {
+      expect(refused(name)).toContain("such as VENICE_API_KEY");
+    }
+    expect(refused("OPENCODE_API_KEY")).toContain("OpenCode API key box");
+    // Names this server keeps for itself or another engine would never reach OpenCode.
+    for (const name of ["OPENCODE_SERVER_KEY", "OMB_CLOUD_BOAT_TOKEN", "OMB_LICENSE_KEY", "BOX_TOKEN", "COMPOSIO_API_KEY",
+      "OPENAI_COMPAT_API_KEY", "XAI_API_KEY", "MISTRAL_API_KEY", "CURSOR_API_KEY", "FACTORY_API_KEY"]) {
+      expect(refused(name)).toBe(`OpenMaus keeps ${name} for itself, so OpenCode can't be given it here. Put this key in opencode.json instead.`);
+    }
+  });
+
+  it("refuses a value that is not a key, and more than the limit", () => {
+    for (const value of ["two words", "line\nbreak", "x".repeat(4097)]) {
+      const result = mergeOpenCodeProviderKeys(saved, { VENICE_API_KEY: value });
+      expect(result).toEqual({ ok: false, error: "That doesn't look like a key. Paste only the key, with no spaces." });
+    }
+    const full: AppConfig = { opencodeGo: { providerKeys: Object.fromEntries(
+      Array.from({ length: OPENCODE_PROVIDER_KEY_LIMIT }, (_, index) => [`P${index}_API_KEY`, `key-${index}`])) } };
+    expect(mergeOpenCodeProviderKeys(full, { P0_API_KEY: "replaced" }).ok).toBe(true);
+    expect(mergeOpenCodeProviderKeys(full, { EXTRA_API_KEY: "one-too-many" })).toEqual({
+      ok: false, error: `OpenCode can hold up to ${OPENCODE_PROVIDER_KEY_LIMIT} provider keys. Remove one you no longer use, then add this one.`,
+    });
+  });
+
+  it("is a patch the config route accepts, and changing it reloads the engines", () => {
+    expect(parseConfigPatch({ opencodeGo: { providerKeys: { VENICE_API_KEY: "v", GROQ_API_KEY: "" } } }))
+      .toEqual({ opencodeGo: { providerKeys: { VENICE_API_KEY: "v", GROQ_API_KEY: "" } } });
+    expect(() => parseConfigPatch({ opencodeGo: { providerKeys: { VENICE_API_KEY: 42 } } })).toThrow("opencodeGo.providerKeys");
+    expect(providerReloadKeys({ opencodeGo: { providerKeys: {} } })).toEqual(["opencodeGo"]);
   });
 });
 
@@ -1724,11 +1868,15 @@ describe("customMcpServers with url entries", () => {
 describe("live settings", () => {
   it("defaults to a 5 minute idle hang-up and reading typed replies", () => {
     expect(LIVE_IDLE_MINUTES_DEFAULT).toBe(5);
-    expect(liveSettingsFor({} as AppConfig)).toEqual({ configured: false, voice: "", readTypedReplies: true, idleMinutes: 5 });
+    expect(liveSettingsFor({} as AppConfig)).toEqual({
+      configured: false, provider: "openai", codexConfigured: false, voice: "", readTypedReplies: true, idleMinutes: 5,
+    });
   });
   it("reports saved values and never the key", () => {
     const settings = liveSettingsFor({ live: { key: "sk-test", voice: "sol", readTypedReplies: false, idleMinutes: 12 } } as AppConfig);
-    expect(settings).toEqual({ configured: true, voice: "sol", readTypedReplies: false, idleMinutes: 12 });
+    expect(settings).toEqual({
+      configured: true, provider: "openai", codexConfigured: false, voice: "sol", readTypedReplies: false, idleMinutes: 12,
+    });
     expect(JSON.stringify(settings)).not.toContain("sk-test");
   });
   it("accepts idle minutes from 1 to 60 only", () => {

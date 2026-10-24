@@ -6,7 +6,7 @@ import { request, ServerResponse, type IncomingMessage, type Server } from "node
 import { Socket } from "node:net";
 import type { Duplex } from "node:stream";
 import { isSameOrigin, type RequestAuth } from "../request-auth.ts";
-import { PASS, type RouteHandler } from "./table.ts";
+import { PASS, UPGRADE_CLAIMED, type RouteHandler } from "./table.ts";
 
 const ROUTE = /^\/api\/desktop-viewer\/(local\/(?:shared|bot-[a-f0-9]{64}|pool-\d+)|vps\/[\w-]+)(\/websockify)?$/;
 const HANDSHAKE_MS = 10_000;
@@ -54,6 +54,10 @@ export function createDesktopViewer(deps: {
   function attach(server: Server, handle: (req: IncomingMessage, res: ServerResponse) => Promise<unknown>): void {
     server.on("upgrade", (req, socket, head) => {
       if (stopped || !(socket instanceof Socket)) { socket.destroy(); return; }
+      // Another route's claimed socket (the owner terminal, say) is not ours
+      // to answer — and never ours to assign; its interceptor registered
+      // ahead of this one, so check before any of the bookkeeping below.
+      if ((req as { [UPGRADE_CLAIMED]?: boolean })[UPGRADE_CLAIMED]) return;
       const res = new ServerResponse(req);
       res.assignSocket(socket);
       // Rejected upgrades end this socket; do not let HTTP clients pool it.
@@ -64,6 +68,7 @@ export function createDesktopViewer(deps: {
       try { path = new URL(req.url ?? "", "http://localhost").pathname; }
       catch { res.writeHead(400).end(); return; }
       if (!ROUTE.exec(path)?.[2]) { res.writeHead(404).end(); return; }
+      (req as { [UPGRADE_CLAIMED]?: boolean })[UPGRADE_CLAIMED] = true;
       // Keep reading while auth/inspection awaits, so a closed tab's FIN is
       // observed. Bound and preserve any eagerly sent WebSocket bytes.
       const upgrade: Upgrade = { socket, head, release: () => socket.off("data", buffer), close: () => socket.destroy() };

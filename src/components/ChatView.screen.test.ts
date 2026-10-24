@@ -22,7 +22,7 @@ vi.mock("./DesktopCapabilities", async (importOriginal) => ({
   useDesktopCapabilities: () => ({ capabilities: { dictation: { available: false }, host: { packaged: true, platform: "other" }, localComputer: { available: false } }, ready: true }),
 }));
 vi.mock("@/lib/analytics", () => ({ track: vi.fn() }));
-vi.mock("./ModelPicker", () => ({ ModelPicker: () => null }));
+vi.mock("./ModelPicker", () => ({ ModelPicker: () => null, ThinkingPicker: () => null }));
 
 const { ChatView } = await import("./ChatView");
 const { initialState, reducer } = await import("@/state/store");

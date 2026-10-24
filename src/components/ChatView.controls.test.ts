@@ -48,7 +48,7 @@ vi.mock("./CitationUI", async (importOriginal) => ({
 vi.mock("./ModelPicker", () => ({ ModelPicker: (props: ComponentProps<typeof ModelPicker>) => {
   fixture.model = props;
   return createElement("span", { "data-test-model-control": true });
-} }));
+}, ThinkingPicker: () => null }));
 vi.mock("./ApprovalModeSelector", () => ({ ApprovalModeSelector: (props: ComponentProps<typeof ApprovalModeSelector>) => {
   fixture.approval = props;
   return createElement("span", { "data-test-approval-control": true });
@@ -90,6 +90,29 @@ describe("Advanced mode in the header menu", () => {
   });
 });
 
+describe("Archive thread button in the header", () => {
+  it("places archive, All threads, and computer in order in the header controls", () => {
+    const markup = renderToStaticMarkup(createElement(ChatView, { bot: { ...bot, busy: false } }));
+    const controls = markup.indexOf("data-chathead-controls");
+    const archive = markup.indexOf("data-archive-thread");
+    const computer = markup.indexOf('data-tour="computer"');
+    expect(controls).toBeGreaterThan(-1);
+    expect(archive).toBeGreaterThan(controls);
+    expect(archive).toBeLessThan(computer);
+    const allThreads = markup.indexOf('aria-label="All threads"');
+    expect(allThreads).toBeGreaterThan(archive);
+    expect(allThreads).toBeLessThan(computer);
+    expect(markup.slice(archive, archive + 400)).toContain('title="Archive thread"');
+  });
+
+  it("is disabled, with the reason, while the thread is running", () => {
+    const running = { ...bot, tasks: bot.tasks!.map((task) => ({ ...task, busy: true, activity: "working" as const })) };
+    const markup = renderToStaticMarkup(createElement(ChatView, { bot: running }));
+    expect(markup).toMatch(/data-archive-thread[^>]*aria-disabled="true"/);
+    expect(markup).toContain("Stop the run before archiving this thread");
+  });
+});
+
 describe("glass header", () => {
   it("floats the header over the transcript, which starts below it and scrolls on underneath", () => {
     const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
@@ -109,10 +132,10 @@ describe("glass header", () => {
 });
 
 describe("thread control placement", () => {
-  it.each([true, false])("leaves All threads to the sidebar in both modes (advanced: %s)", (advanced) => {
+  it.each([true, false])("shows the header All threads control only in Advanced mode (advanced: %s)", (advanced) => {
     fixture.advanced = advanced;
     const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
-    expect(markup).not.toContain('aria-label="All threads"');
+    expect(markup.match(/aria-label="All threads"/g) ?? []).toHaveLength(Number(advanced));
     expect(markup).toContain('data-testid="chat-more"');
     fixture.advanced = true;
   });
@@ -334,11 +357,13 @@ describe("thread control placement", () => {
     expect(badge[2].split(" ")).toContain("@max-4xl/chathead:sr-only");
   });
 
-  it("keeps the selected thread's model in the header and permissions inside the composer pill", () => {
+  it("keeps the selected thread's model with the composer's send controls and permissions inside the composer pill", () => {
     const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
     expect(markup.match(/data-test-model-control/g)).toHaveLength(1);
-    expect(markup.indexOf("data-test-model-control")).toBeLessThan(markup.indexOf('role="log"'));
     expect(markup.indexOf("rounded-3xl bg-composer")).toBeGreaterThan(-1);
+    // Bottom right of the pill: after the editor, in the actions group.
+    expect(markup.indexOf("data-test-model-control")).toBeGreaterThan(markup.indexOf("<textarea"));
+    expect(markup.indexOf("data-test-model-control")).toBeGreaterThan(markup.indexOf("data-composer-actions"));
     expect(markup.indexOf("data-test-approval-control")).toBeGreaterThan(markup.indexOf("rounded-3xl bg-composer"));
     expect(markup.indexOf("data-test-approval-control")).toBeLessThan(markup.indexOf("<textarea"));
     expect(markup).not.toContain('aria-label="Thread settings"');

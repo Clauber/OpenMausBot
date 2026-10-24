@@ -1,3 +1,4 @@
+import { matchesShortcut } from "@/lib/keyboard-shortcuts";
 // A room: several bots + you in one shared thread. The sidebar and call view
 // carry the personality; avatars inside the room stay still so a busy group
 // does not become a wall of competing motion. Plain messages go to the room's
@@ -22,6 +23,7 @@ import { effectivePlace, placeLabelKey } from "@/lib/place";
 import { ThreadChip } from "./ThreadChip";
 import { ToolActivity } from "./ToolActivity";
 import { ThreadRefText } from "./ThreadRefs";
+import { userTextIsMarkdown } from "@/lib/user-message-markdown";
 import { TurnPresence } from "./TurnPresence";
 import { showToolCallsEnabled } from "@/lib/feature-flags";
 import { CompactionChip, DigestChip } from "./DigestChip";
@@ -35,6 +37,7 @@ import { botEngine, failedTurnCause } from "@/lib/failed-turn";
 import { CitationSelectionToolbar, SentCitations } from "./CitationUI";
 import { Composer } from "./Composer";
 import { ChatFindBar } from "./ChatFindBar";
+import { ConversationTurnLimit } from "./ConversationTurnLimit";
 import { GroupTaskPicker } from "./TaskPicker";
 import { GroupUsageChip } from "./GroupUsageChip";
 import { ExportTranscriptMenu } from "./ExportTranscriptMenu";
@@ -232,6 +235,10 @@ export const Transcript = memo(function Transcript({
         const user = m.role === "user";
         const cited = user && m.text ? splitTranscriptCitations(m.text) : null;
         const attachments = user && m.text ? splitTranscriptAttachments(cited?.display ?? m.text) : null;
+        // Structured text (a pasted brief, a list, code) reads as Markdown like
+        // a bot reply; anything else stays the typed text it was.
+        const userBody = attachments?.display ?? m.text ?? "";
+        const markdownBody = user && userTextIsMarkdown(userBody);
         const newCluster = !prev || prev.role !== m.role || prev.from?.botId !== m.from?.botId || Boolean(prev.comm) || newDay;
         const routineOwner = m.kind === "routine.run" ? memberOf(m.from?.botId) : undefined;
         const routineExecutionThreadId = m.routineRun?.executionThreadId;
@@ -312,7 +319,7 @@ export const Transcript = memo(function Transcript({
                     // A bot message that is only attachments is just the files: no bubble.
                     !user && !m.text?.trim() && !m.replyToId && m.attachments?.length
                       ? "text-ink"
-                      : user ? "chat-text whitespace-pre-wrap bg-bubble-user px-4 py-2.5 text-ink" : "bg-card px-4 py-2.5 text-ink",
+                      : user ? (markdownBody ? "bg-bubble-user px-4 py-2.5 text-ink" : "chat-text whitespace-pre-wrap bg-bubble-user px-4 py-2.5 text-ink") : "bg-card px-4 py-2.5 text-ink",
                   )}
                   title={new Date(m.at).toLocaleString()}
                 >
@@ -340,7 +347,9 @@ export const Transcript = memo(function Transcript({
                         data-citation-owner={group.id}
                         data-citation-thread={group.threadId}
                       >
-                        <ThreadRefText text={attachments?.display ?? m.text ?? ""} peers={members} everyone={!group.dm} />
+                        {markdownBody
+                          ? <ChatMarkdown text={userBody} mentionPeers={members} everyone={!group.dm} />
+                          : <ThreadRefText text={userBody} peers={members} everyone={!group.dm} />}
                       </div>
                       {cited && <SentCitations
                         citations={cited.citations}
@@ -1001,7 +1010,7 @@ export function GroupView({ group }: { group: Group }) {
   useEffect(() => setFindOpen(false), [group.threadId]);
   useEffect(() => {
     const onFind = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+      if (matchesShortcut(event, "find-conversation")) {
         event.preventDefault();
         setFindOpen(true);
       }
@@ -1206,6 +1215,7 @@ export function GroupView({ group }: { group: Group }) {
             messages={group.messages}
             isGroup
           />
+          {!setupPending && <ConversationTurnLimit group={group} />}
           <GroupCallButton group={group} members={members} />
           <GroupUsageChip usage={group.usage} />
           {!remoteClient && !setupPending && !group.dm && <RoomWorkingFolderChip group={group} onToggle={() => setFolderOpen((open) => !open)} />}

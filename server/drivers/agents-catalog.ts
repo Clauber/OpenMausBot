@@ -179,6 +179,17 @@ const ROUTINE_FIELDS_SCHEMA = {
     type: "boolean",
     description: "Only for updates: set true to remove an existing safety limit. Do not combine with timeout_minutes.",
   },
+  preCheck: {
+    type: ["object", "null"],
+    description: "Optional locally approved executable to check scheduled bot routines before waking. Runs directly on the server without a shell. Empty items skip quietly; errors wake normally. Run now bypasses. Set null in an update to remove. Never include secrets in arguments.",
+    properties: {
+      command: { type: "string", description: "Absolute executable path on the server." },
+      args: { type: "array", maxItems: 64, items: { type: "string", maxLength: 4096 } },
+      timeoutMs: { type: "integer", minimum: 100, maximum: 60000 },
+    },
+    required: ["command"],
+    additionalProperties: false,
+  },
   continuity: {
     type: "boolean",
     description: "Opt in to using the latest completed run's bounded report as historical context. Defaults to false; set false in an update to start fresh again. Included in the applied result or pending confirmation.",
@@ -188,6 +199,11 @@ const ROUTINE_FIELDS_SCHEMA = {
     enum: ["skip", "queue"],
     description: "While this routine is still working, skip scheduled occurrences (default) or queue at most one run. Queue skips further occurrences until the pending run starts; it never builds an unlimited backlog. Manual and webhook requests are separate.",
   },
+  results: {
+    type: "string",
+    enum: ["main_thread", "own_thread"],
+    description: "Where run results post. own_thread: a conversation named after the routine, for when the person wants its results out of this chat. main_thread: back to the default, the chat that set it up. Omit to keep the current one.",
+  },
 } as const;
 
 const PROPOSAL_OUTCOME = " Read the result: granted Full Access may apply the change immediately. If applied, continue the requested work without another confirmation. Only a pending result requires ending the turn and waiting for the in-app decision. Never claim success from the permission mode alone; report failed or cancelled results honestly. This does not elevate another bot's execution permissions.";
@@ -195,6 +211,24 @@ const PROPOSAL_OUTCOME = " Read the result: granted Full Access may apply the ch
 /** Every tool, in the order it is listed. Four peer tools are worded
  * differently for an external runtime, which may poll inside one process. */
 const toolDefinitions = (externalRuntime: boolean) => [
+  {
+    name: "bot_folders",
+    description: "Master Chief of Staff only: discover a visible bot's shared, project and task folders by ID from list_bots. Includes other teams but excludes private guest folders. Use native file tools with your current permissions; coordinate before editing active work. Does not change approvals or transfer files.",
+    inputSchema: { type: "object", additionalProperties: false, properties: { bot_id: { type: "string", minLength: 1, maxLength: 128 } }, required: ["bot_id"] },
+  },
+  {
+    name: "set_bot_approval",
+    description: "Master Chief of Staff only: explicitly change another bot’s execution approval mode. Requires Full Access. Default-only preserves existing thread overrides and never resumes a stalled turn. All-thread Full refuses busy or pending targets; all-thread Ask stops active turns. Never use this to change your own permissions.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      target_bot_id: { type: "string" }, approval_mode: { type: "string", enum: ["ask", "full", "edits", "auto", "custom"] },
+      apply_to_all_threads: { type: "boolean" }, acknowledge_local_auto: { type: "boolean" },
+    }, required: ["target_bot_id", "approval_mode"] },
+  },
+  {
+    name: "authorize_room_task",
+    description: "Master Chief of Staff only: start a fresh room task authorizing its current members to communicate across sections within that task. Keeps audience privacy and each bot’s execution permissions. Requires Full Access. Membership or master assignment changes invalidate this grant.",
+    inputSchema: { type: "object", additionalProperties: false, properties: { room_id: { type: "string" }, title: { type: "string" } }, required: ["room_id", "title"] },
+  },
   {
     name: "create_options_card",
     description:
@@ -397,7 +431,7 @@ const toolDefinitions = (externalRuntime: boolean) => [
   {
     name: "attach_file",
     description:
-      "Attach a finished file to the chat so the user can preview and download it: an image, video, audio clip, PDF, spreadsheet, slide deck or other document you made. Pass its path: a path inside your computer's /home/cua/workspace (for example /home/cua/workspace/report.pdf), or a file in your working folder. Do this instead of pasting a VM path as a link; a path inside a VM cannot be opened from chat. Supported: images (png, jpg, gif, webp), video (mp4, webm, mov), audio (mp3, m4a, aac, wav, ogg, opus, flac), pdf, Word/Excel/PowerPoint and OpenDocument files, and csv, tsv, txt, md, json, rtf. Up to 25 MB (images 10 MB). Finish writing the file first, then call this directly: it reports an error if the file is missing, so you do not need to list or open the folder to check.",
+      "Attach a finished file to the chat so the user can preview and download it: an image, video, audio clip, PDF, spreadsheet, slide deck or other document you made. Pass its path: a path inside your computer's /home/cua/workspace (for example /home/cua/workspace/report.pdf), or a file in your working folder. Do this instead of pasting a VM path as a link; a path inside a VM cannot be opened from chat. For a file in your working folder you can instead share it with a Markdown link to its absolute path — the chat turns the link into a file card the user can open. Supported: images (png, jpg, gif, webp), video (mp4, webm, mov), audio (mp3, m4a, aac, wav, ogg, opus, flac), pdf, Word/Excel/PowerPoint and OpenDocument files, and csv, tsv, txt, md, json, rtf. Up to 25 MB (images 10 MB). Finish writing the file first, then call this directly: it reports an error if the file is missing, so you do not need to list or open the folder to check.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -447,6 +481,25 @@ const toolDefinitions = (externalRuntime: boolean) => [
         attach_voice_note: { type: "boolean", description: "True to attach this turn's send_voice_note recording; the message is its caption. Call send_voice_note first." },
       },
       required: ["group_id", "message"],
+    },
+  },
+  {
+    name: "create_skin",
+    description:
+      "Create a custom look for the app (Settings → Appearance) when the user asks for a skin, theme or look — 'a cozy dark theme with amber highlights'. Pick mode dark or light to match the request. accent is the colour for buttons, links and highlights, as #rrggbb. tint is the hue every surface leans toward — a faint cousin of the accent (dark mode likes a near-black tint such as #1b1410, light mode a near-white one such as #f3ece2); omit it for plain grey. bubble 'inverted' paints the user's own messages in the opposite ink, like the Daylight skin; corners 'sharp' reads technical, 'round' soft. Colour contrast is derived automatically, so any hue is safe to try. A skin of the same name is replaced, so reuse the name when adjusting ('more orange') and say you replaced it. The skin appears in Settings → Appearance on every signed-in screen — tell the user to pick it there; you cannot apply it yourself. It changes the look for everyone in this workspace: only on request, and never twice in a row without their feedback.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        name: { type: "string", description: "A short name to show in the picker, for example Ember or Paper Sky." },
+        tagline: { type: "string", description: "One line under the name, for example Warm brass on a night floor. Optional." },
+        mode: { type: "string", enum: ["dark", "light"], description: "Dark for evening/near-black looks, light for paper/daylight looks." },
+        accent: { type: "string", description: "The highlight colour as #rrggbb, for example #d97706 (amber) or #0f766e (teal)." },
+        tint: { type: "string", description: "The surface hue as #rrggbb — a faint, darker-or-lighter cousin of the accent. Optional; default is neutral grey." },
+        bubble: { type: "string", enum: ["match", "inverted"], description: "inverted = the user's own messages in the opposite ink (dramatic, like Daylight). Optional; default match." },
+        corners: { type: "string", enum: ["sharp", "soft", "round"], description: "Corner style. Optional; default soft." },
+      },
+      required: ["name", "mode", "accent"],
     },
   },
   {

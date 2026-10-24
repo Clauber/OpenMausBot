@@ -7,7 +7,7 @@
 // the person making it, so the chat header and the settings dialog render the
 // same row and write through the same action.
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Check, ChevronDown, ChevronLeft, ChevronRight, KeyRound, Loader2, Plus, RefreshCw, Search } from "lucide-react";
+import { Brain, Check, ChevronDown, ChevronLeft, ChevronRight, KeyRound, Loader2, Plus, RefreshCw, Search } from "lucide-react";
 import { useStore, currentTaskBot, type Bot, type InstanceInfo, type ModelSelection } from "@/state/store";
 import type { EffortLevel } from "../../shared/wire";
 import type { ModelVariantOption } from "../../shared/runtime-events";
@@ -16,7 +16,6 @@ import { configuredModelInstances, isClaudeAccount, isCustomOnly, SIGN_IN_FAMILY
 import { InstanceProviderMark } from "./ProviderIcons";
 import { EngineSetup, EngineUpdateNotice, needsCli, needsSignIn } from "./EngineSetup";
 import { EngineGroupLabel } from "./EngineGroupLabel";
-import { ConfirmDialog } from "./ConfirmDialog";
 import { ChatGptPlanStatus } from "./ChatGptPlanStatus";
 import { approvalModeFor, modelSwitchNeedsAsk } from "../../shared/approval-mode";
 import { cn } from "@/lib/cn";
@@ -82,7 +81,7 @@ export function offersLocalModels(instance: InstanceInfo | undefined, localCount
 
 /** The others capitalize cleanly; "xhigh" would read "Xhigh". */
 export function effortLabel(level: EffortLevel): string {
-  return level === "xhigh" ? "X-High" : level[0].toUpperCase() + level.slice(1);
+  return friendlyEffort(level);
 }
 
 /** How hard the bot thinks, for the engine it currently runs on. Rendered
@@ -163,6 +162,84 @@ export function EffortRow({
   );
 }
 
+/** How hard the bot thinks, as its own chip beside the model. Same levels and
+ * the same `setModel` write as the picker's effort row; an engine with no
+ * levels, or one that picks reasoning through model variants, gets no chip. */
+export function ThinkingPicker({ bot, threadId, className }: { bot: Bot; threadId?: string; className?: string }) {
+  const { state, dispatch } = useStore();
+  const [open, setOpen] = useState(false);
+  const motion = useMenuMotion(open && (!bot.busy || Boolean(threadId)));
+  const rootRef = useRef<HTMLDivElement>(null);
+  const ownerOrAdmin = useOwnerOrAdmin();
+  const advanced = useAdvancedMode();
+  const selection = bot.modelSelection;
+  const instance = state.instances.find((candidate) => candidate.instanceId === selection.instanceId);
+  const levels = instance?.capabilities?.effortLevels;
+  // Guests keep their choice to their own Cloud conversation, as in the model picker.
+  const updatesBotDefault = Boolean(threadId) && (!state.config?.cloudHome || ownerOrAdmin === true);
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [open]);
+  if (!levels?.length || instance?.capabilities?.modelVariants) return null;
+  const label = (level: EffortLevel) => (advanced ? effortLabel(level) : friendlyEffort(level));
+  const pick = (level: EffortLevel | undefined) => {
+    setOpen(false);
+    dispatch({ type: "setModel", botId: bot.id, threadId, ...(updatesBotDefault ? { updateBotDefault: true } : {}),
+      selection: { ...selection, effort: level } });
+  };
+  return (
+    <div ref={rootRef} className={cn("relative", className)}>
+      <button
+        type="button"
+        data-thinking-picker
+        disabled={Boolean(bot.busy && !threadId)}
+        aria-expanded={open && (!bot.busy || Boolean(threadId))}
+        aria-haspopup="listbox"
+        aria-label="Reasoning effort"
+        title={bot.busy ? (threadId ? "Applies next run, or immediately when you send a steering message" : t("model.busy")) : "Reasoning effort"}
+        onClick={() => setOpen((was) => !was)}
+        className="flex h-8 items-center gap-1 rounded-full px-2 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+      >
+        <Brain size={14} aria-hidden="true" />
+        <span>{selection.effort ? label(selection.effort) : "Default"}</span>
+        <ChevronDown size={13} className={cn("transition-transform", open && "rotate-180")} />
+      </button>
+      {motion.shown && (
+        <div
+          role="listbox"
+          aria-label="Reasoning effort"
+          {...motion.exitProps}
+          className={cn("absolute bottom-full right-0 z-30 mb-2 min-w-36 rounded-xl border border-hairline/50 bg-card p-1 shadow-2xl shadow-black/50", motion.className)}
+        >
+          {[undefined, ...levels].map((level) => (
+            <button
+              key={level ?? "default"}
+              type="button"
+              role="option"
+              aria-selected={selection.effort === level}
+              onClick={() => pick(level)}
+              className="flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-ink hover:bg-control/60"
+            >
+              {level === undefined ? "Default" : label(level)}
+              {selection.effort === level && <Check size={14} aria-hidden="true" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function variantLabel(option: ModelVariantOption): string {
   return option.id === "default" ? "OpenCode default" : option.label;
 }
@@ -198,7 +275,7 @@ export function ModelVariantRow({ bot, threadId, updateBotDefault, className, la
     <div className={className}>
       <label className="flex items-center justify-between gap-3">
         {label}
-        <select aria-label="Reasoning variant" disabled={bot.busy}
+        <select aria-label="Reasoning variant" disabled={Boolean(bot.busy && !threadId)}
           value={selection.variant === undefined ? "unset" : missing ? "missing" : String(options.findIndex((option) => option.id === selection.variant))}
           onChange={(event) => choose(options[Number(event.target.value)]?.id)}
           className={cn("min-w-0 rounded-lg border border-hairline/40 bg-inset px-2 py-1.5 text-[12px] text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-50",
@@ -222,7 +299,7 @@ export function ModelVariantRow({ bot, threadId, updateBotDefault, className, la
         </p>
       )}
       {selection.variant !== undefined && (
-        <button type="button" disabled={bot.busy} onClick={() => choose()}
+        <button type="button" disabled={Boolean(bot.busy && !threadId)} onClick={() => choose()}
           title="Send no variant selection; OpenCode keeps its session or configured setting"
           className="mt-2 block text-[12px] text-ink-secondary underline underline-offset-2 hover:text-ink disabled:opacity-50">
           Clear variant selection
@@ -234,7 +311,7 @@ export function ModelVariantRow({ bot, threadId, updateBotDefault, className, la
             <button
               key={option.id}
               type="button"
-              disabled={bot.busy}
+              disabled={Boolean(bot.busy && !threadId)}
               aria-pressed={selection.variant === option.id}
               title={`Use ${variantLabel(option)} for this model`}
               onClick={() => choose(option.id)}
@@ -473,10 +550,16 @@ export function ModelPicker({
   className,
   contained = false,
   label,
+  dropUp = false,
+  separateEffort = false,
 }: {
   bot: Bot;
   threadId?: string;
   className?: string;
+  /** Open the menu above the trigger (the composer sits at the window's foot). */
+  dropUp?: boolean;
+  /** Effort has its own control (ThinkingPicker), so this one leaves it out. */
+  separateEffort?: boolean;
   /** Expand the menu in-flow under the trigger so it cannot overflow a
    * narrow parent (the Agent profile sidebar). */
   contained?: boolean;
@@ -484,7 +567,7 @@ export function ModelPicker({
 }) {
   const { state, dispatch, refreshInstances, refreshModels: refreshInstanceModels } = useStore();
   const [open, setOpen] = useState(false);
-  const motion = useMenuMotion(open && !bot.busy);
+  const motion = useMenuMotion(open && (!bot.busy || Boolean(threadId)));
   const [railId, setRailId] = useState<string | null>(null);
   const [pane, setPane] = useState<"main" | "custom">("main");
   const [query, setQuery] = useState("");
@@ -500,10 +583,8 @@ export function ModelPicker({
   // the shared bot's default. Keep choices thread-only until authority loads.
   const simpleUpdatesBotDefault = !state.config?.cloudHome || ownerOrAdmin === true;
   const [fullView, setFullView] = useState(false);
-  const [pendingSwitch, setPendingSwitch] = useState<{ botId: string; threadId: string;
-    selection: ModelSelection; updateBotDefault: boolean; name: string } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
-  const [placement, setPlacement] = useState<{ left: number; maxHeight: number }>();
+  const [placement, setPlacement] = useState<{ left: number; maxHeight: string }>();
   const refreshingRef = useRef(false);
   const lastClaudeIdRef = useRef<string | null>(null);
   const lastOpenaiIdRef = useRef<string | null>(null);
@@ -520,12 +601,12 @@ export function ModelPicker({
       if (!rect) return;
       const width = Math.min(popoverWidth, window.innerWidth - 32);
       setPlacement({ left: Math.max(16, Math.min(rect.right - width, window.innerWidth - width - 16)) - rect.left,
-        maxHeight: Math.max(0, Math.min(600, window.innerHeight - rect.bottom - 24)) });
+        maxHeight: `min(${Math.max(0, Math.min(600, (dropUp ? rect.top : window.innerHeight - rect.bottom) - 24))}px, calc(100dvh - 7rem))` });
     };
     place();
     window.addEventListener("resize", place);
     return () => window.removeEventListener("resize", place);
-  }, [open, contained, popoverWidth]);
+  }, [open, contained, popoverWidth, dropUp]);
 
   const selection = bot.modelSelection;
   const active = state.instances.find((instance) => instance.instanceId === selection.instanceId);
@@ -596,8 +677,8 @@ export function ModelPicker({
   }, [open, refreshLocalInstances]);
 
   useEffect(() => {
-    if (bot.busy) setOpen(false);
-  }, [bot.busy]);
+    if (bot.busy && !threadId) setOpen(false);
+  }, [bot.busy, threadId]);
 
   useEffect(() => {
     if (!open) return;
@@ -662,27 +743,24 @@ export function ModelPicker({
   };
 
   const pick = (instance: InstanceInfo, model: string) => {
-    if (bot.busy || instance.policy) return;
+    if ((bot.busy && !threadId) || instance.policy) return;
     const nextSelection = modelSelectionForPick(selection, instance, model);
     // Simple mode has no scope choice: an owner's pick is also the bot's
     // default, while a Cloud guest changes only their own conversation.
     const updateBotDefault = !threadId || (simpleView ? simpleUpdatesBotDefault : scope === "bot");
     const profile = state.bots.find((candidate) => candidate.id === bot.id) ?? bot;
     const targets = updateBotDefault ? [currentTaskBot(profile, threadId ?? bot.threadId), profile] : [bot];
-    if (targets.some((target) => modelSwitchNeedsAsk(approvalModeFor(target),
+    // A level the new engine can't run falls back to Ask with the switch.
+    const resetApprovalToAsk = targets.some((target) => modelSwitchNeedsAsk(approvalModeFor(target),
       state.instances.find((candidate) => candidate.instanceId === target.modelSelection.instanceId)?.driverKind,
-      instance.driverKind))) {
-      setPendingSwitch({ botId: bot.id, threadId: threadId ?? bot.threadId,
-        selection: nextSelection, updateBotDefault, name: modelLabel(instance, model) });
-      setOpen(false);
-      return;
-    }
+      instance.driverKind));
     dispatch({
       type: "setModel",
       botId: bot.id,
       threadId: threadId ?? bot.threadId,
       updateBotDefault,
       selection: nextSelection,
+      ...(resetApprovalToAsk ? { resetApprovalToAsk } : {}),
     });
     setOpen(false);
   };
@@ -759,7 +837,7 @@ export function ModelPicker({
     lookForLocalIn(instance);
   };
   const activeLevels = active?.capabilities?.effortLevels ?? [];
-  const simpleEffort = activeLevels.length > 0 ? {
+  const simpleEffort = activeLevels.length > 0 && !separateEffort ? {
     levels: simpleEffortLevels(activeLevels, selection.effort),
     current: selection.effort,
     // Follow the same Cloud authority rule as a Simple model pick.
@@ -795,9 +873,9 @@ export function ModelPicker({
   const trigger = (
     <button data-tour="model"
       type="button"
-      disabled={Boolean(bot.busy)}
+      disabled={Boolean(bot.busy && !threadId)}
       onClick={() => {
-        if (bot.busy) return;
+        if (bot.busy && !threadId) return;
         if (active && isClaudeAccount(active)) lastClaudeIdRef.current = active.instanceId;
         if (active && signInFamily(active) === "openai") lastOpenaiIdRef.current = active.instanceId;
         const initial = pickerInstances.find((instance) => instance.instanceId === selection.instanceId) ?? pickerInstances[0];
@@ -811,7 +889,7 @@ export function ModelPicker({
           return next;
         });
       }}
-      aria-expanded={open && !bot.busy}
+      aria-expanded={open && (!bot.busy || Boolean(threadId))}
       aria-haspopup="dialog"
       className={cn(
         "flex items-center gap-1.5 rounded-full border border-hairline/40 bg-control/60 py-1 pl-2 pr-2.5 text-[13px] text-ink hover:bg-raised-hover disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-control/60",
@@ -823,7 +901,7 @@ export function ModelPicker({
       )}
       title={
         bot.busy
-          ? t(threadId ? "model.threadBusy" : "model.busy")
+          ? threadId ? "Applies next run, or immediately when you send a steering message" : t("model.busy")
           : active
           ? `${active.displayName} · ${modelLabel(active, selection.model)}${
               modelProvider(active, selection.model) ? ` · ${modelProvider(active, selection.model)}` : ""
@@ -849,7 +927,7 @@ export function ModelPicker({
             hides the effort the header exists to surface */}
         {selectedVariantLabel !== undefined ? (
           <span data-model-variant className="max-w-[120px] truncate text-ink-secondary">· {selectedVariantLabel}</span>
-        ) : selection.effort && (
+        ) : selection.effort && !separateEffort && (
           <span data-model-effort className="shrink-0 text-ink-secondary">
             · {advanced ? effortLabel(selection.effort) : friendlyEffort(selection.effort)}
           </span>
@@ -888,7 +966,10 @@ export function ModelPicker({
             "flex overflow-hidden rounded-2xl border border-hairline/50 bg-card",
             contained
               ? "relative mt-3 w-full max-h-[min(420px,50dvh)]"
-              : "absolute right-0 top-full z-30 mt-2 max-w-[calc(100vw-2rem)] max-h-[min(600px,calc(100dvh-7rem))] shadow-2xl shadow-black/50",
+              : cn(
+                "absolute right-0 z-30 max-w-[calc(100vw-2rem)] max-h-[min(600px,calc(100dvh-7rem))] shadow-2xl shadow-black/50",
+                dropUp ? "bottom-full mb-2" : "top-full mt-2",
+              ),
             motion.className,
           )}
         >
@@ -1159,7 +1240,7 @@ export function ModelPicker({
                     the rail being browsed: effort applies to the model this bot
                     runs on now, and picking a model on another rail closes the
                     popover. */}
-                {!contained && (
+                {!contained && !separateEffort && (
                   <EffortRow
                     compact
                     bot={bot}
@@ -1219,25 +1300,6 @@ export function ModelPicker({
           )}
         </div>
       )}
-      <ConfirmDialog
-        open={pendingSwitch !== null}
-        title={t("model.providerSwitch.title")}
-        body={t(pendingSwitch?.updateBotDefault ? "model.providerSwitch.botBody" : "model.providerSwitch.threadBody", {
-          model: pendingSwitch?.name ?? "",
-        })}
-        tone="neutral"
-        confirmLabel={t("model.providerSwitch.confirm")}
-        onCancel={() => setPendingSwitch(null)}
-        onConfirm={() => {
-          if (!pendingSwitch || bot.busy || pendingSwitch.botId !== bot.id || pendingSwitch.threadId !== (threadId ?? bot.threadId)) {
-            setPendingSwitch(null); return;
-          }
-          dispatch({ type: "setModel", botId: pendingSwitch.botId, threadId: pendingSwitch.threadId,
-            selection: pendingSwitch.selection, updateBotDefault: pendingSwitch.updateBotDefault,
-            resetApprovalToAsk: true });
-          setPendingSwitch(null);
-        }}
-      />
     </div>
   );
 }

@@ -1,3 +1,4 @@
+import { matchesShortcut } from "@/lib/keyboard-shortcuts";
 import { Component, createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type ReactNode } from "react";
 import { useAdvancedMode } from "@/lib/interface-mode";
 import {
@@ -20,7 +21,6 @@ import {
   PinOff,
   RefreshCw,
   Search,
-  Square,
   Webhook,
   X,
 } from "lucide-react";
@@ -45,6 +45,7 @@ import {
   type Message,
   type AppState,
 } from "@/state/store";
+import { ArchiveThreadButton } from "./ArchiveThreadButton";
 import { EngineSetup } from "./EngineSetup";
 import { CHATGPT_USAGE_URL } from "./ChatGptPlanStatus";
 import { openExternalLink } from "@/lib/app-links";
@@ -69,6 +70,7 @@ import { askText, runSteps, runSummary, showRun, skillPrompt, skillStaged } from
 import { useShowRunCard } from "@/lib/run-card-preferences";
 import { ToolActivity } from "./ToolActivity";
 import { ThreadRefText } from "./ThreadRefs";
+import { userTextIsMarkdown } from "@/lib/user-message-markdown";
 import { OptionCard, shouldHideOnboardingCard } from "./OptionCard";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
@@ -84,7 +86,6 @@ import { CallReceiptCard } from "./CallReceiptCard";
 import { CompactionChip, DigestChip } from "./DigestChip";
 import { RenameTitle } from "./RenameTitle";
 import { BotActivityPicker } from "./TaskPicker";
-import { ModelPicker } from "./ModelPicker";
 import { SidebarPopoverMenu, type SidebarMenuItem } from "./SidebarPopoverMenu";
 import { ShortcutHint } from "./ShortcutHint";
 import {
@@ -93,16 +94,16 @@ import {
   formatTranscriptMarkdown,
   slugifyTranscriptFilename,
 } from "@/lib/export-transcript";
+import { AllThreadsButton } from "./ChatAllThreads";
 import { CitationSelectionToolbar, SentCitations } from "./CitationUI";
 
 import { SpeakButton } from "./SpeakButton";
 import { CallOverlay } from "./CallView";
-import { LiveCallBar } from "./LiveCallBar";
+import { LiveCallBar, LiveCallOverlay } from "./LiveCallBar";
 import { LiveCallChip } from "./LiveCallPill";
 import { effectivePlace, toolPlace, type EffectivePlace } from "@/lib/place";
 import { cn } from "@/lib/cn";
 import { activeLocale, t } from "@/lib/i18n";
-import { COMPACT_BUBBLE } from "@/lib/compact-chip";
 import { groupTranscript, isStatusActivity } from "@/lib/activity-runs";
 import { StatusActivityRow } from "@/components/StatusActivityRow";
 import { ActivityRun } from "./ActivityRun";
@@ -452,6 +453,9 @@ const Bubble = memo(function Bubble({
   // A message that is only attachments is just the files: no bubble around them.
   const attachmentsOnly = !webhookView && !replyTarget && !visibleText.trim() &&
     (user ? hasAttachments : generatedPaths.length + linkedFiles.length > 0);
+  // A structured message (a pasted brief, a list, code) reads as Markdown,
+  // the way a bot reply does; anything else stays the typed text it was.
+  const markdownBody = user && !webhookView && userTextIsMarkdown(visibleText);
   const collapsible =
     user && !webhookView && !expanded && (visibleText.length > USER_COLLAPSE_CHARS || visibleText.split("\n").length > USER_COLLAPSE_LINES);
   useEffect(() => {
@@ -524,7 +528,9 @@ const Bubble = memo(function Bubble({
               : attachmentsOnly
                 ? "text-ink"
                 : user
-                  ? "bg-bubble-user px-4 py-2.5 whitespace-pre-wrap text-ink"
+                  ? markdownBody
+                    ? "bg-bubble-user px-4 py-2.5 text-ink"
+                    : "bg-bubble-user px-4 py-2.5 whitespace-pre-wrap text-ink"
                   : "bg-card px-4 py-2.5 text-ink",
           )}
           title={new Date(message.at).toLocaleString()}
@@ -560,13 +566,15 @@ const Bubble = memo(function Bubble({
               {attachments && <AttachmentGallery images={attachments.images} files={attachments.files} message={{ threadId, messageId: message.id }} eager={eagerAttachments} className={!visibleText ? "mb-0" : undefined} />}
               {visibleText && (
                 <div
-                  className={cn("chat-text", collapsible && "max-h-40 overflow-hidden [mask-image:linear-gradient(to_bottom,black_60%,transparent)]")}
+                  className={cn(!markdownBody && "chat-text", collapsible && "max-h-40 overflow-hidden [mask-image:linear-gradient(to_bottom,black_60%,transparent)]")}
                   data-citation-source={message.id}
                   data-citation-owner-type="bot"
                   data-citation-owner={botId}
                   data-citation-thread={threadId}
                 >
-                  <ThreadRefText text={visibleText} peers={mentionPeers} />
+                  {markdownBody
+                    ? <ChatMarkdown text={visibleText} mentionPeers={mentionPeers} />
+                    : <ThreadRefText text={visibleText} peers={mentionPeers} />}
                 </div>
               )}
               {cited && <SentCitations
@@ -608,6 +616,10 @@ const Bubble = memo(function Bubble({
                 </div>
               )}
               <AttachmentGallery images={generatedPaths} files={linkedFiles} message={{ threadId, messageId: message.id }} className={text ? undefined : "mb-0"} eager={eagerAttachments} />
+              {message.thinking && <details className="mb-2 rounded-lg border border-hairline/40 bg-inset/25 px-3 py-2">
+                <summary className="cursor-pointer text-[11.5px] font-medium text-ink-secondary">{t("chat.thinking")}</summary>
+                <div className="mt-1.5 max-h-72 overflow-auto whitespace-pre-wrap text-[12.5px] text-ink-secondary">{message.thinking}</div>
+              </details>}
               {viewRaw && text ? (
                 <div data-citation-source={message.id} data-citation-owner-type="bot" data-citation-owner={botId} data-citation-thread={threadId}><RawMarkdownView text={text} /></div>
               ) : text ? (
@@ -1036,6 +1048,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   const bot = useMemo(() => currentTaskBot(profile), [profile]);
   const { state, dispatch } = useStore();
   const remoteClient = window.ogb?.remoteClient?.active === true;
+  const advanced = useAdvancedMode();
   // Simple mode reaches other threads from the sidebar; the header picker is Advanced only.
   // Windows has no native caption buttons (renderer-drawn, see
   // WindowCaptionButtons); this header is the window drag region, and the
@@ -1057,7 +1070,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   useEffect(() => setFindOpen(false), [bot.threadId]);
   useEffect(() => {
     const onFind = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+      if (matchesShortcut(event, "find-conversation")) {
         event.preventDefault();
         setFindOpen(true);
       }
@@ -1232,6 +1245,8 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
     <main className="relative flex h-full min-w-0 flex-1 flex-col bg-app">
       {/* A take-turns call covers the thread while the bot is on the line */}
       <CallOverlay bot={bot} />
+      {/* so does a Live call, until Show chat folds it into the call bar */}
+      <LiveCallOverlay bot={bot} />
       {/* The transcript scrolls on under the header (and the banners that
           hang from it), which is liquid glass tinted with the chat's own
           background, and under the composer, which already floats. */}
@@ -1307,22 +1322,10 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
           // buttons clear the 26px overlay while the rest of the layout stays.
           style={controlsShiftStyle}
         >
-          {(bot.busy || bot.waitingForTeammates) && (
-            <button
-              onClick={() => dispatch({ type: "interrupt", botId: bot.id, threadId: bot.threadId })}
-              className={cn(
-                "flex items-center gap-1.5 rounded-full border border-hairline/40 bg-raised/60 px-2.5 py-1 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink",
-                COMPACT_BUBBLE,
-              )}
-              title={t("chat.stopTurn")}
-            >
-              <Square size={12} className="fill-current" />
-              <span className="@max-4xl/chathead:hidden">{t("chat.stop")}</span>
-            </button>
-          )}
-          {!remoteClient && <ModelPicker key={bot.threadId} bot={bot} threadId={bot.threadId} />}
           {/* below md the sidebar (and its Live call pill) is hidden */}
           <LiveCallChip currentBotId={bot.id} onOpen={(botId, threadId) => openThread(dispatch, { botId, threadId }, state)} />
+          <ArchiveThreadButton bot={bot} />
+          {(advanced || remoteClient) && <AllThreadsButton />}
           <button
             data-tour="computer"
             onClick={() => dispatch({ type: "toggleComputer" })}
@@ -1352,8 +1355,11 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
       {/* Error banner */}
       {state.error && (
         <div className="w-full px-5">
-          <div className="mb-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[13px] text-danger">
-            {state.error}
+          <div role="alert" className="mb-2 flex items-start gap-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[13px] text-danger">
+            <span className="min-w-0 flex-1">{state.error}</span>
+            <button type="button" aria-label={t("common.close")} onClick={() => dispatch({ type: "error", message: null })} className="-m-1 shrink-0 rounded p-1 hover:bg-danger/15">
+              <X size={13} />
+            </button>
           </div>
         </div>
       )}

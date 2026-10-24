@@ -86,6 +86,62 @@ describe("live call media", () => {
     expect(liveMedia().phase).toBe("live");
   });
 
+  it("says what it is waiting for when the microphone prompt sits unanswered, then gives up with instructions", async () => {
+    vi.useFakeTimers();
+    try {
+      configureLiveMedia({
+        getUserMedia: () => new Promise(() => {}), // the prompt is never answered
+        createPeer: () => peer as unknown as RTCPeerConnection,
+        request: request as never,
+        playRemote: () => {},
+        stopRemote: () => {},
+        iceTimeoutMs: 50,
+        capabilities: () => ({ dictation: { reasonCode: "desktop-app-required" } }) as never,
+      });
+      const starting = startLiveCall({ botId: "b1", threadId: "t1" });
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(liveMedia().notice).toBe("Waiting for the microphone — approve the prompt (check the address bar).");
+      expect(liveMedia().phase).toBe("starting");
+      // no request left the window while the prompt is open
+      expect(request).not.toHaveBeenCalledWith("/api/live/session", expect.anything());
+      await vi.advanceTimersByTimeAsync(19_000);
+      expect(liveMedia()).toMatchObject({ phase: "failed", canRetry: true, callId: null });
+      expect(liveMedia().notice).toContain("The microphone was never allowed");
+      void starting.catch(() => {});
+      expect(request).not.toHaveBeenCalledWith("/api/live/session", expect.anything());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears the mic wait notice and proceeds when the prompt is answered", async () => {
+    vi.useFakeTimers();
+    try {
+      let releaseMic: ((stream: MediaStream) => void) | null = null;
+      configureLiveMedia({
+        getUserMedia: () => new Promise((resolve) => { releaseMic = resolve; }),
+        createPeer: () => peer as unknown as RTCPeerConnection,
+        request: request as never,
+        playRemote: () => {},
+        stopRemote: () => {},
+        iceTimeoutMs: 50,
+      });
+      const starting = startLiveCall({ botId: "b1", threadId: "t1" });
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(liveMedia().notice).toContain("Waiting for the microphone");
+      releaseMic!({ getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(liveMedia().notice).toBeNull();
+      await vi.advanceTimersByTimeAsync(0);
+      await starting;
+      onServerCall({ ...call, status: "live" });
+      peer.channel.open();
+      expect(liveMedia().phase).toBe("live");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("asks for a key and releases the microphone", async () => {
     request.mockRejectedValueOnce(new ApiError("Add an OpenAI API key to use Live calls.", 409, { needsKey: true }));
     await startLiveCall({ botId: "b1", threadId: "t1" });
@@ -710,5 +766,61 @@ describe("waiting for a Live call's audio to connect", () => {
     await vi.advanceTimersByTimeAsync(25_000);
     expect(liveMedia()).toMatchObject({ phase: "failed", notice: "Call dropped." });
     expect(endRequests()).toEqual([]);
+  });
+});
+
+// A blocked microphone says who can allow it. The desktop app gives a
+// server's page the microphone only on the person's own Cloud, so on any other
+// server no setting there helps.
+describe("a blocked microphone", () => {
+  const blockedIn = (dictation: Partial<DesktopCapabilities["dictation"]>, reason = "NotAllowedError") => configureLiveMedia({
+    getUserMedia: async () => { throw new DOMException("denied", reason); },
+    createPeer: () => peer as unknown as RTCPeerConnection,
+    request: request as never,
+    iceTimeoutMs: 50,
+    capabilities: () => ({ dictation: { available: false, engine: "none", onDevice: false, ...dictation } }) as DesktopCapabilities,
+  });
+
+  it("on another server's page in the desktop app, sends the call to the web browser instead of the privacy settings", async () => {
+    blockedIn({ reasonCode: "remote-server" });
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    expect(liveMedia()).toMatchObject({ phase: "failed", canRetry: false });
+    expect(liveMedia().notice).toBe("The desktop app doesn't let a server's page use your microphone. Open this server in your web browser to make a Live call.");
+  });
+
+  // The desktop app lets the person's own Cloud use the microphone, so a
+  // block there is the computer's, not the app's.
+  it("on the person's own Cloud in the desktop app, points at the computer's settings", async () => {
+    blockedIn({ reasonCode: "remote-server" });
+    await startLiveCall({ botId: "b1", threadId: "t1", cloudHome: true });
+    expect(liveMedia()).toMatchObject({ phase: "failed", canRetry: false });
+    expect(liveMedia().notice).toBe("The microphone is blocked. Allow microphone access for this app in your computer's privacy settings, then try again.");
+  });
+
+  it("in a web browser, points at the site's microphone permission", async () => {
+    blockedIn({ reasonCode: "desktop-app-required" });
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    expect(liveMedia().notice).toBe("The microphone is blocked. Allow it for this site in your browser, then try again.");
+  });
+
+  // No setting supplies a microphone that isn't there, in any window.
+  it.each([
+    ["another server's page", { reasonCode: "remote-server" }],
+    ["a web browser", { reasonCode: "desktop-app-required" }],
+    ["the Windows app", { reasonCode: "unsupported-platform" }],
+  ] as const)("with no microphone at all, in %s, asks for one", async (_where, dictation) => {
+    blockedIn(dictation, "NotFoundError");
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    expect(liveMedia()).toMatchObject({ phase: "failed", canRetry: false });
+    expect(liveMedia().notice).toBe("No microphone was found. Connect one, then try again.");
+  });
+
+  it.each([
+    ["the Mac app", { available: true, engine: "apple-speech", onDevice: true }],
+    ["the Windows app", { reasonCode: "unsupported-platform" }],
+  ] as const)("in %s's own window, points at the computer's settings", async (_where, dictation) => {
+    blockedIn(dictation);
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    expect(liveMedia().notice).toBe("The microphone is blocked. Allow microphone access for this app in your computer's privacy settings, then try again.");
   });
 });

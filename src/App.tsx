@@ -17,12 +17,15 @@ import { BotSettingsDialog } from "@/components/BotSettingsDialog";
 import { SIDEBAR_AND_PANEL_FIT, TWO_SIDE_PANELS_FIT, useMediaQuery } from "@/lib/use-media-query";
 import { RemoteAgentSettingsPanel } from "@/components/RemoteAgentSettingsPanel";
 import { NewBotDialog } from "@/components/NewBotDialog";
-import { PluginsPanel, preloadConnectedApps } from "@/components/PluginsPanel";
+import { preloadConnectedApps } from "@/components/PluginsPanel";
 import { TriggersPanel } from "@/components/TriggersPanel";
 import { ComputerPanel } from "@/components/ComputerPanel";
 import { RemoteDesktopPanel } from "@/components/remote-desktop-panel";
 import { InspectorPanel } from "@/components/InspectorPanel";
 import { ActivityPanel } from "@/components/ActivityPanel";
+import { FileViewerPanel } from "@/components/FileViewerPanel";
+import { FileViewerContext, type FileViewerTab } from "@/lib/file-viewer";
+import { TerminalPanel } from "@/components/TerminalPanel";
 import { SettingsModal } from "@/components/SettingsModal";
 import { WorkspaceBackupRecovery } from "@/components/WorkspaceBackupSettings";
 import { UpdateBanner } from "@/components/UpdateBanner";
@@ -39,7 +42,7 @@ import { KeyboardShortcutsModal } from "@/components/KeyboardShortcutsModal";
 import { LocalVmWorkspace } from "@/components/LocalVmWorkspace";
 import { TeamMapPage } from "@/components/TeamMapPage";
 import { setLocale } from "@/lib/i18n";
-import { shouldOpenKeyboardShortcuts } from "@/lib/keyboard-shortcuts";
+import { matchesShortcut, shortcutPairIndex, shouldOpenKeyboardShortcuts } from "@/lib/keyboard-shortcuts";
 import { effectiveLanguage, useLanguageChoice } from "@/lib/language-preference";
 import { botShowsUnread } from "@/lib/bot-unread";
 import { phonePairingSettingsAction, takePhonePairingRequest } from "@/lib/phone-pairing";
@@ -56,6 +59,10 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
     if (state.activeView !== "pages" && /^#\/pages(?:\/|$)/.test(window.location.hash)) window.location.hash = "";
   }, [state.activeView]);
   const { capabilities } = useDesktopCapabilities();
+  const openFileViewerTab = useCallback(
+    (tab: FileViewerTab) => dispatch({ type: "openFileViewerTab", tab }),
+    [dispatch],
+  );
   const unreadCount =
     state.bots.filter((bot) => !bot.hidden && botShowsUnread(bot)).length +
     state.groups.filter((group) => group.unread).length;
@@ -71,7 +78,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
         target.searchParams.set(panel === "copy" ? "copy-to" : "share-computer", computerId);
         window.history.replaceState(null, "", `${target.pathname}${target.search}${target.hash}`);
       }
-      dispatch({ type: "toggleAppSettings", open: true, section: "desktopWorkspaces" });
+      dispatch({ type: "toggleAppSettings", open: true, section: "servers" });
     };
     const url = new URL(window.location.href);
     const requestedSettings = url.searchParams.get("desktop-settings");
@@ -155,21 +162,24 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
         return;
       }
 
-      const mod = e.metaKey || e.ctrlKey;
-      if (!mod) return;
+      if (matchesShortcut(e, "open-settings")) {
+        e.preventDefault();
+        dispatch({ type: "toggleAppSettings", open: true });
+        return;
+      }
       const bots = state.bots.filter((b) => !b.hidden);
-      if (e.key === "n" && !e.shiftKey) {
+      if (matchesShortcut(e, "new-bot")) {
         e.preventDefault();
         dispatch({ type: "toggleNewBot", open: true });
-      } else if (/^[1-9]$/.test(e.key)) {
-        const target = bots[Number(e.key) - 1];
+      } else if (matchesShortcut(e, "jump-bot")) {
+        const target = bots[Number(/^Digit[1-9]$/.test(e.code) ? e.code.slice(5) : e.key) - 1];
         if (target) {
           e.preventDefault();
           dispatch({ type: "select", id: target.id });
         }
-      } else if (e.shiftKey && (e.key === "[" || e.key === "]")) {
+      } else if (matchesShortcut(e, "switch-bot")) {
         const idx = bots.findIndex((b) => b.id === state.selectedId);
-        const next = bots[(idx + (e.key === "]" ? 1 : -1) + bots.length) % bots.length];
+        const next = bots[(idx + (shortcutPairIndex(e, "switch-bot") === 1 ? 1 : -1) + bots.length) % bots.length];
         if (next) {
           e.preventDefault();
           dispatch({ type: "select", id: next.id });
@@ -179,6 +189,20 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [state.bots, state.selectedId, state.shortcutsOpen, dispatch]);
+
+  // The configured terminal shortcut toggles the dock. Capture phase on purpose: xterm's
+  // textarea must never see the chord, or a closing panel also feeds the
+  // shell a stray control byte.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!matchesShortcut(e, "terminal-panel")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      dispatch({ type: "toggleTerminal" });
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [dispatch]);
 
   useEffect(() => {
     window.ogb?.setUnreadCount?.(unreadCount);
@@ -195,12 +219,12 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   // Picking a conversation closes the drawer: on a phone the chat is what you
   // asked for, and leaving the list up would hide it. Watching activeView too
   // catches re-selecting the bot that is already current from another view —
-  // the reducer switches the view without changing selectedId. pluginsOpen
+  // the reducer switches the view without changing selectedId. appSettingsOpen
   // and settingsOpen cover the same idea from a different trigger: close the
   // drawer whenever an action opens something over the chat.
   useEffect(() => {
     setDrawerOpen(false);
-  }, [state.selectedId, bot?.threadId, group?.threadId, state.activeView, state.pluginsOpen, state.settingsOpen]);
+  }, [state.selectedId, bot?.threadId, group?.threadId, state.activeView, state.appSettingsOpen, state.settingsOpen]);
 
   useEffect(() => {
     if (state.activeView === "routines" && previousViewRef.current !== "routines") {
@@ -248,7 +272,6 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
     state.inspectorOpen ||
     state.activityOpen ||
     state.appSettingsOpen ||
-    state.pluginsOpen ||
     state.triggersOpen;
 
   // The macOS app menu's Preferences… item lives in the desktop shell, so the
@@ -290,6 +313,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   }, [dispatch]);
 
   return (
+    <FileViewerContext.Provider value={remoteClient ? null : openFileViewerTab}>
     <div className="flex h-full flex-col">
       {/* fixed-position popup, bottom-left — outside the layout flow */}
       <UpdateBanner />
@@ -383,11 +407,11 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
       )}
       {!remoteClient && state.inspectorOpen && bot && <InspectorPanel key={bot.threadId} bot={bot} />}
       {!remoteClient && state.activityOpen && bot && <ActivityPanel key={`activity:${bot.id}`} bot={bot} />}
+      {!remoteClient && state.fileViewerOpen && <FileViewerPanel />}
       {state.appSettingsOpen && <SettingsModal />}
       {/* On the person's Cloud: its setup checklist, and after it Move to
           Cloud's one-time card on an empty Cloud (desktop app only). */}
       <CloudSetup viewer={viewer} />
-      {state.pluginsOpen && <PluginsPanel />}
       {state.triggersOpen && <TriggersPanel />}
       {state.newBotOpen && <NewBotDialog />}
       {state.shortcutsOpen && (
@@ -400,6 +424,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
           palette on top when one of them is open underneath */}
       <CommandPalette onOpenChange={setPaletteOpen} />
       </div>
+      {state.terminalOpen && <TerminalPanel />}
       {/* Renderer-drawn caption buttons for the overlay-less frameless
           Windows window. Deliberately the LAST child of the shell: Blink
           resolves -webkit-app-region in DOM-walk order, so these no-drag
@@ -411,6 +436,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
         visible={capabilities.windowChrome === "win-caption" && Boolean(window.ogb?.windowControls)}
       />
     </div>
+    </FileViewerContext.Provider>
   );
 }
 

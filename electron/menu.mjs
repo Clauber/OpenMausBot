@@ -9,6 +9,7 @@ import { Menu, app } from "electron";
  * @param {object} input
  * @param {{ id: string, name: string, origin: string }[]} input.environments
  * @param {string} input.activeId  "local" or an environment id
+ * @param {boolean} [input.localHidden]  This computer was removed from the lists
  * @param {(id: string) => void} input.onSwitch
  * @param {() => void} input.onAddFromClipboard
  * @param {() => void} input.onConnect
@@ -16,13 +17,13 @@ import { Menu, app } from "electron";
  * @param {() => void} input.onOpenSettings
  * @param {() => void} input.onOrganizationSignIn
  */
-export function buildApplicationMenu({ environments, activeId, onSwitch, onAddFromClipboard, onConnect, onForget, onOpenSettings, onOrganizationSignIn }) {
+export function buildApplicationMenu({ environments, activeId, localHidden = false, onSwitch, onAddFromClipboard, onConnect, onForget, onOpenSettings, onOrganizationSignIn }) {
   const isMac = process.platform === "darwin";
   const active = environments.find((e) => e.id === activeId) ?? null;
   const server = {
     label: "Server",
     submenu: [
-      { label: "Local (this computer)", type: "radio", checked: !active, click: () => onSwitch("local") },
+      ...(!localHidden || !active ? [{ label: "Local (this computer)", type: "radio", checked: !active, click: () => onSwitch("local") }] : []),
       ...environments.map((e) => ({
         label: `${e.name} — ${new URL(e.origin).host}`,
         type: "radio",

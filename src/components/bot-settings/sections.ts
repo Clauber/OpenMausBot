@@ -2,8 +2,9 @@
 // in the fixed order the rail renders them. Search filters against label
 // plus keywords, the same convention as the app SettingsModal's SECTIONS.
 // "slack" is listed here but shown only when the server offers a link to the
-// organisation's Admin (BotSettingsDialog filters it out otherwise), and
-// "visibility" only to an admin in a browser (never in the desktop app).
+// organisation's Admin (BotSettingsDialog filters it out otherwise),
+// "messaging" only to the owner or an admin (bindings hold platform tokens),
+// and "visibility" only to an admin in a browser (never in the desktop app).
 import {
   BookOpen,
   Brain,
@@ -14,6 +15,7 @@ import {
   History,
   LayoutDashboard,
   type LucideIcon,
+  MessageCircle,
   Mic,
   Network,
   ShieldCheck,
@@ -37,12 +39,13 @@ export const BOT_SECTIONS: Array<{
   { id: "overview", label: "Overview", icon: LayoutDashboard, keywords: ["summary", "status", "what it does", "won't", "prompt", "what the model sees"] },
   { id: "identity", label: "Identity", icon: User, keywords: ["name", "title", "avatar", "blurb", "instructions"] },
   { id: "slack", label: "Slack", icon: Slack, keywords: ["slack", "slack app", "admin", "message", "direct messages", "mentions"] },
+  { id: "messaging", label: "Messaging", icon: MessageCircle, keywords: ["messaging", "telegram", "slack", "discord", "chat apps", "pairing", "bind", "dm", "direct message", "bots"] },
   { id: "soul", label: "Soul", icon: Sparkles, keywords: ["standing instructions", "instructions", "persona", "rules", "soul.md"] },
   { id: "skills", label: "Skills", icon: BookOpen, keywords: ["skills", "learned", "procedures", "teach"] },
   { id: "memory", label: "Memory", icon: Brain, keywords: ["memory", "notes", "remember", "topics"] },
   { id: "routines", label: "Routines", icon: CalendarClock, keywords: ["schedule", "routines", "cron", "tasks"] },
   { id: "access", label: "Access", icon: Network, keywords: ["works on", "computer", "vm", "cloud", "vps", "folder", "workspace", "browser", "connected apps", "composio", "webhooks", "always allow", "grants", "tool selection", "tools", "mcp", "allow", "exclude"] },
-  { id: "model", label: "Model", icon: Cpu, keywords: ["engine", "model", "provider", "cli", "effort"] },
+  { id: "model", label: "Model", icon: Cpu, keywords: ["engine", "model", "provider", "cli", "effort", "parallel", "threads", "concurrent", "limit"] },
   { id: "permissions", label: "Permissions", icon: ShieldCheck, keywords: ["auto mode", "approve", "auto approve", "review", "routine approvals", "peers", "contact", "coordination", "chief of staff", "section"] },
   { id: "voice", label: "Voice & alerts", icon: Mic, keywords: ["voice", "alerts", "notifications", "speak"] },
   { id: "visibility", label: "Who can see it", labelKey: "botSettings.visibility.title", icon: Eye, keywords: ["visibility", "who can see", "private", "people", "admins", "members", "access", "hide"] },

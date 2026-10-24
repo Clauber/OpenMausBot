@@ -9,6 +9,13 @@
 // host sensors and devices exposed if an untrusted payload ever executes.
 // The allow-list also applies only to the verified renderer origin; any
 // opaque or cross-origin request is refused outright.
+//
+// One exception: the person's own Cloud, open in the main window, may use the
+// microphone (for a Live call) and nothing else. A Cloud is personal, so its
+// page hearing the microphone is the person's own page hearing it. The same
+// goes for a server the person added and opened here: choosing it is the
+// same as opening it in a browser and approving the prompt. Any other
+// server's page stays refused.
 
 const ALLOWED_APP_PERMISSIONS = new Set([
   "notifications",
@@ -57,6 +64,87 @@ export function appPermissionAllowed(permission, requestingUrlOrOrigin, renderer
   }
 
   return ALLOWED_APP_PERMISSIONS.has(permission);
+}
+
+/**
+ * Whether the person's own Cloud may use a capability: only the microphone,
+ * only in the main frame, only at the exact origin the verified Cloud sign-in
+ * reports. Never the camera, screen capture, notifications or the clipboard.
+ *
+ * @param {string} permission The Electron/Chromium permission name
+ * @param {string} requestingUrlOrOrigin The URL or origin requesting the permission
+ * @param {string | null} homeOrigin The verified Cloud's origin, or null when there is none
+ * @param {{ isMainFrame?: boolean, mediaTypes?: string[], mediaType?: string }} [details] Request details
+ * @returns {boolean} True only for the Cloud's own microphone request
+ */
+function cloudHomeMicrophoneAllowed(permission, requestingUrlOrOrigin, homeOrigin, details) {
+  const requesting = webOrigin(requestingUrlOrOrigin);
+  const home = webOrigin(homeOrigin);
+  if (permission !== "media" || !requesting || !home || requesting !== home || details?.isMainFrame !== true) return false;
+  if (details.mediaType !== undefined && details.mediaType !== "audio") return false;
+  // A request names its media; empty is getDisplayMedia, which a Cloud never gets.
+  if (details.mediaTypes !== undefined) {
+    return Array.isArray(details.mediaTypes) && details.mediaTypes.length > 0 && details.mediaTypes.every((type) => type === "audio");
+  }
+  return details.mediaType === "audio";
+}
+
+/**
+ * The session's permission handlers. This computer's own page gets
+ * appPermissionAllowed; the Cloud gets the microphone, and only while it is
+ * the page open in the main window.
+ *
+ * @param {{ rendererOrigin: () => string, mainContents: () => unknown, cloudHomeOrigin: () => string | null, serverOrigin?: () => string | null }} context
+ *   `mainContents`: the main window's webContents, or null; `cloudHomeOrigin`:
+ *   the Cloud the sign-in verified, asked on every request so signing out
+ *   takes the microphone away at once; `serverOrigin`: the added server open
+ *   in the main window, or null, asked on every request likewise;
+ *   `systemMicrophone`: this Mac's own microphone permission. A microphone
+ *   request the policy allows asks it first — the system prompt when
+ *   undecided, `denied()` (which points to System Settings, as macOS never
+ *   prompts twice) when refused. Any status but granted, not-determined,
+ *   denied or restricted (another platform) leaves the decision to the page
+ *   policy alone.
+ */
+export function appPermissionHandlers({ rendererOrigin, mainContents, cloudHomeOrigin, serverOrigin = () => null, systemMicrophone = null }) {
+  const allowed = (contents, permission, requesting, details) => {
+    if (appPermissionAllowed(permission, requesting, rendererOrigin(), details)) return true;
+    const main = mainContents();
+    if (!contents || contents !== main) return false;
+    return cloudHomeMicrophoneAllowed(permission, requesting, cloudHomeOrigin(), details) ||
+      cloudHomeMicrophoneAllowed(permission, requesting, serverOrigin(), details);
+  };
+  return {
+    request: (contents, permission, callback, details) => {
+      const granted = allowed(contents, permission, details?.requestingUrl ?? contents?.getURL?.() ?? "", details);
+      if (!granted || !systemMicrophone || !asksMicrophone(details)) return callback(granted);
+      void macMicrophoneAllowed(systemMicrophone).then(callback, () => callback(false));
+    },
+    check: (contents, permission, requestingOrigin, details) =>
+      allowed(contents, permission, requestingOrigin || contents?.getURL?.() || "", details),
+  };
+}
+
+/** A media request that names the microphone. Empty media types are the
+ * guarded screen capture, which macOS gates separately. */
+function asksMicrophone(details) {
+  if (details?.mediaType !== undefined) return details.mediaType === "audio";
+  return Array.isArray(details?.mediaTypes) && details.mediaTypes.includes("audio");
+}
+
+async function macMicrophoneAllowed(systemMicrophone) {
+  const status = systemMicrophone.status();
+  if (status === "granted") return true;
+  if (status === "not-determined") {
+    if (await systemMicrophone.ask()) return true;
+    systemMicrophone.denied();
+    return false;
+  }
+  if (status === "denied" || status === "restricted") {
+    systemMicrophone.denied();
+    return false;
+  }
+  return true;
 }
 
 // Both explicit IPC links and window.open must use the same web-only policy.

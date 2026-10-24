@@ -52,9 +52,27 @@ const SECRET_FLAG = /(--(?:token|password|passwd|api-key|apikey|secret|access-ke
 /** `scheme://user:secret@host` — the password in a URL's userinfo. */
 const URL_USERINFO = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@'"]+:)([^\s/@'"«»]+)(@)/gi;
 
-export function redactSecretsInText(text: string): string {
-  if (!text || text.length < 8) return text;
+export const HELD_SECRET_MASK = "••••••";
+
+const heldSecretScrubbers = new Set<(text: string) => string>();
+
+/** Register a scrubber for held secret values; returns its removal. */
+export function addHeldSecretScrubber(scrub: (text: string) => string): () => void {
+  heldSecretScrubbers.add(scrub);
+  return () => { heldSecretScrubbers.delete(scrub); };
+}
+
+export function scrubHeldSecrets(text: string): string {
+  if (!text || heldSecretScrubbers.size === 0) return text;
   let out = text;
+  for (const scrub of heldSecretScrubbers) out = scrub(out);
+  return out;
+}
+
+export function redactSecretsInText(text: string): string {
+  const held = scrubHeldSecrets(text);
+  if (!held || held.length < 8) return held;
+  let out = held;
   out = out.replace(PEM_BLOCK, (_m, open: string, body: string, close: string) => `${open}\n${mask(body.trim())}\n${close}`);
   for (const re of KEY_PREFIXES) out = out.replace(re, (m) => mask(m));
   out = out.replace(BEARER, (_m, lead: string, tok: string) => `${lead}${mask(tok)}`);

@@ -1,0 +1,10 @@
+<!doctype html>
+<html>
+  <body>
+    <script>
+      for (let i = 0; i < 100; i++) {
+        fetch("data:application/json," + encodeURIComponent('{"i":' + i + "}"));
+      }
+    </script>
+  </body>
+</html>

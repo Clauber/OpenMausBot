@@ -1,4 +1,5 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -6,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   activeScriptPlan, escalationPrompt, loadExecutionPlan, parseReview, reviewPrompt, runRoutineScript, scriptReport, sha256,
 } from "./routine-execution.ts";
+import { WINDOWS_JOB_BOOTSTRAP } from "./routine-windows-job.ts";
 import { RoutineManager, type RoutineManagerOptions } from "./routines.ts";
 
 const dirs: string[] = [];
@@ -60,14 +62,50 @@ describe("which plan a run may use", () => {
     expect(activeScriptPlan({ ...approved(), script: "import os; os.system('x')\n" }, PROMPT)).toBeNull();
   });
 
-  it("drops a persisted plan that is malformed, and rehashes the script it keeps", () => {
+  it("drops malformed plans and never renews approval for altered script bytes", () => {
     expect(loadExecutionPlan({ mode: "script", status: "approved" })).toBeUndefined();
-    const loaded = loadExecutionPlan({ ...approved(), scriptHash: "0".repeat(64) })!;
-    expect(loaded.scriptHash).toBe(sha256(loaded.script!));
+    expect(loadExecutionPlan(approved())?.status).toBe("approved");
+    const changed = loadExecutionPlan({ ...approved(), script: "print(2)" })!;
+    expect(activeScriptPlan(changed, PROMPT)).toBeNull();
+    expect(changed.status).toBe("proposed");
+    expect(changed.scriptHash).toBe(sha256("print(2)"));
   });
 });
 
 describe("running a routine script", () => {
+  it("stops descendants when their parent finishes successfully", async () => {
+    const stateDir = tempDir();
+    const marker = join(stateDir, "orphan-finished");
+    const descendant = `import time,pathlib;time.sleep(1);pathlib.Path(${JSON.stringify(marker)}).write_text("escaped")`;
+    const script = `import subprocess,sys\nsubprocess.Popen([sys.executable,"-c",${JSON.stringify(descendant)}],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\nprint("done")`;
+    expect((await runRoutineScript(script, { stateDir })).ok).toBe(true);
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    expect(existsSync(marker)).toBe(false);
+  });
+  it("stops descendants of a script killed for running too long", async () => {
+    const stateDir = tempDir();
+    const marker = join(stateDir, "orphan-after-timeout");
+    const descendant = `import time,pathlib;time.sleep(3);pathlib.Path(${JSON.stringify(marker)}).write_text("escaped")`;
+    const script = `import subprocess,sys,time\nsubprocess.Popen([sys.executable,"-c",${JSON.stringify(descendant)}],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\nprint("descendant spawned", flush=True)\ntime.sleep(30)`;
+    const result = await runRoutineScript(script, { stateDir, timeoutMs: 2_000 });
+    expect(result).toMatchObject({ ok: false, timedOut: true });
+    expect(result.stdout).toContain("descendant spawned");
+    await new Promise(resolve => setTimeout(resolve, 3_200));
+    expect(existsSync(marker)).toBe(false);
+  }, 10_000);
+
+  it("runs the routine as __main__ with its own argv and import path", async () => {
+    const result = await runRoutineScript("import json,os,sys\nprint(json.dumps([os.path.basename(sys.argv[0]), __name__, len(sys.argv), os.path.dirname(os.path.abspath(sys.argv[0])) == os.path.abspath(sys.path[0])]))", { stateDir: tempDir() });
+    expect(result.ok).toBe(true);
+    expect(JSON.parse(result.stdout)).toEqual(["routine.py", "__main__", 1, true]);
+  });
+
+  it("ships a Windows containment bootstrap that is valid Python", () => {
+    const parsed = spawnSync("python3", ["-c", "import ast,sys; ast.parse(sys.stdin.read())"], { input: WINDOWS_JOB_BOOTSTRAP, encoding: "utf8" });
+    expect(parsed.stderr).toBe("");
+    expect(parsed.status).toBe(0);
+  });
+
   it("returns its output, keeps its folder between runs and passes no workspace credentials", async () => {
     const stateDir = join(tempDir(), "state");
     process.env.OMB_TEST_SECRET_KEY = "do-not-leak";

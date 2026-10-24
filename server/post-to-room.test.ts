@@ -54,6 +54,17 @@ const api = async (method: string, path: string, body?: unknown): Promise<ApiRes
   return { status: res.status, body: (parsed ?? {}) as Record<string, unknown> };
 };
 
+/** A new turn for this bot on this thread, and the agents bearer it holds. */
+const startTurn = async (botId: string, threadId: string): Promise<string> => {
+  const minted = await fetch(`${BASE}/api/testing/internal-capability`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-openmausbot-test-capability": TEST_CAPABILITY_KEY },
+    body: JSON.stringify({ botId, threadId, kind: "agents", skillAuthoring: true }),
+  });
+  return (await minted.json() as { token: string }).token;
+};
+
+/** One internal call, made in a new turn of the bot and thread it names. */
 const internal = async (method: string, path: string, body?: unknown): Promise<ApiResult> => {
   const url = new URL(path, BASE);
   const claims = body && typeof body === "object" && !Array.isArray(body)
@@ -61,12 +72,11 @@ const internal = async (method: string, path: string, body?: unknown): Promise<A
     : {};
   const botId = String(claims.fromBotId ?? claims.botId ?? url.searchParams.get("fromBotId") ?? url.searchParams.get("botId") ?? "");
   const threadId = String(claims.fromThreadId ?? claims.threadId ?? url.searchParams.get("fromThreadId") ?? "");
-  const minted = await fetch(`${BASE}/api/testing/internal-capability`, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-openmausbot-test-capability": TEST_CAPABILITY_KEY },
-    body: JSON.stringify({ botId, threadId, kind: "agents", skillAuthoring: true }),
-  });
-  const { token } = await minted.json() as { token: string };
+  return asTurn(await startTurn(botId, threadId), method, path, body);
+};
+
+/** One internal call, made with a turn's bearer. */
+const asTurn = async (token: string, method: string, path: string, body?: unknown): Promise<ApiResult> => {
   const res = await fetch(`${BASE}${path}`, {
     method,
     headers: {
@@ -426,15 +436,8 @@ describe("list_rooms discovery", () => {
     const ids = rooms.map((room) => str(field(room as Record<string, unknown>, "id")));
     expect(ids).toContain(mine.id);
     expect(ids, "a room the caller is not in was listed").not.toContain(theirs.id);
-    expect(ids, "a cross-section room was listed").not.toContain(mixed.id);
-    // the cross-section room is still NAMED, with the refusal a post would
-    // meet and no id to retry against — the person can see the bot in it,
-    // so "no room" would be a lie; a room the caller is not in stays unsaid
-    const unpostable = Array.isArray(listed.body.unpostable) ? listed.body.unpostable : [];
-    expect(unpostable).toHaveLength(1);
-    expect(field(unpostable[0] as Record<string, unknown>, "name")).toBe("Mixed room");
-    expect(str(field(unpostable[0] as Record<string, unknown>, "reason"))).toContain("@Stranger, who is outside your section");
-    expect(field(unpostable[0] as Record<string, unknown>, "id")).toBeUndefined();
+    expect(ids).toContain(mixed.id);
+    expect(listed.body.unpostable ?? []).toEqual([]);
 
     const listedRoom = rooms.find((room) => str(field(room as Record<string, unknown>, "id")) === mine.id);
     expect(field(listedRoom as Record<string, unknown>, "members")).toEqual(["Scout", "Scout Mate"]);
@@ -559,15 +562,14 @@ describe("post_to_room", () => {
     expect(await messagesOf(closed.threadId)).toHaveLength(0);
   }, 40_000);
 
-  it("refuses a room holding anyone outside the sender's section", async () => {
+  it("posts to a room shared with another team", async () => {
     const inside = await makeBot("Section Inside", "Section A");
     const outside = await makeBot("Section Outside", "Section B");
     const mixed = await makeRoom("Cross section", [inside.id, outside.id], "Section A");
 
-    const refused = await post(inside.id, inside.threadId, mixed.id, "hello other section");
-    expect(refused.status).toBe(403);
-    expect(str(refused.body.error)).toContain("outside your section");
-    expect(await messagesOf(mixed.threadId)).toHaveLength(0);
+    const posted = await post(inside.id, inside.threadId, mixed.id, "hello other section");
+    expect(posted.status, JSON.stringify(posted.body)).toBe(201);
+    expect((await messagesOf(mixed.threadId)).some((m) => m.text === "hello other section" && m.from?.botId === inside.id)).toBe(true);
   }, 40_000);
 
   it.each(["Coordinators", ""])("allows a section bot to post to and list a room holding its supervising coordinator in section %j", async (section) => {
@@ -586,34 +588,20 @@ describe("post_to_room", () => {
     expect(roomMessages.some((m) => m.text === "ready for review" && m.from?.botId === member.id)).toBe(true);
   }, 40_000);
 
-  it("refuses a section bot if the room includes a coordinator who does not manage its section", async () => {
+  it("posts to a room with an unmanaging coordinator and an outside bot", async () => {
     await makeBot("Finance Bot", "Finance");
     const member = await makeBot("Build Worker", "Build");
     const coordinator = await makeCoordinator("Finance Chief", "Coordinators", ["Finance"]);
-    const room = await makeRoom("Unsupervised Room", [member.id, coordinator.id], "Build");
+    const stranger = await makeBot("Finance Stranger", "Finance");
+    const room = await makeRoom("Unsupervised Room", [member.id, coordinator.id, stranger.id], "Build");
 
     const listed = await internal("GET", `/api/internal/rooms?fromBotId=${member.id}&fromThreadId=${member.threadId}`);
     expect(listed.status).toBe(200);
     const rooms = Array.isArray(listed.body.rooms) ? listed.body.rooms : [];
-    expect(rooms.some((r) => field(r as Record<string, unknown>, "id") === room.id)).toBe(false);
+    expect(rooms.some((r) => field(r as Record<string, unknown>, "id") === room.id)).toBe(true);
 
-    const refused = await post(member.id, member.threadId, room.id, "hello");
-    expect(refused.status).toBe(403);
-    expect(str(refused.body.error)).toContain("outside your section");
-    expect(await messagesOf(room.threadId)).toHaveLength(0);
-  }, 40_000);
-
-  it("still refuses a room holding both a supervising coordinator and an outside bot", async () => {
-    const member = await makeBot("Team Member", "Build");
-    const coordinator = await makeCoordinator("Team Chief", "Coordinators", ["Build"]);
-    const stranger = await makeBot("Finance Stranger", "Finance");
-    const mixed = await makeRoom("Mixed Room", [member.id, coordinator.id, stranger.id], "Build");
-
-    const refused = await post(member.id, member.threadId, mixed.id, "hello everyone");
-    expect(refused.status).toBe(403);
-    expect(str(refused.body.error)).toContain("outside your section");
-    expect(str(refused.body.error)).toContain("@Finance Stranger");
-    expect(await messagesOf(mixed.threadId)).toHaveLength(0);
+    const posted = await post(member.id, member.threadId, room.id, "hello everyone");
+    expect(posted.status, JSON.stringify(posted.body)).toBe(201);
   }, 40_000);
 
   it("refuses a one-to-one bot channel and the room the sender is already speaking in", async () => {
@@ -887,4 +875,50 @@ describe("provenance on a peer-authored room message", () => {
 
     await api("POST", `/api/groups/${room.id}/interrupt`);
   }, 60_000);
+});
+
+// A warm engine keeps its proxies, and their bearer, from one turn to the
+// next; what a turn may still do is counted on the harness, per turn.
+describe("limits counted per turn on a bearer that outlives the turn", () => {
+  it("stops a turn at its third room post, and the next turn may post again", async () => {
+    const poster = await makeBot("Turn Poster", "Turn posts");
+    const mate = await makeBot("Turn Mate", "Turn posts");
+    const room = await makeRoom("Turn room", [poster.id, mate.id], "Turn posts");
+    const post = (token: string, message: string) => asTurn(token, "POST", "/api/internal/post-to-room", {
+      fromBotId: poster.id, fromThreadId: poster.threadId, groupId: room.id, message,
+    });
+    const token = await startTurn(poster.id, poster.threadId);
+    for (const message of ["one", "two", "three"]) {
+      const posted = await post(token, `post ${message}`);
+      expect(posted.status, JSON.stringify(posted.body)).toBe(201);
+      // the person answers each post, so the room's own ceiling never fires
+      expect(await personSays(room.id, `noted ${message}`)).toBe(202);
+    }
+    const fourth = await post(token, "post four");
+    expect(fourth.status).toBe(429);
+    expect(str(fourth.body.error)).toContain("already posted 3 times this turn");
+
+    expect(await startTurn(poster.id, poster.threadId)).toBe(token);
+    const next = await post(token, "post four");
+    expect(next.status, JSON.stringify(next.body)).toBe(201);
+  }, 40_000);
+
+  it("refuses to check a delegation in the turn that made it, and answers in the next", async () => {
+    const from = await makeBot("Turn Delegator", "Turn delegations");
+    const to = await makeBot("Turn Delegate", "Turn delegations");
+    const token = await startTurn(from.id, from.threadId);
+    const delegated = await asTurn(token, "POST", "/api/internal/delegate-bot", {
+      fromBotId: from.id, fromThreadId: from.threadId, toBotId: to.id, message: "Write the summary.", depth: 0,
+    });
+    expect(delegated.status, JSON.stringify(delegated.body)).toBe(200);
+    const taskId = str(delegated.body.taskId);
+    expect(taskId).not.toBe("");
+    const early = await asTurn(token, "GET", `/api/internal/delegations/${taskId}`);
+    expect(early.status).toBe(409);
+    expect(str(early.body.error)).toContain(`Task ${taskId} was delegated during this turn`);
+
+    expect(await startTurn(from.id, from.threadId)).toBe(token);
+    const later = await asTurn(token, "GET", `/api/internal/delegations/${taskId}`);
+    expect(later.status, JSON.stringify(later.body)).toBe(200);
+  }, 40_000);
 });

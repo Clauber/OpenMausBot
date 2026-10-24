@@ -133,4 +133,52 @@ describe("Telegram adapter through an isolated runtime", () => {
     expect(fake.webhooks).toEqual([]);
     expect((await hook(binding.id, secret, dm(555, "gone"))).status).toBe(401);
   }, 90_000);
+
+  it("delivers updates by long-polling by default, and can switch to webhook and back", async () => {
+    const control = async (args: string[]) => (await runControlOmb([...args, "--url", fixture.info.url])) as any;
+    const { bot } = await control(["new-bot", "--name", "Poll fixture"]);
+    const status = async () => (await api("GET", `/api/messaging/telegram/${binding.id}/poll`)).body;
+
+    // create without publicBaseUrl: poll transport, no webhook registration
+    expect((await api("POST", "/api/messaging/telegram", { botId: bot.id, token: TOKEN })).status).toBe(201);
+    const binding = (await api("GET", "/api/messaging/telegram")).body.bindings.at(-1);
+    expect(binding.transport).toBe("poll");
+    expect(fake.webhooks).toEqual([]);
+    for (let i = 0; i < 100 && (await status()).poller?.status !== "polling"; i += 1) await new Promise((r) => setTimeout(r, 50));
+    expect((await status()).poller.status).toBe("polling");
+    expect(fake.getUpdatesCalls.length).toBeGreaterThan(0);
+
+    // pairing and relay run entirely through polling
+    const pairing = await api("POST", `/api/messaging/telegram/${binding.id}/pairing`, {});
+    expect(pairing.status).toBe(201);
+    const from = (messageId: number, text: string) => ({
+      message: { message_id: messageId, text, chat: { id: 321, type: "private", first_name: "Grace" }, from: { id: 321, first_name: "Grace" } },
+    });
+    fake.pushUpdate(from(1, pairing.body.code));
+    expect((await fake.waitForOutbox("321"))[0]!.text).toMatch(/^Paired with /);
+    fake.pushUpdate(from(2, "What is 2+2?"));
+    expect((await fake.waitForOutbox("321", 2))[1]!.text).toBe("Four.");
+    const bound = (await api("GET", `/api/messaging/telegram/${binding.id}`)).body.binding;
+    const thread = (await api("GET", `/api/threads/${bound.chats[0].threadId}/messages?limit=50`)).body.messages as any[];
+    expect(thread.find((m) => m.role === "user" && m.text === "What is 2+2?")).toMatchObject({ relayed: true });
+    // the cursor is persisted, so a server restart does not replay these turns
+    expect(bound.pollOffset).toBeGreaterThanOrEqual(2);
+
+    // webhook delivery replaces the poller; deleting it restarts polling
+    expect((await api("POST", `/api/messaging/telegram/${binding.id}/webhook`, { publicBaseUrl: PUBLIC_BASE })).status).toBe(200);
+    expect((await api("GET", `/api/messaging/telegram/${binding.id}`)).body.binding.transport).toBe("webhook");
+    expect((await status()).poller).toBeNull();
+    expect((await api("DELETE", `/api/messaging/telegram/${binding.id}/webhook`)).status).toBe(200);
+    for (let i = 0; i < 100 && (await status()).poller?.status !== "polling"; i += 1) await new Promise((r) => setTimeout(r, 50));
+
+    // a conflicting webhook registration elsewhere surfaces as a poller error
+    fake.refuseGetUpdates();
+    // (an in-flight long poll may take up to its full hold to round-trip first)
+    for (let i = 0; i < 300 && (await status()).poller?.status !== "error"; i += 1) await new Promise((r) => setTimeout(r, 50));
+    expect((await status()).poller.status).toBe("error");
+    expect(String((await status()).poller.error)).toMatch(/409/);
+    fake.allowGetUpdates();
+
+    expect((await api("DELETE", `/api/messaging/telegram/${binding.id}`)).status).toBe(200);
+  }, 120_000);
 });

@@ -324,6 +324,7 @@ describe("Group Local VM ownership on the real isolated server", () => {
     }
   }, 45_000);
 
+  // Two server restarts and three slow engine turns need the multi-stage budget.
   it("recovers only previously provisioned Auto VMs after idle removal and server restart, within the instance cap", async () => {
     vmState({ containers: [] });
     await api("PATCH", "/api/config", { localVm: { mode: "per-bot", maxInstances: 1 } });
@@ -380,7 +381,7 @@ describe("Group Local VM ownership on the real isolated server", () => {
       await waitForExit(child, { signal: "SIGTERM" });
       await startServer();
     }
-  });
+  }, 45_000);
 
   it("executes and attaches only for the current VM owner, respecting takeover and expiry", async () => {
     const { bots, group } = await room();

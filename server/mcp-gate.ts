@@ -24,6 +24,7 @@ import { allowsTool, parseToolScope, type ToolScope } from "../shared/tool-scope
 import { resolveCliSpawn } from "./env-path.ts";
 import { DEFAULT_RESULT_BUDGET, trimResultText, trimStructured } from "./mcp-trim.ts";
 import { killCliTree } from "./procs.ts";
+import { catalogPage, DISCOVERY_TOOLS, searchTools } from "./mcp-tool-discovery.ts";
 
 type Json = Record<string, unknown>;
 
@@ -36,7 +37,8 @@ function gateEnvironment(): NodeJS.ProcessEnv {
     if (process.argv.length !== 4 || process.argv[2] !== "--config-env" || !key || !/^OMB_GATE_CONFIG_[a-f0-9]{64}$/.test(key)) throw new Error();
     const value = JSON.parse(process.env[key] ?? "");
     if (!value || typeof value !== "object" || Array.isArray(value)
-      || !["OMB_GATE_NAME", "OMB_GATE_UPSTREAM", "OMB_GATE_TOOL_SCOPE"].every(name => typeof value[name] === "string")
+      || !["OMB_GATE_NAME", "OMB_GATE_UPSTREAM"].every(name => typeof value[name] === "string")
+      || (typeof value.OMB_GATE_TOOL_SCOPE !== "string" && value.OMB_GATE_DISCOVERY !== "1")
       || !Object.entries(value).every(([name, setting]) => GATE_ENV_KEYS.includes(name) && typeof setting === "string")) throw new Error();
     return value;
   } catch {
@@ -44,7 +46,7 @@ function gateEnvironment(): NodeJS.ProcessEnv {
   }
 }
 /** The gate's own settings never reach the upstream server's environment. */
-const GATE_ENV_KEYS = ["OMB_GATE_NAME", "OMB_GATE_SPILL_DIR", "OMB_GATE_BUDGET", "OMB_GATE_UPSTREAM", "OMB_GATE_SPILL_HINT", "OMB_GATE_TOOL_SCOPE"];
+const GATE_ENV_KEYS = ["OMB_GATE_NAME", "OMB_GATE_SPILL_DIR", "OMB_GATE_BUDGET", "OMB_GATE_UPSTREAM", "OMB_GATE_SPILL_HINT", "OMB_GATE_TOOL_SCOPE", "OMB_GATE_DISCOVERY"];
 const gateEnv = gateEnvironment();
 const NAME = gateEnv.OMB_GATE_NAME || "mcp";
 const SPILL_DIR = gateEnv.OMB_GATE_SPILL_DIR || "";
@@ -186,6 +188,9 @@ function trimCallResult(result: Json, tool: string): boolean {
 
 // Validate before starting a process: corrupt policy must never become pass-through.
 const scope = toolScope();
+if (gateEnv.OMB_GATE_DISCOVERY !== undefined && gateEnv.OMB_GATE_DISCOVERY !== "1") fail("invalid tool discovery setting");
+const discovery = gateEnv.OMB_GATE_DISCOVERY === "1";
+const restricted = scope !== undefined || discovery;
 const spec = upstreamSpec();
 if (SPILL_DIR) sweepSpill(SPILL_DIR);
 
@@ -232,7 +237,9 @@ child.on("error", (error) => {
 });
 child.stderr.pipe(process.stderr);
 
-type Pending = { kind: "call"; tool: string } | { kind: "list" | "other" };
+type Pending = { kind: "call"; tool: string } | { kind: "list" | "other" }
+  | { kind: "catalog"; tools: ReturnType<typeof catalogPage>["tools"]; cursors: Set<string>; params: Json };
+let catalog: ReturnType<typeof catalogPage>["tools"] | undefined;
 /** JSON-RPC string and numeric IDs are separate, even when their text is equal. */
 const pending = new Map<string, Pending>();
 
@@ -244,12 +251,37 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       const parsed: unknown = JSON.parse(line);
       if (isRecord(parsed)) message = parsed;
     } catch {
-      if (scope) return rejectRequest(null, -32700, "Invalid JSON-RPC frame");
+      if (restricted) return rejectRequest(null, -32700, "Invalid JSON-RPC frame");
     }
-    if (scope && (!message || message.jsonrpc !== "2.0")) return rejectRequest(message?.id, -32600, "Invalid JSON-RPC frame");
+    if (restricted && (!message || message.jsonrpc !== "2.0")) return rejectRequest(message?.id, -32600, "Invalid JSON-RPC frame");
   }
   const id = requestKey(message?.id);
-  const params = isRecord(message?.params) ? message.params : undefined;
+  let params = isRecord(message?.params) ? message.params : undefined;
+  if (id && typeof message?.method === "string" && restricted && pending.has(id)) fail("duplicate request ID on a restricted connection");
+  if (discovery && message?.method === "tools/call") {
+    if (!id || typeof params?.name !== "string" || (params.arguments !== undefined && !isRecord(params.arguments))) {
+      return rejectRequest(message.id, -32602, "Invalid tool call");
+    }
+    if (params.name === "search_tools") {
+      if (!catalog) return rejectRequest(message.id, -32603, "Load tools/list before searching tools");
+      try {
+        const result = searchTools(catalog, params.arguments);
+        process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: JSON.stringify(result) }] } })}\n`);
+      } catch (error) {
+        rejectRequest(message.id, -32602, (error as Error).message);
+      }
+      return;
+    }
+    if (params.name === "call_tool") {
+      const args = params.arguments;
+      if (!isRecord(args) || typeof args.name !== "string" || !args.name.trim() || !isRecord(args.arguments)) {
+        return rejectRequest(message.id, -32602, "Expected a tool name and arguments object");
+      }
+      params = { ...params, name: args.name, arguments: args.arguments };
+      message.params = params;
+      line = JSON.stringify(message);
+    }
+  }
   if (scope && message?.method === "tools/call") {
     if (!id || typeof params?.name !== "string"
       || (params.arguments !== undefined && !isRecord(params.arguments))) {
@@ -259,14 +291,20 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       return rejectRequest(message.id, -32602, "Tool selection excludes this tool. Check the bot's Access settings.");
     }
   }
-  if (scope && message?.method === "tools/list" && !id) {
+  if (restricted && message?.method === "tools/list" && !id) {
     return rejectRequest(message.id, -32600, "Tool listing needs a request ID");
   }
   if (id && typeof message?.method === "string") {
-    if (scope && pending.has(id)) fail("duplicate request ID on a restricted connection");
+    if (discovery && message.method === "tools/list") {
+      if (params?.cursor !== undefined) return rejectRequest(message.id, -32602, "The discovery listing has no cursor");
+      catalog = undefined;
+      pending.set(id, { kind: "catalog", tools: [], cursors: new Set(), params: params ?? {} });
+      child.stdin.write(`${line}\n`);
+      return;
+    }
     if (message.method === "tools/call") {
       pending.set(id, { kind: "call", tool: typeof params?.name === "string" ? params.name : "tool" });
-    } else if (scope) {
+    } else if (restricted) {
       pending.set(id, { kind: message.method === "tools/list" ? "list" : "other" });
     }
   }
@@ -284,18 +322,40 @@ createInterface({ input: child.stdout }).on("line", (line) => {
   } catch {
     // Not JSON the gate understands. Relay it exactly as it came: a frame the
     // gate cannot read is still the upstream server's answer to give.
-    if (scope) fail("unreadable upstream frame on a restricted connection");
+    if (restricted) fail("unreadable upstream frame on a restricted connection");
   }
-  if (!message || (scope && message.jsonrpc !== "2.0")) {
-    if (scope) fail("invalid upstream frame on a restricted connection");
+  if (!message || (restricted && message.jsonrpc !== "2.0")) {
+    if (restricted) fail("invalid upstream frame on a restricted connection");
     process.stdout.write(`${line}\n`);
     return;
   }
   const id = typeof message.method === "string" ? undefined : requestKey(message.id);
   const request = id === undefined ? undefined : pending.get(id);
-  if (scope && id !== undefined && !request) fail("unrequested upstream response on a restricted connection");
+  if (restricted && id !== undefined && !request) fail("unrequested upstream response on a restricted connection");
   if (id !== undefined) pending.delete(id);
   const result = message.result;
+  if (request?.kind === "catalog" && message.error === undefined) {
+    try {
+      const page = catalogPage(result);
+      request.tools.push(...page.tools.filter(tool => !scope || allowsTool(scope, { kind: "mcp", server: NAME, name: tool.name })));
+      if (page.nextCursor !== undefined) {
+        if (request.cursors.has(page.nextCursor) || request.cursors.size >= 1000) throw new Error("Invalid upstream catalog pagination");
+        request.cursors.add(page.nextCursor);
+        pending.set(id!, request);
+        child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: message.id, method: "tools/list", params: { ...request.params, cursor: page.nextCursor } })}\n`);
+        return;
+      }
+      catalog = request.tools;
+      const listing: Json = { ...(result as Json), tools: DISCOVERY_TOOLS };
+      delete listing.nextCursor;
+      process.stdout.write(`${JSON.stringify({ ...message, result: listing })}\n`);
+    } catch (error) {
+      catalog = undefined;
+      rejectRequest(message.id, -32603, (error as Error).message);
+    }
+    return;
+  }
+  if (discovery && message.method === "notifications/tools/list_changed") catalog = undefined;
   if (scope && request?.kind === "list" && message.error === undefined) {
     if (!isRecord(result) || !Array.isArray(result.tools)
       || !result.tools.every((tool: unknown) => isRecord(tool) && typeof tool.name === "string" && tool.name.trim().length > 0)

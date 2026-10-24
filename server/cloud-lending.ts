@@ -33,8 +33,8 @@ export interface CloudLendingTurn {
   /** Who opened this conversation (and the room it is in), where recorded.
    * Whoever opened it chose its title, so it must be the owner too. */
   starters?: readonly (string | undefined)[];
-  /** The conversation holds a report of work someone else directed (a
-   * routine the owner did not write). */
+  /** The conversation holds words someone else chose: a "post" webhook's
+   * payload, or a report of a routine the owner did not write. */
   reportsFromOthers?: boolean;
   /** Whether a person key is one of the owner's own devices right now. */
   ownerPerson: (person: string | undefined) => boolean;
@@ -101,7 +101,7 @@ function answeredByPerson(card: Card | undefined): boolean {
 }
 
 type RoutineShape = {
-  prompt?: string; target?: unknown; botId?: string; groupId?: string; attachments?: { id: string; path: string }[];
+  prompt?: string; target?: unknown; botId?: string; groupId?: string; attachments?: { id: string; path: string }[]; preCheck?: unknown;
   schedule?: unknown; runOn?: string;
 };
 
@@ -114,7 +114,7 @@ export function routineFingerprint(routine: RoutineShape): string {
   const attachments = (routine.attachments ?? []).map(attachment => [attachment.id, attachment.path]);
   return createHash("sha256").update(JSON.stringify([
     routine.prompt ?? "", routine.target ?? null, routine.botId ?? "", routine.groupId ?? null, attachments,
-    routine.schedule ?? null, routine.runOn ?? null,
+    routine.schedule ?? null, routine.runOn ?? null, ...(routine.preCheck ? [routine.preCheck] : []),
   ])).digest("hex");
 }
 

@@ -129,6 +129,10 @@ export interface SendTurnInput {
    * only to a driver whose capabilities.guestTurns is "confined"; the harness
    * refuses the turn for any other (docs/cloud-pro.md). */
   guestConfined?: boolean;
+  /** Set only by the harness itself for a restricted thread_binding launch
+   * (server/thread-mcp-bindings.ts): the turn may talk to that one scoped
+   * server and nothing else. */
+  restrictedThread?: boolean;
   /** Why this turn is confined, in the owner's words, for a refusal to end
    * with (on a personal Cloud home, what came before it: a routine or a
    * conversation from before this update). */
@@ -231,11 +235,18 @@ export interface SendTurnInput {
     custom?: Record<string, McpServerSpec>;
   };
   cwd?: string;
+  /** The decision model's tool pick (server/decider/tool-pick.ts), set only
+   * while that job is on. A driver that lists its MCP tools itself may call
+   * it once with the tools it could withhold; it resolves to the names to
+   * keep, or null to keep them all. It never rejects; `signal` is the turn's
+   * own Stop. */
+  pickTools?: (tools: ReadonlyArray<{ name: string; description: string }>, signal?: AbortSignal) => Promise<ReadonlySet<string> | null>;
   /** Let the engine also load the MCP servers from the person's own CLI
    * setup (Claude Code's user-scope servers and claude.ai connectors). Off
    * by default: a bot gets the servers its owner gave it, and each extra
    * tool costs tokens on every model call. Codex already reads its own
-   * config.toml and ignores this; the Claude driver drops
+   * config.toml and ignores this; ZCode runs from a bot home without the
+   * person's setup and ignores it too; the Claude driver drops
    * --strict-mcp-config for the turn. */
   mcpFromUserConfig?: boolean;
 }

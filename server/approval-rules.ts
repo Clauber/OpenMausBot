@@ -37,6 +37,8 @@ export function consequentialTool(name: string, args: unknown): boolean {
 }
 
 const INTERNAL_ACTION_TOOLS: Readonly<Record<string, string>> = {
+  "/api/internal/fleet/approval": "set_bot_approval",
+  "/api/internal/fleet/room-task": "authorize_room_task",
   "/api/internal/bot-deletion-requests": "propose_bot_deletion",
   "/api/internal/team-setup-requests": "propose_team_setup",
   "/api/internal/profile-requests": "propose_profile",

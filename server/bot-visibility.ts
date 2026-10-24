@@ -287,6 +287,7 @@ export type PathSubject =
   | { kind: "attachment"; name: string };
 
 export function pathSubject(path: string): PathSubject | null {
+  if (path === "/api/bots/order") return null;
   let m = /^\/api\/bots\/([\w-]+)(?:\/|$)/.exec(path);
   if (m) return { kind: "bot", id: m[1]! };
   m = /^\/api\/threads\/([\w-]+)(?:\/|$)/.exec(path);
@@ -386,6 +387,8 @@ export function frameForMember(payload: Record<string, unknown>, ctx: FrameConte
   const str = (value: unknown) => (typeof value === "string" ? value : "");
   const field = (key: string) => (payload[key] && typeof payload[key] === "object" ? payload[key] as Record<string, unknown> : {});
   switch (kind) {
+    case "bots.order":
+      return { ...payload, botIds: Array.isArray(payload.botIds) ? payload.botIds.filter(id => typeof id === "string" && visible.bot(id)) : [] };
     case "sections": {
       const sections = Array.isArray(payload.sections) ? payload.sections.filter((s): s is string => typeof s === "string") : [];
       return { ...payload, sections: visible.sections(sections) };

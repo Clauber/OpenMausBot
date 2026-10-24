@@ -60,6 +60,36 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 });
 `;
 
+const DISCOVERY_UPSTREAM = `
+const { createInterface } = require("node:readline");
+const { appendFileSync, readFileSync } = require("node:fs");
+const script = JSON.parse(readFileSync(process.env.SCRIPT, "utf8"));
+let waitingCall;
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const msg = JSON.parse(line);
+  appendFileSync(process.env.SCRIPT + ".frames", line + "\\n");
+  const send = (body) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, ...body }) + "\\n");
+  if (msg.method === "tools/list") {
+    if (script.malformed) return send({ result: { tools: [{ name: "secret_bad" }] } });
+    if (script.repeated) return send({ result: { tools: [], nextCursor: "same" } });
+    if (script.rpcError) return send({ error: { code: -32001, message: "catalog unavailable" } });
+    const offset = Number(msg.params?.cursor ?? 0);
+    return send({ result: { tools: Array.from({ length: 100 }, (_, i) => ({
+      name: "tool_" + (offset + i), description: "Fixture search " + "x".repeat(4000),
+      inputSchema: { type: "object", properties: { value: { type: "string" } } }
+    })), ...(offset < 200 ? { nextCursor: String(offset + 100) } : {}) } });
+  }
+  if (msg.method === "notifications/cancelled") {
+    if (waitingCall?.id === msg.params.requestId) process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: waitingCall.id, error: { code: -32800, message: "cancelled" } }) + "\\n");
+    return;
+  }
+  if (msg.method === "tools/call" && msg.params.arguments?.wait) { waitingCall = msg; return; }
+  if (msg.method === "tools/call" && msg.params.arguments?.rpcError) return send({ error: { code: -32001, message: "fixture", data: { preserved: true } } });
+  if (msg.method === "tools/call") return send({ result: { content: [{ type: "text", text: "done" }], structuredContent: msg.params, isError: !!msg.params.arguments?.toolError, _meta: { preserved: true } } });
+  send({ result: msg.params });
+});
+`;
+
 describe("mcp-gate", () => {
   let scratch: string;
   let gate: ChildProcessWithoutNullStreams | undefined;
@@ -130,6 +160,95 @@ describe("mcp-gate", () => {
     }
     gate = undefined;
     await removeTempDir(scratch);
+  });
+
+  it("discovers a large paginated catalog without advertising its schemas", async () => {
+    start({}, { OMB_GATE_DISCOVERY: "1", OMB_GATE_BUDGET: "0" }, DISCOVERY_UPSTREAM);
+    send({ jsonrpc: "2.0", id: "list", method: "tools/list" });
+    const listing = JSON.parse(await nextLine());
+    expect(listing.result.tools.map((tool: { name: string }) => tool.name)).toEqual(["search_tools", "call_tool"]);
+    expect(JSON.stringify(listing).length).toBeLessThan(2500);
+    expect(listing.result.tools[1].annotations.readOnlyHint).toBe(false);
+    const request = (id: number, name: string, args: unknown) => send({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args, _meta: { progressToken: "progress" } } });
+    request(2, "search_tools", { query: "tool_299" });
+    const found = JSON.parse(JSON.parse(await nextLine()).result.content[0].text);
+    expect(found.tools[0].name).toBe("tool_299");
+    expect(found.tools[0].description.length).toBeGreaterThan(4000);
+    request(3, "search_tools", { query: "fixture" });
+    const first = JSON.parse(JSON.parse(await nextLine()).result.content[0].text);
+    expect(first.tools).toHaveLength(3);
+    expect(first.nextCursor).toBeDefined();
+    request(4, "search_tools", { query: "fixture", cursor: first.nextCursor });
+    const second = JSON.parse(JSON.parse(await nextLine()).result.content[0].text);
+    expect(second.tools).toHaveLength(3);
+    expect(second.tools[0].name).not.toBe(first.tools[0].name);
+    for (const [id, name, args] of [[5, "call_tool", { name: "tool_299", arguments: { toolError: true } }], [6, "tool_299", { toolError: true }]] as const) {
+      request(id, name, args);
+      expect(JSON.parse(await nextLine()).result).toEqual({ content: [{ type: "text", text: "done" }], structuredContent: { name: "tool_299", arguments: { toolError: true }, _meta: { progressToken: "progress" } }, isError: true, _meta: { preserved: true } });
+    }
+    request(7, "call_tool", { name: "tool_299", arguments: { rpcError: true } });
+    expect(JSON.parse(await nextLine()).error).toEqual({ code: -32001, message: "fixture", data: { preserved: true } });
+    const frames = readFileSync(join(scratch, "reply.json.frames"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+    expect(frames.filter(frame => frame.method === "tools/list").map(frame => frame.params?.cursor)).toEqual([undefined, "100", "200"]);
+  });
+
+  it("withholds excluded schemas and rejects both direct and discovered calls", async () => {
+    start({}, { OMB_GATE_DISCOVERY: "1", OMB_GATE_BUDGET: "0", OMB_GATE_TOOL_SCOPE: JSON.stringify({ allow: ["mcp:shop:tool_299"] }) }, DISCOVERY_UPSTREAM);
+    send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    await nextLine();
+    send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "search_tools", arguments: { query: "" } } });
+    const found = JSON.parse(JSON.parse(await nextLine()).result.content[0].text);
+    expect(found.tools.map((tool: { name: string }) => tool.name)).toEqual(["tool_299"]);
+    for (const params of [{ name: "tool_1", arguments: {} }, { name: "call_tool", arguments: { name: "tool_1", arguments: {} } }]) {
+      send({ jsonrpc: "2.0", id: 3, method: "tools/call", params });
+      expect(JSON.parse(await nextLine()).error.code).toBe(-32602);
+    }
+    const frames = readFileSync(join(scratch, "reply.json.frames"), "utf8");
+    expect(frames).not.toContain('"method":"tools/call"');
+  });
+
+  it.each([{ malformed: true }, { repeated: true }, { rpcError: true }])("rejects unusable discovery catalogs without exposing partial schemas %j", async script => {
+    start(script, { OMB_GATE_DISCOVERY: "1" }, DISCOVERY_UPSTREAM);
+    send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    const reply = JSON.parse(await nextLine());
+    expect(reply.error).toBeDefined();
+    expect(reply.result).toBeUndefined();
+    send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "search_tools", arguments: { query: "" } } });
+    expect(JSON.parse(await nextLine()).error).toBeDefined();
+    const frames = readFileSync(join(scratch, "reply.json.frames"), "utf8").trim().split("\n");
+    expect(frames.length).toBeLessThanOrEqual(2);
+  });
+
+  it("preserves cancellation IDs and non-tool RPC through discovery", async () => {
+    start({}, { OMB_GATE_DISCOVERY: "1" }, DISCOVERY_UPSTREAM);
+    send({ jsonrpc: "2.0", id: "pending", method: "tools/call", params: { name: "call_tool", arguments: { name: "tool_299", arguments: { wait: true } }, _meta: { progressToken: 4 } } });
+    send({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: "pending", reason: "fixture cancellation" } });
+    expect(JSON.parse(await nextLine())).toEqual({ jsonrpc: "2.0", id: "pending", error: { code: -32800, message: "cancelled" } });
+    for (const method of ["resources/read", "prompts/get"]) {
+      const params = { name: "fixture", _meta: { progressToken: "meta" } };
+      send({ jsonrpc: "2.0", id: 2, method, params });
+      expect(JSON.parse(await nextLine())).toEqual({ jsonrpc: "2.0", id: 2, result: params });
+    }
+    const frames = readFileSync(join(scratch, "reply.json.frames"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+    expect(frames[0]).toMatchObject({ id: "pending", params: { name: "tool_299", arguments: { wait: true }, _meta: { progressToken: 4 } } });
+    expect(frames[1]).toEqual({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: "pending", reason: "fixture cancellation" } });
+  });
+
+  it("loads private discovery configuration without requiring a tool scope", async () => {
+    const key = `OMB_GATE_CONFIG_${"a".repeat(64)}`;
+    const privateConfig = {
+      OMB_GATE_NAME: "shop", OMB_GATE_DISCOVERY: "1", OMB_GATE_BUDGET: "0",
+      OMB_GATE_UPSTREAM: JSON.stringify({ command: process.execPath, args: [join(scratch, "upstream.cjs")], env: { SCRIPT: join(scratch, "reply.json") } }),
+    };
+    start({}, { [key]: JSON.stringify(privateConfig) }, DISCOVERY_UPSTREAM, ["--config-env", key]);
+    send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    expect(JSON.parse(await nextLine()).result.tools).toHaveLength(2);
+  });
+
+  it.each(["true", "0", ""])("fails closed on a malformed discovery flag %s", async flag => {
+    start({}, { OMB_GATE_DISCOVERY: flag }, SCOPED_UPSTREAM);
+    expect((await once(gate!, "close"))[0]).toBe(1);
+    expect(existsSync(join(scratch, "reply.json.started"))).toBe(false);
   });
 
   it("relays a frame that is not a tool result untouched", async () => {

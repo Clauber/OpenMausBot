@@ -1,8 +1,11 @@
 {
   "direct": {
-    "bytes": 49725,
-    "sha256": "7ece64b769283f9377ef5701a3884ebcc6cfb94ae209d0302c1a87a36c3297d0",
+    "bytes": 55612,
+    "sha256": "446f59d13bec0383fd8d574b28d7765680301f6a68088f968ed51be0bb807bb8",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_bots",
       "list_rooms",
@@ -19,6 +22,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -42,9 +46,12 @@
     ]
   },
   "direct+voice": {
-    "bytes": 50466,
-    "sha256": "78a7931e3d5d3d75ba4485b1c758c2915168ac6f32b41d3afa86ab4b9f76a16d",
+    "bytes": 56353,
+    "sha256": "4a5fe28f0857f5504600cf23965e94eb2cb51074652b5f4be06c96bc87fdc036",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_bots",
       "list_rooms",
@@ -61,6 +68,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -85,9 +93,12 @@
     ]
   },
   "direct+shared": {
-    "bytes": 51470,
-    "sha256": "2cf946261450e1a289ba9663a81cdce3631b0905b50ec1f12deb116c83a0bb4b",
+    "bytes": 57357,
+    "sha256": "3732234976da9b59fd084f00d2f8e8b1e24755d0b5ba787fc6128aa1647f50bb",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_shared_computers",
       "shared_computer",
@@ -106,6 +117,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -129,9 +141,12 @@
     ]
   },
   "direct+shared+voice": {
-    "bytes": 52211,
-    "sha256": "cd5f06cbbdd4c6e292b27f3b3665586090fd6a176a30becc320b1c76907878f1",
+    "bytes": 58098,
+    "sha256": "212c9b6e9b57b2ce3a0c6014c8c8e623ad36c7a8485caf9edd7de786a79bb7d3",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_shared_computers",
       "shared_computer",
@@ -150,6 +165,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -174,9 +190,12 @@
     ]
   },
   "direct+skills": {
-    "bytes": 51651,
-    "sha256": "9a5599eb0982eb79c55be3a5b1962353923e884226871a76f99d0ce80b158e56",
+    "bytes": 57538,
+    "sha256": "3b3ac30c1461aecdca5edc4b0e14d6e54ac6ad4dc1b437b34ab8ce85e78ea9fb",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_bots",
       "list_rooms",
@@ -193,6 +212,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -218,9 +238,12 @@
     ]
   },
   "direct+skills+voice": {
-    "bytes": 52392,
-    "sha256": "23c24ed8a8aae986f294c170829c65ee8ad755f72b506fbd53b18b03963c86fc",
+    "bytes": 58279,
+    "sha256": "6002d0da5ebbc482fbf90ed7e040181f37f547fb6e4ef5a7b4ba561b4e76773f",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_bots",
       "list_rooms",
@@ -237,6 +260,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -263,9 +287,12 @@
     ]
   },
   "direct+skills+shared": {
-    "bytes": 53396,
-    "sha256": "033855fbf13ae2d42d288797503f7795fc95fe6633db61469e133c4e447f8979",
+    "bytes": 59283,
+    "sha256": "483f52af7c7327fa953ea04b5d48f054b25333c318d9453d93131642be319891",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_shared_computers",
       "shared_computer",
@@ -284,6 +311,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -309,9 +337,12 @@
     ]
   },
   "direct+skills+shared+voice": {
-    "bytes": 54137,
-    "sha256": "0298625dac72d192440f638d3bf5a1896158a65a9e2be877568e9c35938b9c27",
+    "bytes": 60024,
+    "sha256": "f4688a3a4333f741ee10940a2e02b7a47ab59f23f6f115767faf1dcda0f4dd3a",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_shared_computers",
       "shared_computer",
@@ -330,6 +361,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -356,9 +388,12 @@
     ]
   },
   "room": {
-    "bytes": 48154,
-    "sha256": "cd120bbf88e7eda6c7ff7700abe68b5a4a1e1d3394bd66e9178bb41a83462d4b",
+    "bytes": 54041,
+    "sha256": "00676c0c61687d19dc600a0dd2eb80d310426fa98d3fa56cdec9b4dab418a88c",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_room_targets",
       "coordinate_bots",
@@ -373,6 +408,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -396,9 +432,12 @@
     ]
   },
   "room+voice": {
-    "bytes": 48895,
-    "sha256": "4b9ffb1b422ae3f1c46696512eed6328017a6789bc502e55ceda63465f2f6de5",
+    "bytes": 54782,
+    "sha256": "9b1880e2a7a9853c173a425c0e3bb553746425731dfd93ab2c7f979631525c31",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_room_targets",
       "coordinate_bots",
@@ -413,6 +452,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -437,9 +477,12 @@
     ]
   },
   "room+shared": {
-    "bytes": 49899,
-    "sha256": "6575bde207e08661d5b431654bbee6d965e4fd0930557a1c736f982aee5c8ad1",
+    "bytes": 55786,
+    "sha256": "577df6f0188d2f12f78f7b977acf00be80a9f6e6f5220320625081bb146ea3dd",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_shared_computers",
       "shared_computer",
@@ -456,6 +499,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -479,9 +523,12 @@
     ]
   },
   "room+shared+voice": {
-    "bytes": 50640,
-    "sha256": "e7336be13423e47b222880e2c274fa75450a8c89de0af9229ee14e1f92da3c40",
+    "bytes": 56527,
+    "sha256": "b0da5d4980cb7b46fdd8749ee06d18f1c6245ce057c19eaebf77590c0370a299",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_shared_computers",
       "shared_computer",
@@ -498,6 +545,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -522,9 +570,12 @@
     ]
   },
   "room+skills": {
-    "bytes": 50080,
-    "sha256": "729e71e393ec2dd7bd6d5decde5c9533f2dfd059ed5b357b8583f4e110048408",
+    "bytes": 55967,
+    "sha256": "98e55077f6d56fa5c0ad143c4c6faf066ddb4c71aac5e8f67933d0adc70c445c",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_room_targets",
       "coordinate_bots",
@@ -539,6 +590,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -564,9 +616,12 @@
     ]
   },
   "room+skills+voice": {
-    "bytes": 50821,
-    "sha256": "ca17a45af574b51701f011fb576b62ffe2d6dff5df8f6af191279117da2ba14e",
+    "bytes": 56708,
+    "sha256": "813f0f93ed5463247110a2c0da1397d3e5e892dd9cf107c1bad27a58bad0c69c",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_room_targets",
       "coordinate_bots",
@@ -581,6 +636,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -607,9 +663,12 @@
     ]
   },
   "room+skills+shared": {
-    "bytes": 51825,
-    "sha256": "1a64763fa002ee80c867d171903c484cfdb9fc4c85884fcb8a4925864c77ecd8",
+    "bytes": 57712,
+    "sha256": "07b2cae174d19f88f5899f978736919d7b813f12e9cd0ada2d1a2e2ad27e9105",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_shared_computers",
       "shared_computer",
@@ -626,6 +685,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -651,9 +711,12 @@
     ]
   },
   "room+skills+shared+voice": {
-    "bytes": 52566,
-    "sha256": "b4072a4dcf3385c9f0ac330f76e3e259a57d191fb6ceefaebb72f1052f6be7bb",
+    "bytes": 58453,
+    "sha256": "c2c0ec1c9912d15112663c5ad09828ccca9e55d54d7ba322118cc247095158b4",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_shared_computers",
       "shared_computer",
@@ -670,6 +733,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -696,9 +760,12 @@
     ]
   },
   "room+own-thread": {
-    "bytes": 49441,
-    "sha256": "6f6a3932062a1398d412bebda317f78bcd988199624ceadbe7e223aaf23a9632",
+    "bytes": 55328,
+    "sha256": "a320aefdd47b937084e29e2e4b7c3d046cb386b7bbb25359412a5bbb32673dcb",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_room_targets",
       "coordinate_bots",
@@ -714,6 +781,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -737,9 +805,12 @@
     ]
   },
   "room+own-thread+voice": {
-    "bytes": 50182,
-    "sha256": "177963d038506712f575120496a9ad36462173489cad3a8293939586f4e89fa8",
+    "bytes": 56069,
+    "sha256": "d96b6a320e95fbdba2788eb28886f3b65093e5a273b791f3a5bad483c1e2d511",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_room_targets",
       "coordinate_bots",
@@ -755,6 +826,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -779,9 +851,12 @@
     ]
   },
   "room+own-thread+shared": {
-    "bytes": 51186,
-    "sha256": "27d20063957e0415186967f8fae7a5160d22b6f22ee09936ca4ef80773675539",
+    "bytes": 57073,
+    "sha256": "0fc79a4abe65510c164476b4e98fcd632ab091665d408488d34556c1cb7bd2f3",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_shared_computers",
       "shared_computer",
@@ -799,6 +874,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -822,9 +898,12 @@
     ]
   },
   "room+own-thread+shared+voice": {
-    "bytes": 51927,
-    "sha256": "4639eb144878feaceecf922bc849a7c7ef75893fe66e690b9933bd15de8db908",
+    "bytes": 57814,
+    "sha256": "beeb336e5b45b9a222fe6fd09ba518c6493c6473034de40a9835c31fbb19dd9b",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_shared_computers",
       "shared_computer",
@@ -842,6 +921,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -866,9 +946,12 @@
     ]
   },
   "room+own-thread+skills": {
-    "bytes": 51367,
-    "sha256": "a72b8084466acfbf9f62ae912ccb146787a7862404f32c70b9ad5a172bae75fd",
+    "bytes": 57254,
+    "sha256": "ad5fb0592b1f45d51cc095697898274c85ef1ea51192bb1bd1ce4e7c3bd40f46",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_room_targets",
       "coordinate_bots",
@@ -884,6 +967,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -909,9 +993,12 @@
     ]
   },
   "room+own-thread+skills+voice": {
-    "bytes": 52108,
-    "sha256": "b32cc9fb3af40497e0c73f5adac79784d61addcf87af90533bc6bed7e387ccce",
+    "bytes": 57995,
+    "sha256": "85360a63df5a9db5b6b21f000376fc796017f9d8f9d2b237f92990ece6a0bf55",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_room_targets",
       "coordinate_bots",
@@ -927,6 +1014,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -953,9 +1041,12 @@
     ]
   },
   "room+own-thread+skills+shared": {
-    "bytes": 53112,
-    "sha256": "d26f652df36041e64a27586f54102f5be1c062cf0faac4eb24a4e60fcca69c93",
+    "bytes": 58999,
+    "sha256": "7d26694ce75fc7493b969c731853f583eecf0d2740ddeeb2e57e9f0eef56e8c5",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_shared_computers",
       "shared_computer",
@@ -973,6 +1064,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -998,9 +1090,12 @@
     ]
   },
   "room+own-thread+skills+shared+voice": {
-    "bytes": 53853,
-    "sha256": "59c4584a3ff5ecc33b84552f81566e1039c84c68b036ba2d60d449f5e3bad8d1",
+    "bytes": 59740,
+    "sha256": "9383370cb87e3f1f425f00f037e73f1b1271cf5dc49c8694b2a451eb1ff0e7ee",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_shared_computers",
       "shared_computer",
@@ -1018,6 +1113,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -1044,9 +1140,12 @@
     ]
   },
   "direct+skills+shared+voice+cloud-home": {
-    "bytes": 53211,
-    "sha256": "862278d08af45dab948626a2c0785c0f229a162e1024e43d5b7bd7769eb0b941",
+    "bytes": 59098,
+    "sha256": "4953f6e665275e8d9fcabc22e0b11be83e005789cc1df5f634558ff532201e41",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_shared_computers",
       "shared_computer",
@@ -1064,6 +1163,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -1090,9 +1190,12 @@
     ]
   },
   "room+own-thread+skills+shared+voice+cloud-home": {
-    "bytes": 52927,
-    "sha256": "5a237a79240aa133a3828904c21e784cc2d8e23873e506f17ab6d230efff9035",
+    "bytes": 58814,
+    "sha256": "b778a400c05ec3e2caf20d3b2c831ee15c76bad9e74f9c5377dea6afe37680a7",
     "tools": [
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_shared_computers",
       "shared_computer",
@@ -1109,6 +1212,7 @@
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",

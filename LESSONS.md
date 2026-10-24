@@ -47,3 +47,16 @@
 - Adjacent settings components need distinct React keys. A rules card keyed
   identically to outbound settings duplicated on SSE updates. Browser save,
   reopen and screenshot checks caught what typechecking could not.
+
+## Integration lessons
+
+- The Grok importer can be backported without the upstream team-route refactor.
+  Its required helpers are YAML frontmatter scalar escaping, held-secret
+  redaction and clipboard feedback. Keep API fixture tests on shared converters;
+  importing renderer modules into server tests pulls extensionless imports into
+  the NodeNext compilation. Cursor refusal messages must use held-secret
+  redaction before logging or returning provider text, including opaque tokens.
+- Check the actual DNS target before reusing a remembered tunnel. OpenMaus
+  currently uses the `gsdut.dev` tunnel wildcard, not `haunted-house`.
+  A built-artifact Dockerfile needs its own ignore file: the repository's
+  default Docker ignore excludes `dist` and `dist-server`.

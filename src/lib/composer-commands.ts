@@ -1,4 +1,4 @@
-export type ComposerSlashCommandId = "goal" | "learn" | "setup";
+export type ComposerSlashCommandId = "goal" | "learn" | "setup" | "stop";
 
 export interface ComposerSlashCommand {
   id: ComposerSlashCommandId;
@@ -28,6 +28,13 @@ export function composerSlashTrigger(text: string, caretInput: number): Composer
 export function goalTextFromComposer(text: string): string | null {
   const match = /^\/goal(?:\s+([\s\S]*))?$/i.exec(text);
   return match ? (match[1] ?? "").trimStart() : null;
+}
+
+/** A bare `/stop` never reaches the model: it is the Stop button typed.
+ * Anything after the token (a question about the command, say) is an
+ * ordinary message. */
+export function isStopComposerCommand(text: string): boolean {
+  return /^\/stop$/i.test(text.trim());
 }
 
 /** Replace the active slash token and return the caret position immediately

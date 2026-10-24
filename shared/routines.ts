@@ -3,6 +3,7 @@
  * from the client's hand-maintained mirrors (src/lib/routines.ts) so the
  * frame union and every client consumer share one home; the client file
  * re-exports these under the same names. */
+import type { RoutinePreCheck, RoutinePreCheckResult } from "./routine-precheck.ts";
 import type { RoutineCronSchedule } from "./routine-schedule.ts";
 
 export interface RoutineIntervalWindow {
@@ -102,7 +103,8 @@ export type RoutineRunStatus =
   | "completed"
   | "failed"
   | "cancelled"
-  | "missed";
+  | "missed"
+  | "skipped";
 
 /** The statuses both failure indicators count: a run that went wrong and has
  * not been acknowledged. One home so the sidebar dot, the errors pill, the
@@ -133,6 +135,7 @@ export interface Routine {
   id: string;
   name: string;
   prompt: string;
+  preCheck?: RoutinePreCheck;
   target: RoutineTarget;
   botId: string;
   groupId?: string;
@@ -164,6 +167,8 @@ export interface RoutineRun {
   routineId: string;
   routineName: string;
   prompt?: string;
+  preCheck?: RoutinePreCheck;
+  preCheckResult?: RoutinePreCheckResult;
   durationMinutes?: number;
   timeoutMinutes?: number;
   attachments?: RoutineContextAttachment[];
@@ -201,6 +206,7 @@ export interface RoutineRun {
 export interface RoutineInput {
   name: string;
   prompt: string;
+  preCheck?: RoutinePreCheck | null;
   target?: RoutineTarget;
   botId: string;
   groupId?: string | null;
@@ -214,6 +220,16 @@ export interface RoutineInput {
   timeoutMinutes?: number | null;
   overlap?: "skip" | "queue";
   attachments?: RoutineContextAttachment[];
-  /** Omission preserves routing; null creates a new dedicated results task. */
+  /** Omission preserves routing; null creates a new dedicated results task;
+   * ROUTINE_OWN_RESULTS_THREAD opens (or keeps) one named after the routine;
+   * ROUTINE_DEFAULT_RESULTS_THREAD returns to the default destination. */
   resultsThreadId?: string | null;
 }
+
+/** Input-only `resultsThreadId`: open (or keep) a conversation named after
+ * the routine and post every run's result there, out of the main thread. */
+export const ROUTINE_OWN_RESULTS_THREAD = "own-thread";
+
+/** Input-only `resultsThreadId`: forget the chosen destination, so runs report
+ * where they did by default (the chat that set the routine up). */
+export const ROUTINE_DEFAULT_RESULTS_THREAD = "default";

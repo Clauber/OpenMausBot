@@ -1,5 +1,7 @@
 import { killCliTree, spawnCli } from "./procs.ts";
-import { DEFAULT_BROWSER_RESULT_BUDGET, shapeBrowserToolResult, slimBrowserToolList, stripHarnessOwnedArguments } from "./browser-tool-shape.ts";
+import { advertiseBrowserTool, DEFAULT_BROWSER_RESULT_BUDGET, shapeBrowserToolResult, slimBrowserToolList, stripHarnessOwnedArguments } from "./browser-tool-shape.ts";
+import { BROWSER_CLICK_TOOL, BROWSER_CLICK_TOOL_DEFINITION, clickByDescription } from "./decider/browser-click.ts";
+import type { Decider } from "./decider/index.ts";
 
 export interface BrowserSpawnSpec {
   command: string;
@@ -24,6 +26,11 @@ const MAX_RESPONSE_BYTES = 16_777_216;
  * per-request budget before anything has been accepted to guard. */
 const HANDSHAKE_TIMEOUT_MS = 1_000;
 const HOST_ENV = ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "PATH", "Path", "TMPDIR", "TMP", "TEMP", "SystemRoot", "WINDIR", "SYSTEMDRIVE", "COMSPEC", "PATHEXT", "LANG", "LC_ALL", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR"];
+
+/** The engine answered with a failure (marked `settled: true`): nothing is left running, so no restart is needed. */
+export function isSettledBrowserFailure(error: unknown): boolean {
+  return (error as { settled?: unknown } | null)?.settled === true;
+}
 
 /** MCP, viewer commands, and cleanup must resolve the same HOME/socket paths.
  * Inherit OS plumbing, never the harness's model-provider credentials. */
@@ -216,13 +223,20 @@ interface Gate {
 /** Closes one session's native browser daemon; true only when it is gone. */
 export type CloseBrowser = (session: string, spec: BrowserSpawnSpec) => Promise<boolean>;
 
+/** Click by description (server/decider/browser-click.ts): offered only
+ * while `ready()` says the decision model would take the job. */
+export interface BrowserClickByDescription {
+  ready(): boolean;
+  decider: Pick<Decider, "choose">;
+}
+
 export class BrowserRuntime {
   private gates = new Map<string, Gate>();
   private clients = new Map<string, { key: string; client: BrowserClient }>();
   /** Last advertised tools per session, so a turn that starts while the
    * browser is uncertain still sees the tools it can use after recovering. */
   private toolLists = new Map<string, unknown>();
-  private options: { requestTimeoutMs: number; takeoverTimeoutMs: number; idleMs: number; maxPending: number; resultBudget: number };
+  private options: { requestTimeoutMs: number; takeoverTimeoutMs: number; idleMs: number; maxPending: number; resultBudget: number; clickByDescription?: BrowserClickByDescription };
   private closeBrowser: CloseBrowser;
 
   constructor({ closeBrowser, ...options }: Partial<BrowserRuntime["options"]> & { closeBrowser?: CloseBrowser } = {}) {
@@ -305,14 +319,18 @@ export class BrowserRuntime {
         // The model sees slimmed schemas and text-only, bounded results; the
         // launch/session parameters OMB owns never reach the engine from a call.
         const request = method === "tools/call" ? stripHarnessOwnedArguments(params) : params;
-        let result = await entry.client.rpc(method, request);
+        const toolName = request && typeof request === "object" && typeof (request as { name?: unknown }).name === "string" ? (request as { name: string }).name : undefined;
+        const client = entry.client;
+        let result = method === "tools/call" && toolName === BROWSER_CLICK_TOOL
+          ? await this.clickByDescription(session, client, (request as { arguments?: unknown }).arguments, beforeDispatch)
+          : await client.rpc(method, request);
         beforeDispatch?.(); // A turn revoked while the tool ran receives no result.
         if (method === "tools/list") {
-          const tools = withRestartTool(slimBrowserToolList(result));
+          const slim = withRestartTool(slimBrowserToolList(result));
+          const tools = this.options.clickByDescription?.ready() ? advertiseBrowserTool(slim, BROWSER_CLICK_TOOL_DEFINITION) : slim;
           this.toolLists.set(session, tools);
           return tools;
         }
-        const toolName = request && typeof request === "object" && typeof (request as { name?: unknown }).name === "string" ? (request as { name: string }).name : undefined;
         if (toolName === "agent_browser_open" && result && typeof result === "object" &&
             (result as { isError?: boolean }).isError !== true) {
           // Navigation alone does not prove that the requested page loaded.
@@ -361,6 +379,26 @@ export class BrowserRuntime {
       }
     };
     return method === "tools/call" ? this.withAgentAction(session, invoke) : invoke();
+  }
+
+  /** The harness's own tool, made of engine calls in the same session and
+   * never forwarded as itself. While it is not offered it refuses, like an
+   * unknown tool. */
+  private async clickByDescription(session: string, client: BrowserClient, args: unknown, beforeDispatch?: () => void): Promise<unknown> {
+    const click = this.options.clickByDescription;
+    if (!click?.ready()) {
+      return { isError: true, content: [{ type: "text", text: `${BROWSER_CLICK_TOOL} is not available. Take agent_browser_snapshot and click by ref with agent_browser_click.` }] };
+    }
+    return clickByDescription(args, {
+      decider: click.decider,
+      callTool: (name, callArgs) => client.rpc("tools/call", { name, arguments: callArgs }),
+      // The decision takes up to seconds: a revoked turn or a person taking
+      // the browser in that time must stop the click.
+      checkpoint: () => {
+        beforeDispatch?.();
+        if (this.gate(session).owner !== null) throw new Error(BROWSER_CONTROL_REFUSAL);
+      },
+    });
   }
 
   /** Resolves true when the grant had to wait for the bot's own browser
@@ -427,10 +465,11 @@ export class BrowserRuntime {
     gate.humans++;
     try { return await fn(); }
     catch (error) {
-      // Validation happens before entry. A failed accepted command might still
-      // be executing in the daemon; hand-back must not race its completion.
-      gate.uncertain = true;
-      gate.ready = false;
+      // A failed accepted command may still be running in the daemon; hand-back must not race its completion.
+      if (!isSettledBrowserFailure(error)) {
+        gate.uncertain = true;
+        gate.ready = false;
+      }
       throw error;
     }
     finally { gate.humans--; this.changed(gate); }

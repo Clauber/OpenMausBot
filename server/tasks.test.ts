@@ -98,6 +98,57 @@ describe("tasks", () => {
     expect(titleFromMessage("x".repeat(80))).toHaveLength(48);
   });
 
+  describe("title from a pasted first message", () => {
+    const paste = (body: string, index = 1) => `<pasted-text index="${index}">\n${body}\n</pasted-text>`;
+
+    it("takes the first meaningful line of the pasted content, not the wrapper", async () => {
+      const { titleFromMessage } = await freshStore();
+      const brief = "# Task: Deploy Dkron Cron Scheduler on SSD-Nodes\n\n## Goal\n- ship it\n";
+      expect(titleFromMessage(paste(brief))).toBe("Task: Deploy Dkron Cron Scheduler on SSD-Nodes");
+      expect(titleFromMessage(`\n\n  ${paste(brief)}\n`)).toBe("Task: Deploy Dkron Cron Scheduler on SSD-Nodes");
+    });
+
+    it("strips markdown markers and skips lines that are only decoration", async () => {
+      const { titleFromMessage } = await freshStore();
+      expect(titleFromMessage(paste("\n---\n```md\n## **Deploy** the `app` ##\n```"))).toBe("Deploy the app");
+      expect(titleFromMessage(paste("> - [ ] Fix the [login page](https://example.com/x)"))).toBe("Fix the login page");
+      expect(titleFromMessage(paste("<!-- notes -->\n***\n| --- | --- |\n1. Ship __v2__ today"))).toBe("Ship v2 today");
+    });
+
+    it("cuts a long first line the way plain titles are cut", async () => {
+      const { titleFromMessage } = await freshStore();
+      const title = titleFromMessage(paste(`# ${"word ".repeat(30)}`));
+      expect(title).toHaveLength(48);
+      expect(title.endsWith("…")).toBe(true);
+    });
+
+    it("falls back to the untitled name when the paste has no words in it", async () => {
+      const { titleFromMessage, UNTITLED_TASK } = await freshStore();
+      expect(titleFromMessage(paste("---\n***\n```\n```\n##\n> \n"))).toBe(UNTITLED_TASK);
+      expect(titleFromMessage(paste(""))).toBe(UNTITLED_TASK);
+      expect(titleFromMessage("<pasted-text index=\"1\">\n# Unclosed brief\nmore")).toBe("Unclosed brief");
+    });
+
+    it("keeps typed text that comes first, and every plain message exactly as before", async () => {
+      const { titleFromMessage } = await freshStore();
+      expect(titleFromMessage(`Please review this:\n${paste("# Brief")}`)).toBe("Please review this:");
+      expect(titleFromMessage("# Heading typed by hand\nmore")).toBe("# Heading typed by hand");
+      expect(titleFromMessage("- bullet first\nmore")).toBe("- bullet first");
+      expect(titleFromMessage("Audit the payroll spreadsheet\nand flag anything odd")).toBe("Audit the payroll spreadsheet");
+      expect(titleFromMessage("   ")).toBe("New task");
+      expect(titleFromMessage("a <pasted-text> mention in prose\nnext")).toBe("a <pasted-text> mention in prose");
+    });
+
+    it("names a fresh thread from the paste", async () => {
+      const { store, UNTITLED_THREAD } = await freshStore();
+      const bot = store.createBot();
+      store.createTask(bot.id);
+      expect(store.activeTask(bot.id)!.title).toBe(UNTITLED_THREAD);
+      store.titleTaskFromFirstMessage(bot.id, paste("# Task: Deploy Dkron\n\nDetails"));
+      expect(store.activeTask(bot.id)!.title).toBe("Task: Deploy Dkron");
+    });
+  });
+
   it("returns the task it named, so a caller knows which title it may replace", async () => {
     const { store } = await freshStore();
     const bot = store.createBot();

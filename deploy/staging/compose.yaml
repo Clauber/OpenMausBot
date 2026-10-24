@@ -1,0 +1,38 @@
+name: legion-stg
+services:
+  app:
+    image: legion-stg:${LEGION_STAGING_TAG:?Set LEGION_STAGING_TAG to the verified build}
+    build:
+      context: ../..
+      dockerfile: deploy/staging/Dockerfile
+    init: true
+    restart: unless-stopped
+    volumes:
+      - data:/home/node
+    ports:
+      - "10.69.42.164:8445:443"
+    environment:
+      OMB_ENVIRONMENT_LABEL: LEGION staging
+      OMB_PUBLIC_URL: https://legion-stg.gsdut.dev
+      OMB_WEBHOOK_PUBLIC_URL: https://legion-stg.gsdut.dev
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8799/api/health', { signal: AbortSignal.timeout(4000) }).then(async r => { if (!r.ok || !(await r.text()).includes('openmausbot')) process.exit(1); }).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+  proxy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    network_mode: service:app
+    depends_on:
+      app:
+        condition: service_healthy
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+volumes:
+  data:
+  caddy_data:
+  caddy_config:

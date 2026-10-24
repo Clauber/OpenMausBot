@@ -19,6 +19,12 @@ export class TelegramApiError extends Error {
   }
 }
 
+/** The poll request ended because we aborted it (stop, transport switch) —
+ * not an error, the loop just exits. */
+export class TelegramPollAborted extends Error {
+  constructor() { super("Telegram getUpdates aborted"); }
+}
+
 const envelopeSchema = z.object({
   ok: z.boolean(),
   result: z.unknown().optional(),
@@ -39,7 +45,12 @@ export interface TelegramClient {
   getMe(): Promise<TelegramMe>;
   setWebhook(url: string, secretToken: string): Promise<void>;
   deleteWebhook(): Promise<void>;
-  getWebhookInfo(): Promise<TelegramWebhookInfo>;
+  getWebhookInfo(signal?: AbortSignal): Promise<TelegramWebhookInfo>;
+  /** One long-poll round. Resolves with updates whose update_id ≥ `offset`
+   * (Telegram semantics: pass the highest previously-obtained id plus one),
+   * or an empty array once `timeoutS` elapsed with nothing new. `signal`
+   * aborts the in-flight request (shutdown, transport switch). */
+  getUpdates(offset: number, timeoutS: number, signal?: AbortSignal): Promise<Array<{ update_id: number }>>;
   sendChatAction(chatId: string, action?: "typing"): Promise<void>;
   /** One message of at most 4096 characters. */
   sendMessage(chatId: string, text: string, parseMode?: "MarkdownV2"): Promise<void>;
@@ -68,14 +79,14 @@ export function splitTelegramText(text: string, limit = TELEGRAM_MAX_MESSAGE_CHA
 export function createTelegramClient(options: { token: string; apiBase?: string; fetchImpl?: typeof fetch }): TelegramClient {
   const base = (options.apiBase ?? telegramApiBase()).replace(/\/+$/, "");
   const doFetch = options.fetchImpl ?? fetch;
-  async function call(method: string, body?: Record<string, unknown>): Promise<unknown> {
+  async function call(method: string, body?: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     let response: Response;
     try {
       response = await doFetch(`${base}/bot${options.token}/${method}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body ?? {}),
-        signal: AbortSignal.timeout(30_000),
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
       });
     } catch (error) {
       // the URL carries the token; keep it out of the surfaced message
@@ -97,7 +108,35 @@ export function createTelegramClient(options: { token: string; apiBase?: string;
       await call("setWebhook", { url, secret_token: secretToken, allowed_updates: ["message"] });
     },
     async deleteWebhook() { await call("deleteWebhook"); },
-    async getWebhookInfo() { return webhookInfoSchema.parse(await call("getWebhookInfo")); },
+    async getWebhookInfo(signal) { return webhookInfoSchema.parse(await call("getWebhookInfo", undefined, signal)); },
+    async getUpdates(offset, timeoutS, signal) {
+      // A long poll outlives call()'s 30s cap: it holds its own request open
+      // for timeoutS seconds plus slack, abortable from outside.
+      const base = (options.apiBase ?? telegramApiBase()).replace(/\/+$/, "");
+      let response: Response;
+      try {
+        response = await doFetch(`${base}/bot${options.token}/getUpdates`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ offset, timeout: timeoutS, allowed_updates: ["message"] }),
+          signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutS * 1000 + 15_000)]) : AbortSignal.timeout(timeoutS * 1000 + 15_000),
+        });
+      } catch (error) {
+        if (signal?.aborted) throw new TelegramPollAborted();
+        throw new TelegramApiError("getUpdates", 0, error instanceof Error ? error.name : "network error");
+      }
+      const parsed = envelopeSchema.safeParse(await response.json().catch(() => null));
+      if (!parsed.success || !parsed.data.ok) {
+        throw new TelegramApiError("getUpdates", parsed.success ? parsed.data.error_code ?? response.status : response.status,
+          parsed.success ? parsed.data.description ?? "request refused" : "unreadable response");
+      }
+      // Not zod-parsed per field on purpose: an object schema would strip the
+      // message payload the service still needs. Only the cursor is checked.
+      const raw = parsed.data.result;
+      if (!Array.isArray(raw)) throw new TelegramApiError("getUpdates", response.status, "unreadable updates");
+      return raw.filter((update): update is { update_id: number } =>
+        typeof (update as { update_id?: unknown })?.update_id === "number" && Number.isInteger((update as { update_id: number }).update_id));
+    },
     async sendChatAction(chatId, action = "typing") { await call("sendChatAction", { chat_id: chatId, action }); },
     sendMessage,
     async sendText(chatId, text, opts) {

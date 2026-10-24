@@ -15,6 +15,7 @@ import { readDecisions, type DecisionKind, type DecisionRow } from "./decision-l
 import { isRuntimeEvent, readRecentLines } from "./thread-events.ts";
 
 import type { ActivityOutcome, ActivityRow } from "../shared/activity.ts";
+import type { WireMessage } from "../shared/wire.ts";
 
 export type { ActivityOutcome, ActivityRow };
 
@@ -153,28 +154,38 @@ function foldDecisions(rows: DecisionRow[]): ActivityRow[] {
   return folded;
 }
 
-function readToolRuns(eventsDir: string, threadId: string): ActivityRow[] {
+function readToolRuns(eventsDir: string, threadId: string, messagesFor: (threadId: string) => readonly WireMessage[]): ActivityRow[] {
   const { lines } = readRecentLines(join(eventsDir, `${threadId}.ndjson`), EVENTS_PER_THREAD, isRuntimeEvent);
-  const runs = new Map<string, ActivityRow>();
+  const runs = new Map<string, { row: ActivityRow; itemId: string }>();
   for (const event of lines) {
     if (event.type === "item.started" && event.itemType === "tool") {
-      const key = JSON.stringify([event.turnId ?? "", event.itemId ?? event.eventId]);
-      runs.set(
-        key,
-        describeRow({
+      const itemId = event.itemId ?? event.eventId;
+      runs.set(JSON.stringify([event.turnId ?? "", itemId]), {
+        itemId,
+        row: describeRow({
           at: event.createdAt,
           threadId,
           ...(event.turnId ? { turnId: event.turnId } : {}),
           tool: event.title ?? "unknown",
           outcome: "running",
         }),
-      );
+      });
     } else if (event.type === "item.completed" && event.itemType === "tool" && event.itemId) {
       const run = runs.get(JSON.stringify([event.turnId ?? "", event.itemId]));
-      if (run) run.outcome = event.ok ? "ran" : "failed";
+      if (run) run.row.outcome = event.ok ? "ran" : "failed";
     }
   }
-  return [...runs.values()];
+  if (!runs.size) return [];
+  const byItem = new Map<string, WireMessage[]>();
+  for (const message of messagesFor(threadId)) {
+    const itemId = message.tool?.itemId;
+    if (itemId) byItem.set(itemId, [...(byItem.get(itemId) ?? []), message]);
+  }
+  return [...runs.values()].map(({ row, itemId }) => {
+    const carriers = (byItem.get(itemId) ?? []).filter((message) => row.turnId === undefined || message.turnId === row.turnId);
+    const detail = carriers.length === 1 ? carriers[0].tool : undefined;
+    return detail ? { ...row, detail } : row;
+  });
 }
 
 /** The bot's activity, newest first: every tool run in the threads named,
@@ -186,10 +197,11 @@ export function readBotActivity(input: {
   botId: string;
   threadIds: string[];
   limit: number;
+  messagesFor: (threadId: string) => readonly WireMessage[];
 }): ActivityRow[] {
-  const { dataDir, eventsDir, botId, threadIds, limit } = input;
+  const { dataDir, eventsDir, botId, threadIds, limit, messagesFor } = input;
 
-  const runs = threadIds.flatMap((threadId) => readToolRuns(eventsDir, threadId));
+  const runs = threadIds.flatMap((threadId) => readToolRuns(eventsDir, threadId, messagesFor));
   const decisions = foldDecisions(readDecisions(dataDir, DECISION_SCAN).filter((row) => row.botId === botId));
 
   const matched = new Set<ActivityRow>();

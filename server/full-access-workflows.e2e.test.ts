@@ -102,7 +102,7 @@ it("applies requested Full Access workflows through MCP without duplicate approv
     const peer = (await cli("new-bot", "--name", "Ada", "--section", "Operations")).bot;
     const inverse = (await cli("new-bot", "--name", "Thread Full", "--section", "Private")).bot;
     const modelSelection = chief.modelSelection;
-    await api("PATCH", "/api/config", { features: { skillAuthoring: true } });
+    await api("PATCH", "/api/config", { routineReview: { enabled: false }, features: { skillAuthoring: true } });
 
     // This is fixture setup, not a production grant endpoint or bypass flag.
     // Stop the exact owned server before changing its disposable persisted data.

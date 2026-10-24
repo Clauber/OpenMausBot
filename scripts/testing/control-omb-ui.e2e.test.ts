@@ -260,6 +260,7 @@ describe("control-omb ui drives the real renderer", () => {
     // Skill authoring is on by default, so the run card's Save as skill
     // needs no flag; the fixture's default config is what a fresh install has.
     expect(flagged.features).toMatchObject({ skillAuthoring: true });
+    await ui("eval", info.ui, "--js", "import('/src/lib/run-card-preferences.ts').then(({ setShowRunCard }) => setShowRunCard(true))");
 
     // The header defaults to the conversation. Updating the bot default is
     // explicit, and same-provider model changes preserve permissions.

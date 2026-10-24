@@ -10,11 +10,19 @@ import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
 
 export interface FakeTelegramSend { token: string; chat_id: string; text: string; parse_mode?: string; at: number }
+export interface FakeTelegramGetUpdates { token: string; offset: number; timeout: number; at: number }
 export interface FakeTelegram {
   url: string;
   outbox: FakeTelegramSend[];
   actions: Array<{ token: string; chat_id: string; action: string }>;
   webhooks: Array<{ token: string; url: string; secret_token?: string }>;
+  getUpdatesCalls: FakeTelegramGetUpdates[];
+  /** Queue an update for getUpdates long-polling (update_id ≥ 1). */
+  pushUpdate(update: Record<string, unknown>): void;
+  /** Mark every getUpdates answer 409 (a webhook is active elsewhere). */
+  refuseGetUpdates(): void;
+  /** Clear a previous refuseGetUpdates(). */
+  allowGetUpdates(): void;
   /** Wait until `count` messages exist for `chatId`, and return that chat's messages. */
   waitForOutbox(chatId: string, count?: number, timeoutMs?: number): Promise<FakeTelegramSend[]>;
   stop(): Promise<void>;
@@ -24,6 +32,9 @@ export async function startFakeTelegram(options: { port?: number } = {}): Promis
   const outbox: FakeTelegramSend[] = [];
   const actions: FakeTelegram["actions"] = [];
   const webhooks: FakeTelegram["webhooks"] = [];
+  const updates: Array<Record<string, unknown>> = [];
+  const getUpdatesCalls: FakeTelegramGetUpdates[] = [];
+  let refuseUpdates = false;
   const reply = (res: import("node:http").ServerResponse, status: number, body: unknown) => {
     res.writeHead(status, { "content-type": "application/json" });
     res.end(JSON.stringify(body));
@@ -48,6 +59,21 @@ export async function startFakeTelegram(options: { port?: number } = {}): Promis
         return reply(res, 200, { ok: true, result: true, description: "Webhook was set" });
       case "deleteWebhook": webhooks.length = 0; return reply(res, 200, { ok: true, result: true });
       case "getWebhookInfo": return reply(res, 200, { ok: true, result: { url: webhooks.at(-1)?.url ?? "", pending_update_count: 0 } });
+      case "getUpdates": {
+        const offset = Number(body.offset ?? 0) || 0;
+        const timeoutS = Number(body.timeout ?? 0) || 0;
+        getUpdatesCalls.push({ token, offset, timeout: timeoutS, at: Date.now() });
+        if (refuseUpdates) return reply(res, 409, { ok: false, error_code: 409, description: "Conflict: terminated by other getUpdates request; make sure that only one bot instance is running" });
+        // Telegram returns updates with update_id ≥ offset, holding the
+        // request open for up to `timeout` seconds when there is nothing new.
+        const deadline = Date.now() + Math.min(timeoutS, 10) * 1000;
+        for (;;) {
+          const ready = updates.filter((u) => Number((u as { update_id?: number }).update_id) >= offset);
+          if (ready.length) return reply(res, 200, { ok: true, result: ready });
+          if (Date.now() >= deadline) return reply(res, 200, { ok: true, result: [] });
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      }
       case "sendChatAction":
         actions.push({ token, chat_id: String(body.chat_id), action: String(body.action) });
         return reply(res, 200, { ok: true, result: true });
@@ -66,9 +92,15 @@ export async function startFakeTelegram(options: { port?: number } = {}): Promis
   await new Promise<void>((resolve) => server.listen(options.port ?? 0, "127.0.0.1", resolve));
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : 0;
+  let nextUpdateId = 1;
   return {
     url: `http://127.0.0.1:${port}`,
-    outbox, actions, webhooks,
+    outbox, actions, webhooks, getUpdatesCalls,
+    pushUpdate(update) {
+      updates.push({ update_id: nextUpdateId++, ...update });
+    },
+    refuseGetUpdates() { refuseUpdates = true; },
+    allowGetUpdates() { refuseUpdates = false; },
     async waitForOutbox(chatId, count = 1, timeoutMs = 20_000) {
       const deadline = Date.now() + timeoutMs;
       for (;;) {

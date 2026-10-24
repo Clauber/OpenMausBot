@@ -5,6 +5,12 @@ export function isTurnAdmissionBlocked(error: unknown): boolean {
     (error.code === "thread_busy" || error.code === "thread_limit");
 }
 
+/** The refusal for a bot with no free thread slot. `limit` is the cap that
+ * applied to that bot, its own override or the workspace default. */
+export function threadLimitError(limit: number): Error & { status: 409; code: "thread_limit" } {
+  return Object.assign(new Error(`this bot has reached its limit of ${limit} parallel threads — wait for one to finish`), { status: 409 as const, code: "thread_limit" as const });
+}
+
 /** Close the Stop-vs-provider-handshake race shared by direct and room turns.
  * An adapter may not publish its active process until sendTurn resolves, so
  * an interrupt during that await can be an honest no-op. Re-check once setup

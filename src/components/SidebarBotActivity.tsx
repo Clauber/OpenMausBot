@@ -1,8 +1,11 @@
+import type { DragEvent } from "react";
 import { BellDot, CircleAlert, Clock3, Loader2, Pin, PinOff, type LucideIcon } from "lucide-react";
-import { useStore, type Bot, type Group, type Task } from "@/state/store";
+import type { Dispatch } from "react";
+import type { Action, AppState, Bot, Group, GroupTask, Task } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
-import { orderedSidebarThreads, orderedThreadList, threadRecency, threadUpdatedLabel } from "./SidebarThreadRow";
+import { SidebarActivityIndicator } from "./WorkingIndicator";
+import { isArchived, orderedSidebarThreads, orderedThreadList, threadRecency, threadUpdatedLabel } from "./SidebarThreadRow";
 import type { SidebarDensity } from "@/lib/sidebar-preferences";
 
 /** Attention is not history browsing: idle conversations never enter this list.
@@ -17,6 +20,15 @@ export function sidebarBotActivityTasks(bot: Bot, queued: Record<string, unknown
     // Routine runs are reachable through their run receipt, never a menu.
     .filter((task) => !task.routineRunId)
     .filter((task) => task.activity === "waiting-on-you" || task.activity === "working" || task.busy || task.waitingForTeammates === true || task.queued || task.unread);
+}
+
+/** Aggregate bot status shared by the normal roster and pinned avatar tiles. */
+export function sidebarBotStatus(bot: Bot, queued: Record<string, unknown[]>) {
+  const activityTasks = sidebarBotActivityTasks(bot, queued);
+  const waiting = bot.activity === "waiting-on-you" || activityTasks.some(task => task.activity === "waiting-on-you");
+  const working = !waiting && (Boolean(bot.busy) || activityTasks.some(task => task.busy || task.activity === "working"));
+  const teammateWait = !waiting && !working && (Boolean(bot.waitingForTeammates) || activityTasks.some(task => Boolean(task.waitingForTeammates)));
+  return { waiting, working, teammateWait, queued: activityTasks.some(task => task.queued), activityTasks };
 }
 
 /** What stays reachable when the thread tree is folded away: anything that
@@ -105,6 +117,22 @@ type FlatAttentionEntry = Task & {
   queued: boolean; botId?: string; botName?: string; groupId?: string; groupName?: string; groupThreadId?: string;
 };
 
+function toAttentionThreads(entries: FlatAttentionEntry[]): AttentionThread[] {
+  return entries.map(({ botId, botName, groupId, groupName, groupThreadId, ...task }): AttentionThread =>
+    groupId !== undefined
+      ? { kind: "group", groupId, groupName: groupName!, groupThreadId: groupThreadId!, task }
+      : { kind: "bot", botId: botId!, botName: botName!, task });
+}
+
+function botEntries(bot: Bot, queued: Record<string, unknown[]>, threads: Task[]): FlatAttentionEntry[] {
+  return threads.map((task) => ({ ...task, queued: Boolean(queued[task.threadId]?.length), botId: bot.id, botName: bot.name }));
+}
+
+function groupEntries(group: Group, bots: Bot[], queued: Record<string, unknown[]>, threads: GroupTask[]): FlatAttentionEntry[] {
+  const activity = new Map(sidebarGroupActivityTasks(group, bots, queued).map((task) => [task.threadId, task]));
+  return threads.map((task) => ({ ...task, ...activity.get(task.threadId), queued: Boolean(queued[task.threadId]?.length), groupId: group.id, groupName: group.name, groupThreadId: group.threadId }));
+}
+
 export function crossBotAttentionThreads(
   bots: Bot[], queued: Record<string, unknown[]>, exceptBotId?: string, groups: Group[] = [],
 ): AttentionThread[] {
@@ -112,19 +140,27 @@ export function crossBotAttentionThreads(
   // the unread reply of an earlier bot outrank the waiting approval of a
   // later room, which the sidebar tree never does. Hidden bots stay out
   // entirely; the archived-bots panel is where they resurface.
-  const flat: FlatAttentionEntry[] = [
+  return toAttentionThreads(orderedSidebarThreads([
     ...bots
       .filter((bot) => bot.id !== exceptBotId && !bot.hidden)
-      .flatMap((bot): FlatAttentionEntry[] => sidebarBotActivityTasks(bot, queued)
-        .map((task) => ({ ...task, botId: bot.id, botName: bot.name }))),
+      .flatMap((bot) => botEntries(bot, queued, sidebarBotActivityTasks(bot, queued))),
     ...groups
       .flatMap((group): FlatAttentionEntry[] => sidebarGroupActivityTasks(group, bots, queued)
         .map((task) => ({ ...task, groupId: group.id, groupName: group.name, groupThreadId: group.threadId }))),
-  ];
-  return orderedSidebarThreads(flat, "").map(({ botId, botName, groupId, groupName, groupThreadId, ...task }): AttentionThread =>
-    groupId !== undefined
-      ? { kind: "group", groupId, groupName: groupName!, groupThreadId: groupThreadId!, task }
-      : { kind: "bot", botId: botId!, botName: botName!, task });
+  ], ""));
+}
+
+export function crossBotAllThreads(bots: Bot[], groups: Group[], queued: Record<string, unknown[]>): AttentionThread[] {
+  return toAttentionThreads(orderedThreadList([
+    ...bots
+      .filter((bot) => !bot.hidden)
+      .flatMap((bot) => botEntries(bot, queued, (bot.tasks ?? [{
+        threadId: bot.threadId, title: t("task.newShort"), createdAt: 0,
+        busy: bot.busy, activity: bot.activity, unread: bot.unread, waitingForTeammates: bot.waitingForTeammates,
+      }]).filter((task) => !task.routineRunId && !isArchived(task)))),
+    ...groups
+      .flatMap((group) => groupEntries(group, bots, queued, group.tasks ?? [{ threadId: group.threadId, title: group.name, createdAt: group.createdAt }])),
+  ]));
 }
 
 /** Every pinned thread across every visible bot and room, newest pin first.
@@ -133,24 +169,13 @@ export function crossBotAttentionThreads(
  * never handled by two different code paths. Unlike attention, idle pins are
  * the common case, not the exception. */
 export function crossBotPinnedThreads(bots: Bot[], groups: Group[], queued: Record<string, unknown[]>): AttentionThread[] {
-  const flat: FlatAttentionEntry[] = [
+  return toAttentionThreads(orderedThreadList([
     ...bots
       .filter((bot) => !bot.hidden)
-      .flatMap((bot): FlatAttentionEntry[] => (bot.tasks ?? [])
-        .filter((task) => task.pinned === true && !task.routineRunId)
-        .map((task) => ({ ...task, queued: Boolean(queued[task.threadId]?.length), botId: bot.id, botName: bot.name }))),
+      .flatMap((bot) => botEntries(bot, queued, (bot.tasks ?? []).filter((task) => task.pinned === true && !task.routineRunId))),
     ...groups
-      .flatMap((group): FlatAttentionEntry[] => {
-        const activity = new Map(sidebarGroupActivityTasks(group, bots, queued).map((task) => [task.threadId, task]));
-        return (group.tasks ?? [])
-          .filter((task) => task.pinned === true)
-          .map((task) => ({ ...task, ...activity.get(task.threadId), queued: Boolean(queued[task.threadId]?.length), groupId: group.id, groupName: group.name, groupThreadId: group.threadId }));
-      }),
-  ];
-  return orderedThreadList(flat).map(({ botId, botName, groupId, groupName, groupThreadId, ...task }): AttentionThread =>
-    groupId !== undefined
-      ? { kind: "group", groupId, groupName: groupName!, groupThreadId: groupThreadId!, task }
-      : { kind: "bot", botId: botId!, botName: botName!, task });
+      .flatMap((group) => groupEntries(group, bots, queued, (group.tasks ?? []).filter((task) => task.pinned === true))),
+  ]));
 }
 
 /** The one row shape for attention entries: title, bot name, status, jump.
@@ -182,7 +207,7 @@ export function AttentionThreadRows({ entries, onJump }: { entries: AttentionThr
  * row twin, so it never looks dead while something is actually happening.
  * A hover-reveal unpin button sits beside the row, same pattern as the
  * thread tree's own row actions (SidebarThreadRow.tsx). */
-export function PinnedThreadRows({ entries, now, onJump, onUnpin }: { entries: AttentionThread[]; now: number; onJump: (entry: AttentionThread) => void; onUnpin: (entry: AttentionThread) => void }) {
+export function PinnedThreadRows({ entries, now, onJump, onUnpin, onDragStart, onDragEnd }: { entries: AttentionThread[]; now: number; onJump: (entry: AttentionThread) => void; onUnpin: (entry: AttentionThread) => void; onDragStart?: (event: DragEvent<HTMLElement>, entry: AttentionThread) => void; onDragEnd?: () => void }) {
   return <>
     {entries.map((entry) => {
       const name = attentionOwnerName(entry);
@@ -193,11 +218,13 @@ export function PinnedThreadRows({ entries, now, onJump, onUnpin }: { entries: A
       const unpinLabel = t("sidebar.bot.unpin");
       const key = `${entry.kind}-${entry.kind === "bot" ? entry.botId : entry.groupId}-${entry.task.threadId}`;
       const Icon = status.active ? status.Icon : Pin;
-      return <div key={key} className="group/pinned flex w-full items-center">
+      return <div key={key} data-pinned-thread-id={entry.task.threadId} draggable={entry.kind === "bot" && Boolean(onDragStart)} onDragStart={event => onDragStart?.(event, entry)} onDragEnd={onDragEnd} className="group/pinned flex w-full items-center">
         <button type="button" aria-label={label} title={label}
           onClick={() => onJump(entry)}
           className="flex min-w-0 flex-1 items-center gap-2.5 px-3.5 py-2 text-left text-[13px] text-ink hover:bg-raised/70">
-          <Icon size={15} aria-hidden="true" className={cn("shrink-0", status.active ? status.colorClass : "text-ink-secondary")} />
+          {entry.task.activity === "waiting-on-you" || (!entry.task.waitingForTeammates && (entry.task.busy || entry.task.activity === "working"))
+            ? <SidebarActivityIndicator waiting={entry.task.activity === "waiting-on-you"} working={Boolean(entry.task.busy || entry.task.activity === "working")} />
+            : <Icon size={15} aria-hidden="true" className={cn("shrink-0", status.active ? status.colorClass : "text-ink-secondary")} />}
           <span className="min-w-0 flex-1">
             <span className="block truncate">{entry.task.title}</span>
             <span className="block truncate text-[11px] text-ink-secondary">{byline}</span>
@@ -214,9 +241,8 @@ export function PinnedThreadRows({ entries, now, onJump, onUnpin }: { entries: A
 
 /** The escape hatch for other ongoing conversations when their tree is hidden.
  * These are selection-only buttons: no create, rename, move, or delete menu. */
-export function SidebarBotActivity({ bot, density }: { bot: Bot; density: SidebarDensity }) {
-  const { state, dispatch } = useStore();
-  const tasks = threadsWhenTreeHidden(bot, state.pendingQueued).filter((task) => task.threadId !== bot.threadId);
+export function SidebarBotActivity({ bot, density, pendingQueued, dispatch }: { bot: Bot; density: SidebarDensity; pendingQueued: AppState["pendingQueued"]; dispatch: Dispatch<Action> }) {
+  const tasks = threadsWhenTreeHidden(bot, pendingQueued).filter((task) => task.threadId !== bot.threadId);
   if (!tasks.length) return null;
   const iconOnly = density === "icons";
   return <div data-sidebar-bot-activity={bot.id} className={cn("mb-1 space-y-0.5", !iconOnly && "ml-6")}>

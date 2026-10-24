@@ -191,6 +191,19 @@ describe("CodexDriver turns (fake app-server)", () => {
     }
   });
 
+  it("starts the turn only after a custom MCP server still starting is ready", async () => {
+    const dump = join(scratch, "slow-mcp.json"); process.env.FAKE_CODEX_DUMP = dump;
+    await create({ environment: { HOME: scratch, CODEX_HOME: join(scratch, ".codex"), FAKE_CODEX_MCP_SLOW: "notes:300" } });
+    const { turnId } = await instance.adapter.sendTurn({ threadId: "slow-mcp", text: "Fixture",
+      integrations: { custom: { notes: { type: "http", url: "https://example.test/notes", headers: {} } } },
+    });
+    const completed = await recorder.until(event => event.type === "turn.completed" && event.turnId === turnId);
+    expect(completed).toMatchObject({ ok: true });
+    const methods = JSON.parse(readFileSync(dump, "utf8")).calls.map((call: { method: string }) => call.method);
+    expect(methods.indexOf("test/mcpReady")).toBeGreaterThan(-1);
+    expect(methods.indexOf("test/mcpReady")).toBeLessThan(methods.indexOf("turn/start"));
+  });
+
   it("refuses a scoped prompt when inherited shell snapshots cannot be disabled", async () => {
     const dump = join(scratch, "unsafe-shell-snapshot.json"); process.env.FAKE_CODEX_DUMP = dump;
     await create({ environment: { HOME: scratch, CODEX_HOME: join(scratch, ".codex"),
@@ -265,6 +278,39 @@ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});`)
       }
     }
     expect(readFileSync(receipt, "utf8")).toBe("agents:list_bots\nnotes:read_notes\nagents:list_bots\nnotes:read_notes\n");
+  });
+
+  it("keeps going after an announced next step without a person typing continue", async () => {
+    const dump = join(scratch, "announce.json"); process.env.FAKE_CODEX_DUMP = dump;
+    await create({ mode: "announce" });
+    await instance.adapter.sendTurn({ threadId: "codex-nudge", text: "fix the build" });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    expect(recorder.events.at(-1)).toMatchObject({ type: "turn.completed", ok: true });
+    // Round one's announcement is its own row; the continuation round's reply
+    // echoes the exact nudge prompt it received.
+    const texts = recorder.events
+      .filter((e) => e.type === "item.completed" && (e as { itemType?: string }).itemType === "assistant_text")
+      .map((e) => (e as { text?: string }).text ?? "");
+    expect(texts[0]).toBe("Now let me verify the build passes.");
+    expect(texts[1]).toContain("done — received: You announced your next step but ended the turn");
+    const { calls } = JSON.parse(readFileSync(dump, "utf8")) as { calls: Array<{ method: string }> };
+    expect(calls.filter((call) => call.method === "turn/start")).toHaveLength(2);
+  });
+
+  it("nudges at most once per turn", async () => {
+    const dump = join(scratch, "announce-twice.json"); process.env.FAKE_CODEX_DUMP = dump;
+    await create({ mode: "announce-twice" });
+    await instance.adapter.sendTurn({ threadId: "codex-nudge-twice", text: "fix the build" });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    expect(recorder.events.at(-1)).toMatchObject({ type: "turn.completed", ok: true });
+    const texts = recorder.events
+      .filter((e) => e.type === "item.completed" && (e as { itemType?: string }).itemType === "assistant_text")
+      .map((e) => (e as { text?: string }).text ?? "");
+    expect(texts.at(-1)).toContain("round 2 got: You announced your next step but ended the turn");
+    const { calls } = JSON.parse(readFileSync(dump, "utf8")) as { calls: Array<{ method: string }> };
+    expect(calls.filter((call) => call.method === "turn/start")).toHaveLength(2);
   });
 
   afterEach(async () => {

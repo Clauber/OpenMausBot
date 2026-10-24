@@ -243,8 +243,9 @@ export function resolveBotAvatarOutcome(params: {
  * values and images that fail to load both fall back to the animated mascot,
  * so an old/corrupt profile can never leave a broken-image icon in the app.
  */
-export function BotAvatar({ bot, size = 44, label, ...mascotProps }: BotAvatarProps) {
+export function BotAvatar({ bot, size = 44, label, crop, ...mascotProps }: BotAvatarProps & { crop?: BotAvatarCrop }) {
   const profile = botAvatarProfile(bot);
+  if (crop) profile.avatarCrop = crop;
   const [imageFailed, setImageFailed] = useState(false);
 
   useEffect(() => setImageFailed(false), [profile.avatarUrl]);

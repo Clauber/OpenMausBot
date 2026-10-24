@@ -1,9 +1,4 @@
-// Who a bot may reach, and how that team reads once it is inside a system
-// prompt. The Chief of Staff's roster (chief-of-staff.ts) and the roster
-// every other bot now gets are rendered from here, so there is one set of
-// caps, one sanitizer, and one reachability rule to audit rather than two
-// that drift.
-
+import { isMasterChief } from "./fleet-authority.ts";
 import { sameAudience } from "./bot-visibility.ts";
 import { spacesAllowBots } from "./space-scope.ts";
 import type { BotActivity } from "./store.ts";
@@ -39,9 +34,10 @@ export const PEER_ACCESS_HELP = "Call list_bots for reachable teammates. If the 
  * allows its Chief to work with additional teams. A title, peer id, imported
  * persona or a room membership is not a grant. Invalid saved grants fail closed. */
 export function canAccessTeam(
-  from: Pick<RosterMember, "section" | "chiefOfStaff" | "managedSections">,
+  from: Pick<RosterMember, "section" | "chiefOfStaff" | "managedSections"> & { id?: string; hidden?: boolean },
   section?: string,
 ): boolean {
+  if (isMasterChief(from)) return true;
   const target = sectionKey(section);
   return target === sectionKey(from.section) || Boolean(from.chiefOfStaff &&
     Array.isArray(from.managedSections) && from.managedSections.some(value =>
@@ -50,10 +46,11 @@ export function canAccessTeam(
 
 /** Returns whether `coordinator` is an authorized Chief of Staff supervising `bot`'s section. */
 export function coordinatorSupervises(
-  coordinator: Pick<RosterMember, "chiefOfStaff" | "managedSections"> | null | undefined,
+  coordinator: (Pick<RosterMember, "chiefOfStaff" | "managedSections"> & { id?: string; hidden?: boolean }) | null | undefined,
   bot: Pick<RosterMember, "section"> | null | undefined,
 ): boolean {
   if (!coordinator?.chiefOfStaff || !bot) return false;
+  if (isMasterChief(coordinator)) return true;
   const target = sectionKey(bot.section);
   if (!target) return false;
   return Boolean(
@@ -108,14 +105,13 @@ export function peerStatusWords(status: PeerStatus): string {
  * throwing mid-turn: the list is operator-owned local state, so degrading to
  * the documented default is safer than failing a turn. */
 export const peerAllowed = (
-  from: { id?: string; peers?: string[]; visibility?: unknown },
+  from: { id?: string; chiefOfStaff?: boolean; hidden?: boolean; peers?: string[]; visibility?: unknown },
   target: string | { id: string; visibility?: unknown },
 ): boolean => {
   const targetId = typeof target === "string" ? target : target.id;
-  if (Array.isArray(from.peers) && !from.peers.includes(targetId)) return false;
-  // Spaces are authorization boundaries: a bot reaches into another space
-  // (mention, ask, delegate) only when that pair of spaces is allowlisted.
+  if (!isMasterChief(from) && Array.isArray(from.peers) && !from.peers.includes(targetId)) return false;
   if ("id" in from && typeof from.id === "string" && !spacesAllowBots(from.id, targetId)) return false;
+
   // Given the record, also require the same audience: a teammate that other
   // people can see would carry this bot's words, or bring back a restricted
   // bot's answers, to people who cannot see the other (bot-visibility.ts).
@@ -128,30 +124,20 @@ export function canReachPeer(from: RosterMember, target: RosterMember): boolean 
   return from.id !== target.id && !target.hidden && canAccessTeam(from, target.section) && peerAllowed(from, target);
 }
 
-/** The peers a bot can both see and reach right now. The roster, list_bots
- * and @mention resolution all read this one list, so what a bot is TOLD
- * about its team can never be wider than what the comms endpoints will
- * actually let it do. */
+export function canConsultMaster(from: RosterMember, target: RosterMember): boolean {
+  return from.id !== target.id && !from.hidden && isMasterChief(target) && peerAllowed(from, target);
+}
+
 export function reachablePeers<T extends RosterMember>(bots: readonly T[], from: RosterMember): T[] {
   return bots.filter(bot => canReachPeer(from, bot));
 }
 
-/** What a bot wrote in a bot-id slot, resolved to a teammate.
- *
- * Models copy ids from list_bots most of the time, but a Chief reading its
- * roster reaches for the name it sees there, and a name that names exactly
- * one reachable teammate is not a mistake worth refusing: the refusal reads
- * as a teammate that is gone, and the person is then told the platform lost
- * their team (#1348). Names resolve only inside `reachablePeers` — the same
- * set list_bots and the roster show — so a name can never reach a bot the id
- * could not. An id is always taken as an id, hidden or unreachable included:
- * the route says what is wrong with it. Two reachable teammates with one
- * name is the person's naming, not the model's error, so it is refused with
- * the way out instead of picking one. */
 export function resolveTeammate<T extends RosterMember>(
   bots: readonly T[],
   from: RosterMember,
   raw: string,
+  roommates: readonly T[] = [],
+  canReach: (from: RosterMember, target: RosterMember) => boolean = canReachPeer,
 ): { id: string; byName: boolean } | { error: string } {
   const wanted = raw.trim();
   if (bots.some(bot => bot.id === wanted)) return { id: wanted, byName: false };
@@ -161,7 +147,9 @@ export function resolveTeammate<T extends RosterMember>(
   // other text that lands in a model's context, never a bot's persona.
   const shown = peerName(wanted) || wanted;
   if (!name) return { error: `No bot with id "${shown}" — call list_bots and copy the exact id from the result` };
-  const matches = reachablePeers(bots, from).filter(bot => fold(bot.name) === name);
+  const peers = bots.filter(bot => canReach(from, bot));
+  const reachable = [...peers, ...roommates.filter(bot => bot.id !== from.id && !bot.hidden && !peers.includes(bot))];
+  const matches = reachable.filter(bot => fold(bot.name) === name);
   if (matches.length === 1) return { id: matches[0]!.id, byName: true };
   if (matches.length > 1) {
     return { error: `${matches.length} reachable teammates are named "${shown}" — call list_bots and use the id of the one you mean` };
@@ -199,7 +187,7 @@ const oneLine = (value: string): string => {
   return flattened.replace(/\s+/g, " ").trim();
 };
 
-const clip = (value: string, max: number): string => {
+export const clip = (value: string, max: number): string => {
   const flat = oneLine(value);
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 };

@@ -209,3 +209,40 @@ saved destination snapshots, dated result cards, approval links, deleted-thread
 fallback, and continued user conversations staying visible. Native decoding and
 thread-list tests retain hidden execution records for direct navigation and
 approvals while omitting them from ordinary iOS/Android thread pickers.
+
+## Pre-check skips and routine wake decisions
+
+Focused checks:
+
+```sh
+pnpm exec vitest run server/routine-precheck.test.ts server/routines-precheck.test.ts server/routines-precheck.e2e.test.ts server/decider/routine-wake.test.ts server/routine-requests.test.ts server/decider/jobs.test.ts server/decider/decider.test.ts src/components/DecisionModelSettings.test.ts
+```
+
+The scheduler/process checks cover strict whole-array validation, literal
+arguments, process errors, stdout/stderr caps, timeout and child cleanup,
+probability thresholds, cancellation/deletion/pause while awaiting a decision,
+readiness changes, checked-item persistence and legacy configuration. The
+real-server fixture uses only local scripts and the fake engine: an empty
+scheduled check produces a central skipped receipt and no chat card/turn;
+Run now bypasses it; a missing executable wakes and completes normally.
+This fixture does not validate a live inbox or hosted decision provider.
+
+For browser verification, launch the isolated renderer above, create one
+bot and note its bot id and visible thread id. Through that fixture's
+`POST /api/routines`, create a once-at-now routine with `resultsThreadId` set
+to the visible thread and `preCheck.command` set to the local Node executable,
+`args: ["-e", "console.log('{\\\"items\\\":[]}')"]`. Wait for the normal
+scheduler tick. Open **Automations → Run logs**: the run must say **Skipped**;
+its original chat must have no run card and no assistant reply. Reload and
+confirm the same receipt remains. Choose **Run now** and verify a normal run
+card and fake-engine reply. Repeat with a nonexistent absolute executable:
+it must wake normally and its receipt must record the fallback reason.
+
+Open **Settings → Decision model** and verify **Wake routines for useful
+items** exists and starts off. An isolated loopback Jev-compatible fixture
+can exercise the on state: respond with both fixed-choice probabilities,
+`noise_only: 0.7` and `needs_bot: 0.3`, to nonempty checked items and verify
+another central skip without a card. At 0.699, malformed answers, or a timeout,
+verify a normal turn with every checked item in the untrusted prompt block.
+Use temporary fixture data and fake credentials only; do not switch on or
+reconfigure a live workspace for this check.

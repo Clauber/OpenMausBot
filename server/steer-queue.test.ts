@@ -568,6 +568,7 @@ describe("steer-queue e2e (fake ACP fleet)", () => {
   let receiptGate: string;
   let dispatchGate: string;
   let roomGate: string;
+  let roomNowGate: string;
   const evidence: unknown[] = [];
   let evidencePath: string;
 
@@ -626,6 +627,7 @@ describe("steer-queue e2e (fake ACP fleet)", () => {
     receiptGate = join(home, "gates", "receipt-provider.gate");
     dispatchGate = join(home, "gates", "early-dispatch.gate");
     roomGate = join(home, "gates", "room.gate");
+    roomNowGate = join(home, "gates", "room-now.gate");
     evidencePath = join(tmpdir(), `omb-steer-evidence-${Date.now()}-${process.pid}.json`);
     // The CLI and harness remain real. Delay only the adapter's returned
     // acknowledgment, reproducing completion before sendTurn resolves.
@@ -708,6 +710,11 @@ describe("steer-queue e2e (fake ACP fleet)", () => {
           steerRoom: {
             driver: "grokAgent",
             environment: { FAKE_ACP_MODE: "echo-gated", FAKE_ACP_GATE_FILE: roomGate },
+            config: { cli: FAKE_CLI, fullAuto: true },
+          },
+          steerRoomNow: {
+            driver: "grokAgent",
+            environment: { FAKE_ACP_MODE: "echo-gated", FAKE_ACP_GATE_FILE: roomNowGate },
             config: { cli: FAKE_CLI, fullAuto: true },
           },
         },
@@ -945,6 +952,41 @@ describe("steer-queue e2e (fake ACP fleet)", () => {
       expect(directEchoes).toHaveLength(1);
       expect((await groupById(room.id))?.working).toBe(false);
       evidence.push({ groupTurnQueue: { direct, after } });
+    },
+    60_000,
+  );
+
+  it(
+    "Send now starts a 1:1 message queued behind the room turn beside the room",
+    async () => {
+      const bot = await newBot("steerRoomNow", "RoomNow");
+      const room = (await api("POST", "/api/groups", {
+        name: "Busy Room",
+        memberIds: [bot.id],
+        setup: { bulletin: "", defaultResponder: { kind: "member", botId: bot.id } },
+      })).body.group;
+      expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "room work" })).status).toBe(202);
+      await until(async () => (await groupById(room.id))?.working === true, "the room turn to start");
+
+      const direct = await api("POST", `/api/bots/${bot.id}/messages`, { text: "do this now" });
+      expect(direct.body).toMatchObject({ ok: true, queued: true, reason: "group-turn" });
+
+      // the 1:1 thread is idle, so there is no turn to steer into: Send now
+      // starts the words while the room keeps its turn
+      const sent = await api("POST", `/api/bots/${bot.id}/queue/${direct.body.queueId}/steer`, {});
+      expect(sent.status).toBe(200);
+      expect(sent.body).toMatchObject({ ok: true, started: true });
+      const during = await botById(bot.id);
+      expect(during.messages.filter((m: any) => m.role === "user").map((m: any) => m.text)).toEqual(["do this now"]);
+      expect((await groupById(room.id))?.working).toBe(true);
+
+      writeFileSync(roomNowGate, "open");
+      await until(async () => {
+        const after = await botById(bot.id);
+        return !after.busy && echoes(after).some((reply) => reply.text.includes("do this now"));
+      }, "the 1:1 turn started beside the room");
+      expect(echoes(await botById(bot.id)).filter((reply) => reply.text.includes("do this now"))).toHaveLength(1);
+      await until(async () => (await groupById(room.id))?.working === false, "the room turn to finish");
     },
     60_000,
   );

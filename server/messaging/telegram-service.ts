@@ -9,8 +9,8 @@ import { z } from "zod";
 
 import type { JsonValue } from "../schema.ts";
 
-import { safeEqual, type TelegramBinding, type TelegramBindingStore } from "./store.ts";
-import { createTelegramClient, type TelegramClient } from "./telegram.ts";
+import { safeEqual, type TelegramBinding, type TelegramBindingStore } from "./telegram-store.ts";
+import { createTelegramClient, TelegramApiError, TelegramPollAborted, type TelegramClient } from "./telegram.ts";
 
 export type TelegramPhase = "working" | "waiting" | "settled" | "untracked";
 
@@ -33,6 +33,10 @@ export interface TelegramServiceOptions {
   pollMs?: number;
   typingMs?: number;
   maxWaitMs?: number;
+  /** getUpdates long-poll hold, seconds (Bot API caps at 50). */
+  getUpdatesTimeoutS?: number;
+  /** First wait after a failed poll round; doubles up to a minute. */
+  backoffMs?: number;
   log?: (message: string) => void;
 }
 
@@ -66,10 +70,13 @@ export class TelegramService {
   private readonly seen = new Map<string, number[]>();
   private readonly inflightChats = new Set<string>();
   private readonly pending = new Set<Promise<void>>();
+  private readonly pollers = new Map<string, { abort: AbortController }>();
+  private readonly pollerStates = new Map<string, { status: "starting" | "polling" | "backing-off" | "error" | "stopped"; error?: string; at: number }>();
+  private readonly webhookCleared = new Set<string>();
   private stopped = false;
 
   constructor(options: TelegramServiceOptions) {
-    this.o = { pollMs: 1000, typingMs: 4000, maxWaitMs: 30 * 60_000, ...options };
+    this.o = { pollMs: 1000, typingMs: 4000, maxWaitMs: 30 * 60_000, getUpdatesTimeoutS: 50, backoffMs: 1000, ...options };
   }
 
   private client(binding: TelegramBinding): TelegramClient {
@@ -78,10 +85,13 @@ export class TelegramService {
 
   /** Resolves when every accepted message has been answered (tests, shutdown). */
   async idle(): Promise<void> {
-    while (this.pending.size) await Promise.allSettled(this.pending);
+    while (this.pending.size) await Promise.allSettled(Array.from(this.pending));
   }
 
-  stop(): void { this.stopped = true; }
+  stop(): void {
+    this.stopped = true;
+    for (const poller of this.pollers.values()) poller.abort.abort();
+  }
 
   /** The webhook entry point. Answers Telegram at once; the turn runs on. */
   receive(bindingId: string, secretHeader: string | undefined, raw: unknown): TelegramReceipt {
@@ -95,13 +105,141 @@ export class TelegramService {
     const recent = this.seen.get(binding.id) ?? [];
     if (recent.includes(update.update_id)) return { status: 200, body: { ok: true, duplicate: true } };
     this.seen.set(binding.id, [...recent.slice(-199), update.update_id]);
+    return this.dispatch(binding, update)
+      ? { status: 200, body: { ok: true } }
+      : { status: 200, body: { ok: true, ignored: true } };
+  }
+
+  /** Shared inbound path: private-chat text turns (and pairing codes) run;
+   * everything else is ignored. Returns null when the update carried no
+   * work, else the running work promise (dispatch is fire-and-forget: the
+   * caller — Telegram's webhook answer or the poll loop's offset advance —
+   * must not wait half an hour for a turn). The binding is re-read so a
+   * chat paired between poll rounds is seen with its fresh state. */
+  private dispatch(binding: TelegramBinding, update: Update): Promise<void> | null {
+    const current = this.o.store.get(binding.id) ?? binding;
     const message = update.message;
-    if (!message || message.chat.type !== "private" || message.from?.is_bot) return { status: 200, body: { ok: true, ignored: true } };
-    const work = this.process(binding, message, update.update_id)
+    if (!message || message.chat.type !== "private" || message.from?.is_bot) return null;
+    const work = this.process(current, message, update.update_id)
       .catch((error) => this.o.log?.(`telegram ${binding.id}: ${error instanceof Error ? error.message : String(error)}`))
       .finally(() => this.pending.delete(work));
     this.pending.add(work);
-    return { status: 200, body: { ok: true } };
+    return work;
+  }
+
+  // ---- getUpdates long-polling (the default inbound transport; no public URL) ----
+
+  /** Live state of a binding's poller, for the admin API. */
+  pollerState(bindingId: string): { status: string; error?: string; at: number } | undefined {
+    return this.pollerStates.get(bindingId);
+  }
+
+  /** Start (or no-op) the poller for one binding. */
+  startPolling(bindingId: string): void {
+    if (this.stopped || (this.pollers.has(bindingId) && !this.pollers.get(bindingId)!.abort.signal.aborted)) return;
+    const abort = new AbortController();
+    this.pollers.set(bindingId, { abort });
+    this.pollerStates.set(bindingId, { status: "starting", at: Date.now() });
+    const loop = this.runPoller(bindingId, abort)
+      .catch((error) => {
+        if (this.stopped || abort.signal.aborted) return;
+        this.o.log?.(`telegram ${bindingId}: poller crashed: ${error instanceof Error ? error.message : String(error)}`);
+        this.pollerStates.set(bindingId, { status: "error", error: error instanceof Error ? error.message : String(error), at: Date.now() });
+      });
+    void loop;
+  }
+
+  stopPolling(bindingId: string): void {
+    this.pollers.get(bindingId)?.abort.abort();
+    this.pollerStates.set(bindingId, { status: "stopped", at: Date.now() });
+  }
+
+  /** Boot: poll every binding that is not on webhook delivery. */
+  startAll(): void {
+    for (const binding of this.o.store.list()) {
+      if (binding.transport !== "webhook") this.startPolling(binding.id);
+    }
+  }
+
+  private async runPoller(bindingId: string, abort: AbortController): Promise<void> {
+    const { store, getUpdatesTimeoutS, backoffMs } = this.o;
+    let backoff = 0;
+    try {
+      const legacy = store.get(bindingId);
+      if (legacy && !legacy.transport) {
+        try {
+          const info = await this.client(legacy).getWebhookInfo(abort.signal);
+          if (this.stopped || abort.signal.aborted) return;
+          const current = store.get(bindingId);
+          if (!current) return;
+          if (!current.transport) {
+            store.setTransport(bindingId, info.url ? "webhook" : "poll");
+            if (!info.url) this.webhookCleared.add(bindingId);
+          }
+        } catch (error) {
+          if (this.stopped || abort.signal.aborted) return;
+          const detail = (error instanceof Error ? error.message : String(error)).split(legacy.token).join("<token>");
+          this.pollerStates.set(bindingId, { status: "error", error: detail, at: Date.now() });
+          this.o.log?.(`telegram ${bindingId}: transport discovery failed: ${detail}`);
+          return;
+        }
+      }
+      while (!this.stopped && !abort.signal.aborted) {
+        const binding = store.get(bindingId);
+        // Deleted, or switched to webhook delivery: the poller's job is done.
+        if (!binding || binding.transport === "webhook") break;
+        const client = this.client(binding);
+        try {
+          // getUpdates and a webhook are mutually exclusive per token; clear
+          // any registration once per poller so the first poll cannot 409.
+          if (!this.webhookCleared.has(bindingId)) {
+            await client.deleteWebhook();
+            if (this.stopped || abort.signal.aborted) return;
+            this.webhookCleared.add(bindingId);
+          }
+          let offset = binding.pollOffset ?? 0;
+          this.pollerStates.set(bindingId, { status: "polling", at: Date.now() });
+          // Telegram confirms update N by the next call asking for N + 1.
+          const updates = await client.getUpdates(offset + 1, getUpdatesTimeoutS, abort.signal);
+          for (const update of updates) {
+            if (update.update_id <= offset) continue;
+            const parsed = updateSchema.safeParse(update);
+            if (parsed.success) this.dispatch(binding, parsed.data);
+            offset = update.update_id;
+            store.setPollOffset(bindingId, offset);
+          }
+          backoff = 0;
+        } catch (error) {
+          if (abort.signal.aborted || error instanceof TelegramPollAborted) break;
+          const waitMs = this.pollerWaitMs(error, () => (backoff = backoff ? Math.min(backoff * 2, 60_000) : backoffMs));
+          this.pollerStates.set(bindingId, { status: waitMs.state, error: error instanceof Error ? error.message : String(error), at: Date.now() });
+          if (waitMs.state === "error") break; // e.g. a webhook is active elsewhere; needs an explicit change
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, waitMs.ms);
+            abort.signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
+          });
+        }
+      }
+    } finally {
+      if (this.pollers.get(bindingId)?.abort === abort) {
+        this.pollers.delete(bindingId);
+        const state = this.pollerStates.get(bindingId);
+        if (state?.status !== "error") this.pollerStates.set(bindingId, { status: "stopped", at: Date.now() });
+      }
+    }
+  }
+
+  /** How long to wait after a failed round, and whether to keep going. */
+  private pollerWaitMs(error: unknown, grow: () => number): { ms: number; state: "backing-off" | "error" } {
+    if (error instanceof TelegramApiError) {
+      // Another registration owns the token's updates; polling here cannot start.
+      if (error.status === 409) return { ms: 0, state: "error" };
+      if (error.status === 429) {
+        const retryAfter = Number(/after (\d+)/.exec(error.message)?.[1]);
+        return { ms: Number.isFinite(retryAfter) ? Math.min(retryAfter * 1000, 60_000) : grow(), state: "backing-off" };
+      }
+    }
+    return { ms: grow(), state: "backing-off" };
   }
 
   private async process(binding: TelegramBinding, message: Message, updateId: number): Promise<void> {

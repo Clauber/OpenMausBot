@@ -60,10 +60,10 @@ function deps(overrides: Partial<LiveRouteDeps> = {}): LiveRouteDeps & { saved: 
       deviceRevoked: vi.fn((device: string) => (device === "phone-1" ? { ...call, client: "ios" as const, status: "ending" as const } : null)),
     },
     resolveTarget: (botId, threadId) => (botId === "bot1" && (threadId ?? "t1") === "t1" ? { botId, botName: "Ada", threadId: threadId ?? "t1" } : null),
-    settings: () => ({ configured: true, voice: "marin", readTypedReplies: true, idleMinutes: 5 }),
+    settings: () => ({ configured: true, provider: "openai", codexConfigured: false, voice: "marin", readTypedReplies: true, idleMinutes: 5 }),
     saveSettings: vi.fn(async (patch: SettingsPatch): Promise<LiveSettings> => {
       saved.push(patch);
-      return { configured: true, voice: "marin", readTypedReplies: true, idleMinutes: 5, ...patch };
+      return { configured: true, provider: "openai", codexConfigured: false, voice: "marin", readTypedReplies: true, idleMinutes: 5, ...patch };
     }),
     ...overrides,
   };
@@ -142,7 +142,7 @@ describe("live routes", () => {
   });
   it("never answers with the key", async () => {
     const res = await request(deps(), "PATCH", "/api/live/settings", { voice: "cedar" });
-    expect(res).toEqual({ status: 200, body: { live: { configured: true, voice: "cedar", readTypedReplies: true, idleMinutes: 5 } } });
+    expect(res).toEqual({ status: 200, body: { live: { configured: true, provider: "openai", codexConfigured: false, voice: "cedar", readTypedReplies: true, idleMinutes: 5 } } });
   });
   it("passes other paths and methods", async () => {
     expect(await request(deps(), "GET", "/api/live/summary")).toEqual({ status: 404, body: { from: "inline routes" } });

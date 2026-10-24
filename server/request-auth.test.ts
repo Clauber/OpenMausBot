@@ -115,13 +115,15 @@ describe("scopes", () => {
       ["POST", "/api/webhooks"], ["POST", "/api/webhooks/w/rotate"], ["POST", "/api/bots/x/skills"], ["PATCH", "/api/bots/x/skills/s"],
       ["PATCH", "/api/bots/x/model"], ["PATCH", "/api/groups/g/setup"], ["POST", "/api/teams/import"], ["GET", "/api/teams/scout"],
       ["GET", "/api/bots/x/memory"], ["PUT", "/api/bots/x/memory"], ["PUT", "/api/section-context"], ["GET", "/api/threads/t/events"],
-      ["POST", "/api/bots/x/checkpoints/restore"], ["GET", "/api/mcp/servers"], ["POST", "/api/mcp/servers"], ["POST", "/api/connectors/slack/authorize"],
+      ["GET", "/api/mcp/servers"], ["POST", "/api/mcp/servers"], ["POST", "/api/connectors/slack/authorize"],
       ["POST", "/api/bots/x/slack-management"], ["GET", "/api/bots/x/slack-management/extra"],
       ["PUT", "/api/config"], ["POST", "/api/auth/pairing"], ["GET", "/api/auth/sessions"], ["DELETE", "/api/auth/sessions/abc"],
       // Live calls spend the owner's OpenAI key and reach any bot: admins only
       ["POST", "/api/live/session"], ["POST", "/api/live/call/end"], ["GET", "/api/live/call"], ["PATCH", "/api/live/settings"],
       ["POST", "/api/live/device-revoked"],
       ["POST", "/api/auth/pair"], // handled before the gate; the gate itself never grants it
+      ["POST", "/api/team-library/grok"], ["GET", "/api/team-library/cursor"],
+      ["POST", "/api/team-library/cursor/sign-in"], ["POST", "/api/team-library/cursor/sign-out"],
       ["GET", "/api/something-new"], // anything unlisted is admin until listed
     ] as const) expect(requiredScope(method, path), `${method} ${path}`).toBe("admin");
   });
@@ -132,7 +134,7 @@ describe("scopes", () => {
     expect(clientBotPatchViolation({ unread: true, autoApprove: true })).toBe("autoApprove");
     expect(clientBotPatchViolation({ cwd: "/" })).toBe("cwd");
     expect(clientBotPatchViolation([])).toBe("body");
-    expect(clientGroupPatchViolation({ name: "Ops", unread: false })).toBeNull();
+    expect(clientGroupPatchViolation({ name: "Ops", unread: false, turnTimeoutMinutes: 30 })).toBeNull();
     expect(clientGroupPatchViolation({ cwd: "/tmp" })).toBe("cwd");
     expect(clientGroupPatchViolation({ memberIds: [] })).toBe("memberIds");
   });

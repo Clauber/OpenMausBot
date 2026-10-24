@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import type { ServerResponse } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BrowserRuntime } from "./browser-runtime.ts";
-import { BrowserLive, browserStreamPort, normalizeBrowserLiveMessage, parseBrowserLiveAction } from "./browser-live.ts";
+import { BrowserActionFailedError, BrowserLive, browserStreamPort, normalizeBrowserLiveMessage, parseBrowserLiveAction } from "./browser-live.ts";
 
 const execute = vi.hoisted(() => vi.fn());
 const nativeClose = vi.hoisted(() => vi.fn());
@@ -205,6 +205,26 @@ describe("authenticated browser viewer relay", () => {
     expect(res.writableEnded).toBe(false);
     expect(res.chunks).toHaveLength(0);
   });
+  it("reports an action the engine answered as failed as settled, and keeps the view usable", async () => {
+    const { action } = await open();
+    await action({ type: "take" });
+    execute.mockRejectedValueOnce(Object.assign(new Error("Command failed: agent-browser tab close t1"), {
+      code: 1, stdout: JSON.stringify({ success: false, data: null, error: "Cannot close the last tab" }) + "\n", stderr: "",
+    }));
+    const refused = action({ type: "tab-close", tabId: "t1" });
+    await expect(refused).rejects.toMatchObject({ status: 422, settled: true, message: "The browser could not do that. Try again." });
+    await expect(refused).rejects.toBeInstanceOf(BrowserActionFailedError);
+    execute.mockResolvedValueOnce(output({ url: "https://example.com/" }));
+    await expect(action({ type: "navigate", url: "https://example.com/" })).resolves.toEqual({ ok: true });
+  });
+
+  it("still treats a command with no answer as interrupted", async () => {
+    const { action } = await open();
+    await action({ type: "take" });
+    execute.mockRejectedValueOnce(Object.assign(new Error("Command failed"), { code: null, signal: "SIGTERM", stdout: "", stderr: "" }));
+    await expect(action({ type: "navigate", url: "https://example.com/" })).rejects.not.toHaveProperty("settled");
+  });
+
   it("resets a daemon stuck on a failed launch so reconnecting starts a fresh session (#1383)", async () => {
     const openS = () => live.open({ botId: "a", session: "s", owner: "a", isCurrent: () => true,
       res: new ResponseFixture() as unknown as ServerResponse, spec: { command: "/engine", env: { AGENT_BROWSER_SESSION: "s" } } });
@@ -261,15 +281,24 @@ describe("authenticated browser viewer relay", () => {
     await expect(reconnecting).rejects.toThrow("Reconnect to retry");
     expect(nativeClose).toHaveBeenCalledTimes(2);
   });
-  it("only acknowledges the exact frame rendered by this bound viewer", async () => {
+  it("lets two frames travel to its view unacknowledged, and the next only on the view's own ACK of a frame it was sent", async () => {
     const { res, socket, action } = await open();
     socket.receive(frame);
     expect(res.events("frame")).toHaveLength(1);
-    expect(socket.messages).toHaveLength(0);
-    await action({ type: "ack", seq: 999 });
-    expect(socket.messages).toHaveLength(0);
-    await action({ type: "ack", seq: 1 });
     expect(socket.messages).toEqual([{ type: "ack", seq: 1 }]);
+    socket.receive({ ...frame, seq: 2 });
+    expect(res.events("frame").map((event) => event.seq)).toEqual([1, 2]);
+    expect(socket.messages).toEqual([{ type: "ack", seq: 1 }]);
+    await action({ type: "ack", seq: 999 });
+    expect(socket.messages).toEqual([{ type: "ack", seq: 1 }]);
+    await action({ type: "ack", seq: 1 });
+    expect(socket.messages).toEqual([{ type: "ack", seq: 1 }, { type: "ack", seq: 2 }]);
+    socket.receive({ ...frame, seq: 3 });
+    socket.receive({ ...frame, seq: 4 });
+    expect(socket.messages).toHaveLength(2);
+    // An ACK of a later frame stands for the ones before it.
+    await action({ type: "ack", seq: 3 });
+    expect(socket.messages.at(-1)).toEqual({ type: "ack", seq: 4 });
     await expect(live.action({ viewerId: res.id, botId: "bot-a", owner: "another-admin", body: { type: "take" } })).rejects.toThrow("no longer available");
     await expect(live.action({ viewerId: res.id, botId: "other-bot", owner: "admin-a", body: { type: "take" } })).rejects.toThrow("no longer available");
   });
@@ -302,6 +331,47 @@ describe("authenticated browser viewer relay", () => {
     await vi.advanceTimersByTimeAsync(30_000);
     expect(a.res.writableEnded).toBe(false); expect(a.res.destroyed).toBe(false);
     expect(a.socket.messages).toEqual([{ type: "ack", seq: 1 }, { type: "ack", seq: 3 }]);
+  });
+  it("tells its view how many inputs one request may carry", async () => {
+    const { res } = await open();
+    expect(res.events("ready")[0]).toMatchObject({ inputBatch: 64 });
+  });
+  it("sends a batch of inputs in order in one request, without the moves a later move replaces", async () => {
+    const a = await open();
+    await a.action({ type: "take" });
+    const move = (x: number) => ({ type: "input_mouse", eventType: "mouseMoved", x, y: 10 });
+    await a.action({ type: "input_batch", events: [
+      move(1), move(2), move(3),
+      { type: "input_keyboard", eventType: "keyDown", key: "a", code: "KeyA", text: "a" },
+      { type: "input_keyboard", eventType: "keyUp", key: "a", code: "KeyA" },
+      move(4), { type: "input_keyboard", eventType: "char", text: "bc" },
+    ] });
+    const sent = nativeInput.mock.calls.map((call) => JSON.parse(call[1].body));
+    expect(sent.map((command) => [command.action, command.type ?? command.subaction, command.x ?? command.key ?? command.text])).toEqual([
+      ["input_mouse", "mouseMoved", 3], ["input_keyboard", "keyDown", "a"], ["input_keyboard", "keyUp", "a"],
+      ["input_mouse", "mouseMoved", 4], ["keyboard", "insertText", "bc"],
+    ]);
+  });
+  it("stops a batch at the first input the browser does not confirm, and sends nothing after it", async () => {
+    const a = await open();
+    await a.action({ type: "take" });
+    nativeInput.mockImplementation(async (_url: string, init: { body: string }) =>
+      Response.json({ success: !JSON.parse(init.body).text?.includes("b") }));
+    await expect(a.action({ type: "input_batch", events: [
+      { type: "input_keyboard", eventType: "char", text: "a" },
+      { type: "input_keyboard", eventType: "char", text: "b" },
+      { type: "input_keyboard", eventType: "char", text: "c" },
+    ] })).rejects.toThrow();
+    expect(nativeInput.mock.calls.map((call) => JSON.parse(call[1].body).text)).toEqual(["a", "b"]);
+  });
+  it.each([
+    ["no inputs", []],
+    ["too many inputs", Array.from({ length: 65 }, () => ({ type: "input_keyboard", eventType: "char", text: "a" }))],
+    ["a command", [{ type: "navigate", url: "https://example.com" }]],
+    ["a batch inside a batch", [{ type: "input_batch", events: [{ type: "input_keyboard", eventType: "char", text: "a" }] }]],
+    ["a malformed input", [{ type: "input_mouse", eventType: "mouseMoved", x: -1, y: 0 }]],
+  ])("refuses a batch with %s", (_name, events) => {
+    expect(() => parseBrowserLiveAction({ type: "input_batch", events })).toThrow("Invalid browser action.");
   });
   it("requires a viewer-specific human lease and releases only its own control on disconnect", async () => {
     const a = await open(); const b = await open({ botId: "bot-b" });

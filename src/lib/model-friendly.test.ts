@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { friendlyEffort, modelBlurb, simpleEffortLevels } from "./model-friendly";
 
 describe("simple effort levels", () => {
-  it("offers quick, balanced, deep and max when the engine has them", () => {
+  it("offers the engine effort levels with native names", () => {
     expect(simpleEffortLevels(["none", "low", "medium", "high", "xhigh", "max"], undefined)).toEqual(["low", "medium", "high", "max"]);
-    expect(["low", "medium", "high", "max"].map((level) => friendlyEffort(level as never))).toEqual(["Quick", "Balanced", "Deep", "Max"]);
+    expect((["none", "low", "medium", "high", "xhigh", "max"] as const).map(friendlyEffort)).toEqual(["None", "Low", "Medium", "High", "X-High", "Max"]);
   });
 
   it("uses X-High as the top step when there is no max", () => {

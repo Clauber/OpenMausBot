@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { Bot, Group, GroupTask, Task } from "@/state/store";
 import { botShowsUnread } from "@/lib/bot-unread";
 import { t } from "@/lib/i18n";
-import { attentionJumpAction, attentionOwnerName, attentionRowStatus, attentionUnpinAction, crossBotAttentionThreads, crossBotPinnedThreads, sidebarGroupActivityTasks } from "./SidebarBotActivity";
+import { attentionJumpAction, attentionOwnerName, attentionRowStatus, attentionUnpinAction, crossBotAllThreads, crossBotAttentionThreads, crossBotPinnedThreads, sidebarGroupActivityTasks } from "./SidebarBotActivity";
 
 const task = (threadId: string, title: string, extra: Partial<Task>): Task =>
   ({ threadId, title, createdAt: 0, ...extra }) as Task;
@@ -146,6 +146,28 @@ describe("cross-bot pinned threads", () => {
     const entries = crossBotPinnedThreads([alpha, beta], [], {});
     expect(entries.map((entry) => entry.task.threadId)).toEqual(["b1", "a1"]);
     expect(entries.map((entry) => attentionOwnerName(entry))).toEqual(["Beta", "Alpha"]);
+  });
+
+  it("lists every bot and room thread newest first, dropping routine runs and hidden bots", () => {
+    const alpha = bot("a", "Alpha", "a0", [
+      task("a0", "Idle chat", { updatedAt: 30 }),
+      task("a1", "Routine run", { routineRunId: "run-1", updatedAt: 40 }),
+      task("a2", "Put away", { archivedAt: 5, updatedAt: 35 }),
+    ]);
+    const beta = bot("b", "Beta", "b0", undefined, { hidden: true });
+    const gamma = bot("g", "Gamma", "g0", undefined);
+    const room = group("r", "Crew", "r0", { tasks: [{ threadId: "r0", title: "Crew", createdAt: 0, updatedAt: 10 }] });
+    const entries = crossBotAllThreads([alpha, beta, gamma], [room], {});
+    expect(entries.map((entry) => `${entry.kind}:${entry.task.threadId}`)).toEqual(["bot:a0", "group:r0", "bot:g0"]);
+    expect(entries.map((entry) => attentionOwnerName(entry))).toEqual(["Alpha", "Crew", "Gamma"]);
+    expect(attentionJumpAction(entries[0])).toEqual({ type: "switchTask", botId: "a", threadId: "a0" });
+    expect(attentionJumpAction(entries[1])).toEqual({ type: "select", id: "r" });
+  });
+
+  it("falls back to the room's primary thread when it has no task list", () => {
+    const room = group("r", "Crew", "r0");
+    const [entry] = crossBotAllThreads([], [room], {});
+    expect(entry).toMatchObject({ kind: "group", groupId: "r", groupThreadId: "r0", task: { threadId: "r0", title: "Crew" } });
   });
 
   it("ignores a pinned routine run and a hidden bot", () => {

@@ -13,6 +13,7 @@ Regression checks (all use disposable fixtures):
 
 ```sh
 pnpm exec vitest run server/room-handoffs.test.ts server/direct-coordination.e2e.test.ts server/room-coordination.e2e.test.ts
+pnpm exec vitest run server/room-turn-timeout.e2e.test.ts
 OMB_UI_E2E=1 pnpm exec vitest run scripts/testing/direct-coordination-ui.e2e.test.ts
 ```
 
@@ -99,16 +100,84 @@ conversation.
 
 ## Repeatable checks
 
-### Rooms containing a supervising Chief
+### Questions to the Master Chief
 
-A section bot can list and post to its room when an out-of-section Chief in
-that room has an owner-reviewed `managedSections` grant for the bot's section.
-This includes a Chief in General (no section). In that same conversation,
-`list_room_targets` advertises the Chief and section peers, and `coordinate_bots`
-can address them by ID. The exception does not grant direct-chat access or
-access to the Chief in another room. Other cross-section members, unmanaged
-Chiefs, and peer restrictions still block work. Revoking supervision before
-queued work starts prevents dispatch.
+Any bot can consult the currently assigned Master Chief across teams through
+`coordinate_bots`. `list_bots` labels the Master Chief, and `list_room_targets`
+includes it among reachable bots. Use its exact ID or unique name. For example,
+St. Paul can ask Dr. EggBot a question and receive the answer in St. Paul's
+originating conversation.
+
+In a room, a request to the Master alone opens a direct recipient thread when
+the Master is not a room member. Omit `group_id` for this behavior. Explicit
+room destinations keep their usual membership and section checks. The Master
+is not added to the room, and the answer returns to the original room thread.
+
+Explicit peer lists, peer approvals, hidden-bot restrictions and matching
+audiences still apply. Every source-room member must share the Master's
+audience. Consultation does not grant team management, access to the Master's
+other rooms, or legacy one-way messaging. Assignment changes are checked before
+dispatch, when returning answers, and when replaying retained reports.
+
+```sh
+pnpm exec vitest run server/master-chief-consultation.test.ts server/master-chief-consultation.e2e.test.ts
+```
+
+The isolated fixture uses the real injected agents MCP proxy and scripted
+provider. It verifies name discovery, direct and room questions, exact-thread
+return, assignment changes, peer approvals, audience restrictions and ancestor
+loops. Provider transcripts and handoff state are retained alongside its server
+log in `/tmp/openmausbot-verification-evidence/`. This checks routing and access
+controls; it does not test a live model's answer quality.
+
+### Master Chief access to bot folders
+
+The Master Chief can call `bot_folders` with `bot_id` from `list_bots` to find
+another visible bot's shared workspace, configured project folder, and task
+working folders. The tool accepts no paths and performs no file operations.
+It does not require Full Access or change either bot's approval mode.
+
+Use the returned absolute paths with the Master's native file tools. The
+Master's role permits work in these folders, but its current engine, OS access,
+and approval mode still control reads and edits. Coordinate before changing
+files that another bot is using. Engines without native file tools cannot read
+files through this discovery tool. ACP client filesystem requests retain their
+existing confinement.
+
+Hidden bots and different-audience bots are unavailable. Assignment revocation
+or transfer takes effect on the next discovery call. Guest-driven turns,
+including guest-origin handoffs, cannot use this tool. Known guest-private task
+folders and configured paths overlapping them are omitted. These are configured
+path checks, not a new filesystem sandbox or symlink access boundary.
+
+```sh
+pnpm exec vitest run server/routes/fleet-internal.test.ts server/master-chief-consultation.e2e.test.ts server/agent-tool-policy.test.ts server/drivers/agents-proxy.test.ts server/drivers/agents-catalog-wire.test.ts
+```
+
+The injected-MCP fixture verifies Dr. EggBot discovers St. Paul's folders while
+remaining in Ask mode, and rejects non-Master, revoked and malformed calls.
+Route tests cover hidden and different-audience targets, transfer, guest-driven
+requests and private-folder omission. It does not perform native file reads.
+
+A separate isolated Codex CLI 0.162.1 check used `gpt-6.1-sol` in
+`danger-full-access` mode with approval `never`. From a Master working folder,
+it read a sibling St. Paul file and appended one line. The verified file was
+`Mission: outreach\nReviewed by Dr. EggBot\n`. Evidence:
+`/tmp/omb-master-folder-native-jlc_o25y/codex.jsonl`. This proves native Full-mode
+sibling-folder reads and edits, separately from the application's discovery
+fixture. It does not prove every engine or an end-to-end live-model workflow.
+
+### Rooms shared across teams
+
+A room the user builds with bots from different teams is the grant for those
+bots to talk: in that room's conversation, any member can `post_to_room`,
+list the other members with `list_room_targets`, and reach them with
+`coordinate_bots` by ID or name, whatever their section or Chief grants. Bots
+cannot build such a room themselves; a Chief's `create_room`/`manage_room`
+stays limited to its reachable peers. The grant ends at the room: it gives no
+direct-chat access, and work entering or leaving a mixed room from another
+conversation still needs section access for the sender and every reader. Peer
+allow-lists and approvals still apply.
 
 ```sh
 pnpm exec vitest run server/peer-roster.test.ts server/post-to-room.test.ts server/room-coordination.e2e.test.ts server/direct-coordination.e2e.test.ts server/room-handoffs.test.ts server/peer-allowlist.e2e.test.ts
@@ -214,7 +283,7 @@ preview/server processes afterward; retain evidence without credentials.
 
 ## Limits and safety
 
-Existing peer allow-lists/approvals and every room reader's section still apply.
+Existing peer allow-lists/approvals still apply, and every room reader's section applies to work crossing between conversations.
 Ordinary chats use one bounded coordination tool for teammate work instead of
 the competing ask/delegate/peer-thread execution paths. A top-level direct turn
 can still use `start_thread` to open separate work on itself, without moving the

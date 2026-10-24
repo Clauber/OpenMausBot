@@ -58,15 +58,6 @@ describe("partial profile save responses", () => {
   });
 });
 
-describe("screen frame ownership", () => {
-  it("retains the source thread so a sibling's frame cannot masquerade as the selected screen", () => {
-    const first = reducer(initialState, { type: "screenFrame", botId: "bot", threadId: "vm-thread", png: "vm", mime: "image/png" });
-    const second = reducer(first, { type: "screenFrame", botId: "bot", threadId: "browser-thread", png: "browser", mime: "image/jpeg" });
-    expect(first.screens.bot).toMatchObject({ threadId: "vm-thread", png: "vm" });
-    expect(second.screens.bot).toMatchObject({ threadId: "browser-thread", png: "browser" });
-  });
-});
-
 describe("composer thread approval persistence", () => {
   it.each(["ask", "edits", "auto", "full", "custom"] as const)("saves %s through the scoped bridge and returns its committed state", async mode => {
     const bot = { id: "bot", approvalMode: "ask", tasks: [{ threadId: "thread", approvalMode: mode }] } as BotAnnouncement;
@@ -2012,6 +2003,22 @@ describe("scrollback pages", () => {
     expect(landed.loadingOlder).toEqual({});
   });
 
+  it("keeps the open transcript's scrollback answer when a bot frame does not switch it", () => {
+    const open = { ...bot, tasks: [{ threadId: "thread-1", title: "Long", createdAt: 1 }] } as never as Bot;
+    // Another client opened thread-2; its frame carries thread-2's page.
+    const opened = reducer({ ...initialState, bots: [open] }, {
+      type: "botPatched",
+      bot: { ...open, threadId: "thread-2", tasks: [{ threadId: "thread-2", title: "New", createdAt: 2 }, ...open.tasks!], messages: [], hasMore: false } as never,
+    });
+    expect(opened.bots[0]).toMatchObject({ threadId: "thread-1", hasMore: true });
+    expect(opened.bots[0].messages.map((m) => m.id)).toEqual(["m3", "m4"]);
+    // A reply with this thread's newest page leaves the scrollback already loaded.
+    const loaded = { ...initialState, bots: [{ ...open, hasMore: false }] };
+    const replied = reducer(loaded, { type: "botPatched", bot: { ...open, messages: [message("m4", 4)], hasMore: true } as never });
+    expect(replied.bots[0].messages.map((m) => m.id)).toEqual(["m3", "m4"]);
+    expect(replied.bots[0].hasMore).toBe(false);
+  });
+
   it("answers the scrollback question from a payload that carries a transcript", () => {
     const group = {
       id: "room",
@@ -2370,7 +2377,7 @@ describe("live config frames", () => {
   });
 
   it("keeps live settings when a config frame arrives", () => {
-    const live = { configured: true, voice: "sol", readTypedReplies: false, idleMinutes: 7 };
+    const live = { configured: true, provider: "openai" as const, codexConfigured: false, voice: "sol", readTypedReplies: false, idleMinutes: 7 };
     const config = configStatusFromFrame({ ...baseFrame, live });
     expect(config.live).toEqual(live);
     const state = reducer(initialState, { type: "configStatus", config });
@@ -2520,5 +2527,69 @@ describe("live call state", () => {
     expect(liveCallFromFrame({ kind: "live.call", botId: "b1", threadId: "t1" })).toBeNull();
     expect(liveCallFromFrame({ kind: "live.call", call: "c1" })).toBeNull();
     expect(liveCallFromFrame({ kind: "live.call", call: { status: "live" } })).toBeNull();
+  });
+});
+
+describe("file viewer panel", () => {
+  const tab = { id: "t1\u0000m1\u0000/report.md", path: "/report.md", name: "report.md", threadId: "t1", messageId: "m1" };
+  const other = { ...tab, id: "t1\u0000m1\u0000/notes.txt", path: "/notes.txt", name: "notes.txt" };
+
+  it("starts closed with no tabs", () => {
+    expect(initialState.fileViewerOpen).toBe(false);
+    expect(initialState.fileViewerTabs).toEqual([]);
+    expect(initialState.fileViewerActiveTab).toBeNull();
+  });
+
+  it("openFileViewerTab opens the panel, focuses the tab and closes the other side panels", () => {
+    const withPanels = { ...initialState, computerOpen: true, inspectorOpen: true, activityOpen: true, settingsOpen: true, appSettingsOpen: true };
+    const next = reducer(withPanels, { type: "openFileViewerTab", tab });
+    expect(next.fileViewerOpen).toBe(true);
+    expect(next.fileViewerTabs).toEqual([tab]);
+    expect(next.fileViewerActiveTab).toBe(tab.id);
+    expect(next.computerOpen).toBe(false);
+    expect(next.inspectorOpen).toBe(false);
+    expect(next.activityOpen).toBe(false);
+    expect(next.settingsOpen).toBe(false);
+    expect(next.appSettingsOpen).toBe(false);
+  });
+
+  it("re-opening a file refreshes its tab in place instead of duplicating it", () => {
+    const renamed = { ...tab, name: "report (fixed).md" };
+    const open = reducer(initialState, { type: "openFileViewerTab", tab });
+    const next = reducer(open, { type: "openFileViewerTab", tab: renamed });
+    expect(next.fileViewerTabs).toEqual([renamed]);
+    expect(next.fileViewerActiveTab).toBe(renamed.id);
+  });
+
+  it("appends further tabs, switches between them, and keeps the panel open when a tab closes", () => {
+    let state = reducer(initialState, { type: "openFileViewerTab", tab });
+    state = reducer(state, { type: "openFileViewerTab", tab: other });
+    expect(state.fileViewerTabs).toEqual([tab, other]);
+    expect(state.fileViewerActiveTab).toBe(other.id);
+    state = reducer(state, { type: "setFileViewerTab", id: tab.id });
+    expect(state.fileViewerActiveTab).toBe(tab.id);
+    state = reducer(state, { type: "closeFileViewerTab", id: tab.id });
+    expect(state.fileViewerTabs).toEqual([other]);
+    expect(state.fileViewerActiveTab).toBe(other.id);
+    expect(state.fileViewerOpen).toBe(true);
+  });
+
+  it("closing the active tab activates the neighboring tab, and closing the last tab closes the panel", () => {
+    let state = reducer(initialState, { type: "openFileViewerTab", tab });
+    state = reducer(state, { type: "openFileViewerTab", tab: other });
+    state = reducer(state, { type: "closeFileViewerTab", id: other.id });
+    expect(state.fileViewerActiveTab).toBe(tab.id);
+    state = reducer(state, { type: "closeFileViewerTab", id: tab.id });
+    expect(state.fileViewerTabs).toEqual([]);
+    expect(state.fileViewerActiveTab).toBeNull();
+    expect(state.fileViewerOpen).toBe(false);
+  });
+
+  it("opening the inspector or the computer closes the viewer", () => {
+    const open = reducer(initialState, { type: "openFileViewerTab", tab });
+    expect(reducer(open, { type: "toggleInspector", open: true }).fileViewerOpen).toBe(false);
+    expect(reducer(open, { type: "toggleComputer", open: true }).fileViewerOpen).toBe(false);
+    expect(reducer(open, { type: "toggleActivity", open: true }).fileViewerOpen).toBe(false);
+    expect(reducer(open, { type: "toggleAppSettings", open: true }).fileViewerOpen).toBe(false);
   });
 });

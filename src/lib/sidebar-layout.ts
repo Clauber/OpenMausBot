@@ -36,6 +36,7 @@ export type SidebarGroup = {
   id: string;
   section?: string;
   dm?: boolean;
+  pinned?: boolean;
 };
 
 function unique(values: string[]): string[] {
@@ -96,12 +97,11 @@ export function pinnedCircleThreadListVisible(
  * section's chief. Without it, chiefs stay in the group they run. */
 export function partitionSidebarBots<T extends SidebarBot>(
   bots: T[],
-  options?: { universalPins?: boolean },
 ) {
-  const universalPins = options?.universalPins === true;
   const visible = bots.filter((bot) => !bot.hidden);
-  const pinnedBots = visible.filter((bot) => Boolean(bot.pinned) && (universalPins || !bot.chiefOfStaff));
-  const pinnedIds = new Set(pinnedBots.map((bot) => bot.id));
+  const pinnedChiefs = visible.filter((bot) => Boolean(bot.pinned) && Boolean(bot.chiefOfStaff));
+  const pinnedBots = visible.filter((bot) => Boolean(bot.pinned) && !bot.chiefOfStaff);
+  const pinnedIds = new Set([...pinnedBots, ...pinnedChiefs].map((bot) => bot.id));
   const unsectionedChief = visible.find((bot) => bot.chiefOfStaff && !bot.section && !pinnedIds.has(bot.id)) ?? null;
   const sectionChiefs = visible.filter((bot) => bot.chiefOfStaff && Boolean(bot.section) && !pinnedIds.has(bot.id));
   const sectionedBots = visible.filter(
@@ -110,17 +110,20 @@ export function partitionSidebarBots<T extends SidebarBot>(
   const unsectionedBots = visible.filter(
     (bot) => !bot.chiefOfStaff && !bot.section && !pinnedIds.has(bot.id),
   );
-  return { unsectionedChief, pinnedBots, sectionChiefs, sectionedBots, unsectionedBots };
+  return { unsectionedChief, pinnedChiefs, pinnedBots, sectionChiefs, sectionedBots, unsectionedBots };
 }
 
-/** Bot-to-bot DMs are also a virtual view. We do not rewrite their persisted
- * context, because that context still participates in comms visibility. */
+/** Pinned rooms are a virtual view like pinned bots: their saved section
+ * stays untouched so unpinning returns them where they came from. Bot-to-bot
+ * DMs are also a virtual view — we do not rewrite their persisted context,
+ * because that context still participates in comms visibility. */
 export function partitionSidebarGroups<T extends SidebarGroup>(groups: T[]) {
+  const pinnedRooms = groups.filter((group) => !group.dm && Boolean(group.pinned));
   const botChats = groups.filter((group) => Boolean(group.dm));
-  const rooms = groups.filter((group) => !group.dm);
+  const rooms = groups.filter((group) => !group.dm && !group.pinned);
   const sectionedRooms = rooms.filter((group) => Boolean(group.section));
   const unsectionedRooms = rooms.filter((group) => !group.section);
-  return { botChats, sectionedRooms, unsectionedRooms };
+  return { botChats, pinnedRooms, sectionedRooms, unsectionedRooms };
 }
 
 /** Restore saved positions while inserting newly visible buckets at their

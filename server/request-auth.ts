@@ -70,6 +70,7 @@ export const SERVICE_ALLOW: ReadonlyArray<{ methods: readonly string[]; path: Re
   { methods: ["GET"], path: /^\/api\/edition$/ },
   { methods: ["GET"], path: /^\/api\/brand$/ },
   { methods: ["GET"], path: /^\/api\/bots$/ },
+  { methods: ["PATCH"], path: /^\/api\/bots\/order$/ },
   { methods: ["GET"], path: /^\/api\/threads\/[\w-]+\/messages$/ },
   { methods: ["GET"], path: /^\/api\/attachments\/[\w.-]+$/ },
   { methods: ["POST"], path: /^\/api\/bots\/[\w-]+\/tasks$/ },
@@ -366,6 +367,12 @@ export const CLIENT_ALLOW: ReadonlyArray<{ methods: readonly string[]; path: Reg
   { methods: ["POST"], path: /^\/api\/routine-runs\/seen-all$/ },
   // webhook list is secret-free; creating or rotating one is not
   { methods: ["GET"], path: /^\/api\/webhooks$/ },
+  // custom skins: appearance, not authorization. Every signed-in person sees
+  // and edits the shared picker; the payloads carry colours, never secrets.
+  // The id shape matches the route module, so anything else stays admin-only
+  // and unknown.
+  { methods: ["GET", "POST"], path: /^\/api\/skins$/ },
+  { methods: ["PATCH", "DELETE"], path: /^\/api\/skins\/cs-[0-9a-f]{8}$/ },
   // configured-or-not booleans; the handler strips the few identifying fields for clients
   { methods: ["GET"], path: /^\/api\/config$/ },
 ];
@@ -388,8 +395,9 @@ export function clientBotPatchViolation(body: unknown): string | null {
   return null;
 }
 
-/** Same for a room: name and reading state, never its folder or who answers. */
-const CLIENT_GROUP_PATCH_FIELDS = new Set(["name", "bulletin", "unread", "pinnedMessageId", "section"]);
+/** Same for a room: display fields (name, reading state, sidebar filing,
+ * pins) and its turn limit; never its folder or who answers. */
+const CLIENT_GROUP_PATCH_FIELDS = new Set(["name", "bulletin", "unread", "pinnedMessageId", "section", "pinned", "turnTimeoutMinutes"]);
 export function clientGroupPatchViolation(body: unknown): string | null {
   if (!body || typeof body !== "object" || Array.isArray(body)) return "body";
   for (const key of Object.keys(body)) if (!CLIENT_GROUP_PATCH_FIELDS.has(key)) return key;

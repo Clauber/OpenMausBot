@@ -1,10 +1,10 @@
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { startFakeTelegram, type FakeTelegram } from "../testing/fake-telegram.ts";
-import { PAIRING_MAX_FAILURES, TelegramBindingStore } from "./store.ts";
+import { PAIRING_MAX_FAILURES, TelegramBindingStore } from "./telegram-store.ts";
 import { TelegramService, type TelegramHost, type TelegramPhase } from "./telegram-service.ts";
 import { createTelegramClient, splitTelegramText, TelegramApiError, telegramApiBase } from "./telegram.ts";
 
@@ -71,14 +71,43 @@ describe("telegram client", () => {
     const dead = createTelegramClient({ token: TOKEN, apiBase: "http://127.0.0.1:1" });
     expect(String(await dead.getMe().catch((e) => e.message))).not.toContain(TOKEN);
   });
+
+  it("long-polls getUpdates and returns updates at or above the offset", async () => {
+    const client = createTelegramClient({ token: TOKEN, apiBase: fake.url });
+    expect(await client.getUpdates(1, 1)).toEqual([]);
+    expect(fake.getUpdatesCalls.at(-1)).toMatchObject({ token: TOKEN, offset: 1, timeout: 1 });
+    fake.pushUpdate({ message: { message_id: 5, text: "hi", chat: { id: 42, type: "private" } } });
+    fake.pushUpdate({ message: { message_id: 6, text: "ho", chat: { id: 42, type: "private" } } });
+    const got = await client.getUpdates(1, 5);
+    expect(got.map((u) => u.update_id)).toEqual([1, 2]);
+    // everything below the offset stays delivered-silent
+    expect((await client.getUpdates(2, 1)).map((u) => u.update_id)).toEqual([2]);
+  });
 });
 
 describe("binding store", () => {
-  it("persists at mode 0600 and reloads", () => {
+  it("leaves saved bindings without a transport unresolved", () => {
+    const store = new TelegramBindingStore(dir);
+    const binding = store.create({ botId: "bot1", token: TOKEN });
+    const file = join(dir, "messaging", "telegram.json");
+    const saved = JSON.parse(readFileSync(file, "utf8"));
+    delete saved.bindings[binding.id].transport;
+    writeFileSync(file, JSON.stringify(saved));
+    expect(new TelegramBindingStore(dir).get(binding.id)?.transport).toBeUndefined();
+  });
+
+  it("keeps new polling bindings on polling after reload", () => {
+    const store = new TelegramBindingStore(dir);
+    const binding = store.create({ botId: "bot1", token: TOKEN });
+    expect(binding.transport).toBe("poll");
+    expect(new TelegramBindingStore(dir).get(binding.id)?.transport).toBe("poll");
+  });
+
+  it("persists and reloads with private POSIX permissions", () => {
     const store = new TelegramBindingStore(dir);
     const binding = store.create({ botId: "bot1", token: TOKEN });
     store.bindChat(binding.id, "42", { threadId: "thr", name: "Ada" });
-    expect(statSync(join(dir, "messaging", "telegram.json")).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect(statSync(join(dir, "messaging", "telegram.json")).mode & 0o777).toBe(0o600);
     const reloaded = new TelegramBindingStore(dir).get(binding.id)!;
     expect(reloaded).toMatchObject({ botId: "bot1", token: TOKEN, secret: binding.secret, chats: { "42": { threadId: "thr", enabled: true } } });
     expect(binding.secret).toMatch(/^[A-Za-z0-9_-]{32,}$/);
@@ -217,5 +246,222 @@ describe("telegram service", () => {
     });
     refusing.receive(bindingId, secret, update(40, 42, "hi"));
     expect((await fake.waitForOutbox("42"))[0]!.text).toBe("Couldn't reach the bot: busy");
+  });
+});
+
+describe("telegram long-poll transport", () => {
+  let store: TelegramBindingStore;
+  let service: TelegramService;
+  let started: Array<{ threadId: string; text: string; sendId: string }>;
+  let phases: TelegramPhase[];
+  let bindingId: string;
+  let threads = 0;
+
+  const host: TelegramHost = {
+    botName: () => "Pepper",
+    createThread: () => `thread-${++threads}`,
+    threadExists: () => true,
+    startTurn: async (input) => { started.push(input); return { ok: true }; },
+    readRequest: (_bot, _thread, sendId) => {
+      const phase = phases.shift() ?? "settled";
+      const text = started.find((s) => s.sendId === sendId)!.text;
+      return { phase, ...(phase === "settled" ? { reply: `echo: ${text}` } : {}) };
+    },
+  };
+  const privateMessage = (chat: number, text: string) => ({
+    message: { message_id: Date.now() % 100000, text, chat: { id: chat, type: "private", first_name: "Ada" }, from: { id: chat, first_name: "Ada" } },
+  });
+
+  beforeEach(() => {
+    started = []; phases = []; threads = 0;
+    store = new TelegramBindingStore(dir);
+    const binding = store.create({ botId: "bot1", token: TOKEN });
+    bindingId = binding.id;
+    service = new TelegramService({
+      store, host, pollMs: 5, typingMs: 1, maxWaitMs: 5_000, getUpdatesTimeoutS: 1, backoffMs: 20,
+      clientFor: (b) => createTelegramClient({ token: b.token, apiBase: fake.url }),
+    });
+  });
+
+  afterEach(() => { service.stop(); });
+
+  const loadLegacy = () => {
+    const file = join(dir, "messaging", "telegram.json");
+    const saved = JSON.parse(readFileSync(file, "utf8"));
+    delete saved.bindings[bindingId].transport;
+    writeFileSync(file, JSON.stringify(saved));
+    store = new TelegramBindingStore(dir);
+    service.stop();
+    service = new TelegramService({
+      store, host, getUpdatesTimeoutS: 1,
+      clientFor: (b) => createTelegramClient({ token: b.token, apiBase: fake.url }),
+    });
+  };
+
+  it("preserves an active webhook when a saved transport is missing", async () => {
+    loadLegacy();
+    const client = createTelegramClient({ token: TOKEN, apiBase: fake.url });
+    await client.setWebhook("https://example.com/hooks/telegram/legacy", "secret");
+    service.startAll();
+    await expect.poll(() => store.get(bindingId)?.transport).toBe("webhook");
+    expect(fake.webhooks).toHaveLength(1);
+    expect(fake.getUpdatesCalls).toHaveLength(0);
+  });
+
+  it("resumes polling without deleting a webhook when discovery finds no webhook", async () => {
+    loadLegacy();
+    let deletes = 0;
+    service = new TelegramService({
+      store, host, getUpdatesTimeoutS: 1,
+      clientFor: (b) => ({
+        ...createTelegramClient({ token: b.token, apiBase: fake.url }),
+        deleteWebhook: async () => { deletes += 1; },
+      }),
+    });
+    service.startAll();
+    await expect.poll(() => fake.getUpdatesCalls.length).toBeGreaterThan(0);
+    expect(store.get(bindingId)?.transport).toBe("poll");
+    expect(deletes).toBe(0);
+  });
+
+  it("reports discovery failure without deleting a webhook or starting polling", async () => {
+    loadLegacy();
+    let deletes = 0;
+    service = new TelegramService({
+      store, host,
+      clientFor: (b) => ({
+        ...createTelegramClient({ token: b.token, apiBase: fake.url }),
+        getWebhookInfo: async () => { throw new Error("lookup unavailable"); },
+        deleteWebhook: async () => { deletes += 1; },
+      }),
+    });
+    service.startAll();
+    await expect.poll(() => service.pollerState(bindingId)?.status).toBe("error");
+    expect(service.pollerState(bindingId)?.error).toContain("lookup unavailable");
+    expect(store.get(bindingId)?.transport).toBeUndefined();
+    expect(fake.getUpdatesCalls).toHaveLength(0);
+    expect(deletes).toBe(0);
+  });
+
+  it("keeps restarted discovery active when an aborted lookup finishes", async () => {
+    loadLegacy();
+    let resolve!: (info: { url: string }) => void;
+    const first = new Promise<{ url: string }>((done) => { resolve = done; });
+    let calls = 0;
+    service = new TelegramService({
+      store, host, getUpdatesTimeoutS: 1,
+      clientFor: (b) => ({
+        ...createTelegramClient({ token: b.token, apiBase: fake.url }),
+        getWebhookInfo: async () => ++calls === 1 ? first : { url: "" },
+      }),
+    });
+    service.startAll();
+    service.stopPolling(bindingId);
+    service.startPolling(bindingId);
+    await expect.poll(() => fake.getUpdatesCalls.length).toBeGreaterThan(0);
+    resolve({ url: "https://example.com/stale" });
+    await new Promise<void>((done) => setImmediate(done));
+    expect(store.get(bindingId)?.transport).toBe("poll");
+    expect(service.pollerState(bindingId)?.status).toBe("polling");
+  });
+
+  it("does not apply discovery after the service stops", async () => {
+    loadLegacy();
+    let resolve!: (info: { url: string }) => void;
+    const info = new Promise<{ url: string }>((done) => { resolve = done; });
+    service = new TelegramService({
+      store, host,
+      clientFor: (b) => ({
+        ...createTelegramClient({ token: b.token, apiBase: fake.url }),
+        getWebhookInfo: () => info,
+      }),
+    });
+    service.startAll();
+    service.stop();
+    resolve({ url: "" });
+    await expect.poll(() => service.pollerState(bindingId)?.status).toBe("stopped");
+    expect(store.get(bindingId)?.transport).toBeUndefined();
+    expect(fake.getUpdatesCalls).toHaveLength(0);
+  });
+
+  it("polls by default, relays updates like the webhook path, and persists the offset", async () => {
+    service.startPolling(bindingId);
+    const { code } = store.startPairing(bindingId)!;
+    fake.pushUpdate(privateMessage(55, "/start"));
+    const hello = await fake.waitForOutbox("55");
+    expect(hello[0]!.text).toMatch(/didn't match|Paired with/);
+    fake.pushUpdate(privateMessage(55, code));
+    expect((await fake.waitForOutbox("55", 2))[1]!.text).toMatch(/^Paired with /);
+    phases = ["settled"];
+    fake.pushUpdate(privateMessage(55, "hello bot"));
+    expect((await fake.waitForOutbox("55", 3))[2]!.text).toBe("echo: hello bot");
+    expect(started).toHaveLength(1);
+    // the cursor advanced past every delivered update, so a restart sees none of them again
+    await service.idle();
+    const offset = store.get(bindingId)!.pollOffset;
+    expect(offset).toBe(fake.getUpdatesCalls.at(-1)!.offset - 1);
+    expect(fake.getUpdatesCalls.at(-1)!.offset).toBeGreaterThan(1);
+  });
+
+  it("resumes from the stored offset after a restart without replaying turns", async () => {
+    // a seed update below the cursor stands for everything already answered
+    fake.pushUpdate(privateMessage(1, "seed"));
+    store.setPollOffset(bindingId, 1);
+    service.startPolling(bindingId);
+    for (let i = 0; i < 100 && !fake.getUpdatesCalls.length; i += 1) await new Promise((r) => setTimeout(r, 10));
+    expect(fake.getUpdatesCalls[0]).toMatchObject({ offset: 2 });
+    store.bindChat(bindingId, "77", { threadId: "t77" });
+    phases = ["settled"];
+    fake.pushUpdate(privateMessage(77, "fresh"));
+    expect((await fake.waitForOutbox("77"))[0]!.text).toBe("echo: fresh");
+    await service.idle();
+    expect(started).toHaveLength(1);
+    // a second service over the same store sees only the advanced cursor
+    const again = new TelegramService({
+      store, host: { ...host, startTurn: async (input) => { started.push(input); return { ok: true }; } },
+      pollMs: 5, typingMs: 1, maxWaitMs: 5_000, getUpdatesTimeoutS: 1, backoffMs: 20,
+      clientFor: (b) => createTelegramClient({ token: b.token, apiBase: fake.url }),
+    });
+    again.startPolling(bindingId);
+    await new Promise((r) => setTimeout(r, 150));
+    expect(started).toHaveLength(1); // no replay
+    again.stop();
+  });
+
+  it("surfaces a webhook conflict as an error state and recovers on demand", async () => {
+    fake.refuseGetUpdates();
+    service.startPolling(bindingId);
+    for (let i = 0; i < 100 && service.pollerState(bindingId)?.status !== "error"; i += 1) await new Promise((r) => setTimeout(r, 10));
+    expect(service.pollerState(bindingId)).toMatchObject({ status: "error" });
+    expect(String(service.pollerState(bindingId)!.error)).toMatch(/409/);
+    // the operator clears the conflicting webhook; a restart polls again
+    fake.allowGetUpdates();
+    service.stopPolling(bindingId);
+    service.startPolling(bindingId);
+    for (let i = 0; i < 100 && service.pollerState(bindingId)?.status !== "polling"; i += 1) await new Promise((r) => setTimeout(r, 10));
+    expect(service.pollerState(bindingId)!.status).toBe("polling");
+  });
+
+  it("stops when the binding switches to webhook delivery or the service stops", async () => {
+    service.startPolling(bindingId);
+    for (let i = 0; i < 100 && !fake.getUpdatesCalls.length; i += 1) await new Promise((r) => setTimeout(r, 10));
+    expect(fake.getUpdatesCalls.length).toBeGreaterThan(0);
+    // switch to webhook: the poller exits (an in-flight long poll unwinds first)
+    store.setTransport(bindingId, "webhook");
+    for (let i = 0; i < 300 && service.pollerState(bindingId)?.status !== "stopped"; i += 1) await new Promise((r) => setTimeout(r, 10));
+    expect(service.pollerState(bindingId)!.status).toBe("stopped");
+    const callsAfterSwitch = fake.getUpdatesCalls.length;
+    await new Promise((r) => setTimeout(r, 150));
+    expect(fake.getUpdatesCalls.length).toBe(callsAfterSwitch);
+    // service stop aborts an in-flight long poll promptly
+    store.setTransport(bindingId, "poll");
+    service.startPolling(bindingId);
+    for (let i = 0; i < 100 && service.pollerState(bindingId)?.status !== "polling"; i += 1) await new Promise((r) => setTimeout(r, 10));
+    service.stop();
+    for (let i = 0; i < 300 && service.pollerState(bindingId)?.status !== "stopped"; i += 1) await new Promise((r) => setTimeout(r, 10));
+    expect(service.pollerState(bindingId)!.status).toBe("stopped");
+    const callsAtEnd = fake.getUpdatesCalls.length;
+    await new Promise((r) => setTimeout(r, 150));
+    expect(fake.getUpdatesCalls.length).toBe(callsAtEnd);
   });
 });

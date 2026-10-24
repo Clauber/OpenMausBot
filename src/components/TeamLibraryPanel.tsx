@@ -29,6 +29,9 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
+import { GrokImportBox } from "./GrokImportBox";
+import { GrokFinishSetup, grokSetupLeft } from "./GrokFinishSetup";
+import { isGrokLink } from "../../shared/grok-import";
 import { ShareTeamDialog } from "./ShareTeamDialog";
 import { OrgLibraryTab } from "./TeamLibraryPanelOrg";
 import { MAX_TEAM_BACKUP_BYTES, TEAM_BACKUP_EXCLUSIONS } from "../../shared/team-backup";
@@ -65,7 +68,7 @@ export interface TeamImportResult {
   connections?: number;
 }
 
-type ImportSource = "library" | "file" | "github";
+type ImportSource = "library" | "file" | "github" | "grok";
 type TeamTab = "org" | "explore" | "import" | "scout" | "share";
 
 /** the scout endpoint's answer, as far as this panel renders it — the
@@ -151,7 +154,7 @@ export function TeamImportDetails({ pending, importedNames, org = false }: {
         </div>
       )}
       {Boolean(pending.warnings?.length) && <div className="mt-4 rounded-xl border border-hairline px-4 py-3 text-[12.5px] text-ink-secondary">
-        <div className="mb-2 font-medium text-ink">Backup notes</div>
+        <div className="mb-2 font-medium text-ink">{pending.leftOut ? t("grokImport.leftOut") : "Backup notes"}</div>
         {pending.warnings?.map((warning, index) => <p key={index}>{warning}</p>)}
       </div>}
       {(pending.kind === "package" || pending.kind === "backup") && (
@@ -257,6 +260,8 @@ export function TeamLibraryPanel({
   const [source, setSource] = useState<ImportSource>("file");
   const [githubUrl, setGithubUrl] = useState("");
   const [githubLoading, setGithubLoading] = useState(false);
+  const [grokLink, setGrokLink] = useState<string | null>(null);
+  const [finishing, setFinishing] = useState<{ notes: NonNullable<PendingTeamImport["grokSetup"]>; bot: Bot; result: TeamImportResult } | null>(null);
   const [importing, setImporting] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [search, setSearch] = useState("");
@@ -406,6 +411,7 @@ export function TeamLibraryPanel({
 
   const loadGithubUrl = async (requestedUrl: string) => {
     if (!requestedUrl.trim()) return;
+    if (isGrokLink(requestedUrl)) return setGrokLink(requestedUrl.trim());
     setGithubLoading(true);
     setError("");
     try {
@@ -454,12 +460,14 @@ export function TeamLibraryPanel({
       const first = response.bots.find((bot) => !bot.hidden);
       if (first) dispatch({ type: "select", id: first.id });
       track("team_imported", { members: response.bots.length, source, mode: "add", format: pending.kind });
-      onImported({
+      const result = {
         name: pending.name,
         members: response.bots.length,
         ...(response.connections?.length ? { connections: response.connections.length } : {}),
         ...(response.presets?.length ? { presets: response.presets.length } : {}),
-      });
+      };
+      if (grokSetupLeft(pending.grokSetup) && first) setFinishing({ notes: pending.grokSetup, bot: first, result });
+      else onImported(result);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -639,7 +647,7 @@ export function TeamLibraryPanel({
         <header className="flex items-start justify-between gap-4 px-6 pb-3 pt-6 sm:px-8 sm:pt-7">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              {pending && (
+              {pending && !finishing && (
                 <button
                   onClick={() => {
                     setPending(null);
@@ -694,7 +702,7 @@ export function TeamLibraryPanel({
           </div>
         </header>
 
-        {pending ? (
+        {finishing ? <GrokFinishSetup notes={finishing.notes} imported={finishing.bot} onDone={() => onImported(finishing.result)} /> : pending ? (
           <>
             <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6 pt-6 sm:px-8">
               <TeamImportDetails pending={pending} importedNames={importedNames} org={pendingOrg !== null} />
@@ -962,6 +970,7 @@ export function TeamLibraryPanel({
                       </div>
                     </div>
                   </div>
+                  <GrokImportBox link={grokLink} onPreview={(preview) => { setGrokLink(null); previewManifest(preview, "grok"); }} />
                   {error && <div role="alert" className="mt-4 rounded-lg bg-danger/10 px-3 py-2 text-[12.5px] text-danger">{error}</div>}
                 </div>
               )}

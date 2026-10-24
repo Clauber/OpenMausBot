@@ -57,6 +57,12 @@ Check these user paths:
     the chat header's usage chip. Usage must expand without closing the panel.
     Collapse Usage and click the header chip again; repeat after searching
     for another section. The requested section must open and clear the search.
+12. Open a bot's Model section. Parallel threads must offer "Use default (N)",
+    N being the workspace default shown under App Settings → General →
+    Default parallel threads, then 1–10. Pick a number and Read saved
+    profiles (or GET /api/bots): the bot carries `maxConcurrentThreads`.
+    Pick Use default again: the field must be gone. A value outside 1–10 sent
+    to PATCH /api/bots/:id returns 400.
 
 The full-app automated regression covers those repeated external opens, plus
 role creation, optional setup, connected-app settings and failure recovery:

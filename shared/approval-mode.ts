@@ -13,7 +13,7 @@ export type ApprovalMode = (typeof APPROVAL_MODES)[number];
  * level would change nothing there. */
 export function supportsApprovalMode(driverKind: string | undefined, mode: ApprovalMode): boolean {
   if (mode === "custom") return driverKind === "codex";
-  if (mode === "edits") return ["claudeAgent", "grokAgent", "antigravityAgent", "qwenAgent", "geminiAgent"].includes(driverKind ?? "");
+  if (mode === "edits") return ["claudeAgent", "grokAgent", "antigravityAgent", "qwenAgent", "geminiAgent", "zcodeAgent"].includes(driverKind ?? "");
   if (mode !== "full") return true;
   // The chat-completions family has no provider-side reviewer, so Full is
   // implemented in the harness: createOpenAIChatRuntime answers its own tool
@@ -21,25 +21,35 @@ export function supportsApprovalMode(driverKind: string | undefined, mode: Appro
   // engines could never stop asking — not by its own level, and not through
   // a Chief's delegated Full access either.
   return ["codex", "claudeAgent", "antigravityAgent", "cursorAgent", "grokAgent", "opencodeGo", "qwenAgent", "geminiAgent",
-    "openai-compat", "grok", "minimax", "mistral", "cerebras"].includes(driverKind ?? "");
+    "openai-compat", "grok", "minimax", "mistral", "cerebras", "zcodeAgent"].includes(driverKind ?? "");
 }
 
-/** A Full/Custom grant belongs to one provider's tool semantics. Other
- * modes carry across only when the destination actually implements them.
- * Adapted from tahodev's provider-switch guard in PR #1120. */
+/** A level carries across a provider switch whenever the destination
+ * implements it; only one it can't run falls back to Ask. */
 export function modelSwitchNeedsAsk(
   mode: ApprovalMode,
-  fromDriver: string | undefined,
+  _fromDriver: string | undefined,
   toDriver: string | undefined,
 ): boolean {
-  return !supportsApprovalMode(toDriver, mode) ||
-    ((mode === "full" || mode === "custom") && fromDriver !== toDriver);
+  return !supportsApprovalMode(toDriver, mode);
 }
 
 export function hasNativeAutoReview(driverKind: string | undefined): boolean {
   // Qwen Code's `--approval-mode auto` is an LLM classifier that approves
   // safe actions and blocks risky ones — a reviewer, not a rubber stamp.
   return ["codex", "claudeAgent", "cursorAgent", "grokAgent", "qwenAgent"].includes(driverKind ?? "");
+}
+
+const APPROVAL_RANK: Record<ApprovalMode, number> = { ask: 0, edits: 1, auto: 2, full: 3, custom: 4 };
+
+export interface ApprovalFields {
+  approvalMode?: ApprovalMode;
+  autoApprove?: boolean;
+  alwaysAllow?: string[];
+}
+
+export function approvalModeWidens(from: ApprovalMode, to: ApprovalMode): boolean {
+  return APPROVAL_RANK[to] > APPROVAL_RANK[from];
 }
 
 export function isApprovalMode(value: unknown): value is ApprovalMode {

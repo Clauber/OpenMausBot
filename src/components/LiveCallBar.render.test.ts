@@ -2,10 +2,10 @@ import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { StoreProvider, type Bot } from "@/state/store";
+import { BotEditorStore, initialState, StoreProvider, type AppState, type Bot } from "@/state/store";
 import { endCall } from "@/lib/call";
-import { configureLiveMedia, resetLiveMedia, startLiveCall } from "@/lib/live-call-media";
-import { LiveCallBar } from "./LiveCallBar";
+import { configureLiveMedia, resetLiveMedia, setLiveMinimized, startLiveCall } from "@/lib/live-call-media";
+import { LiveCallBar, LiveCallOverlay } from "./LiveCallBar";
 import { LiveCallSettings } from "./LiveCallSettings";
 import { LiveKeySetup } from "./LiveKeySetup";
 
@@ -24,6 +24,13 @@ const bot: Bot = {
 
 const render = (element: ReturnType<typeof createElement>) =>
   renderToStaticMarkup(createElement(StoreProvider, null, element));
+/** Rendered by the person's own Cloud (its config answers `cloudHome`). */
+const renderOnCloud = (element: ReturnType<typeof createElement>) => {
+  const config = { cloudHome: true, live: { configured: true, voice: "marin", readTypedReplies: true, idleMinutes: 5 } } as AppState["config"];
+  const value = { state: { ...initialState, config }, dispatch: vi.fn(), flushBotPatches: async () => null, refreshInstances: async () => {}, refreshModels: async () => {} };
+  return renderToStaticMarkup(createElement(BotEditorStore, { value, children: element }));
+};
+const CLOUD_DISCLOSURE = `A Live call sends your voice to OpenAI, along with the chat&#x27;s recent messages, the bot&#x27;s answers and the details of any approval it asks for. The OpenAI key stays on your Cloud.`;
 
 afterEach(() => {
   resetLiveMedia();
@@ -59,13 +66,16 @@ describe("LiveCallBar", () => {
     void startLiveCall({ botId: bot.id, threadId: bot.threadId });
     await vi.waitFor(() => expect(peer.ontrack).not.toBeNull());
     peer.ontrack!({ track: {} });
-    await vi.waitFor(() => expect(render(createElement(LiveCallBar, { bot }))).toContain("Click anywhere in the window to hear the call."));
+    await vi.waitFor(() => expect(render(createElement(LiveCallOverlay, { bot }))).toContain("Click anywhere in the window to hear the call."));
+    setLiveMinimized(true);
+    expect(render(createElement(LiveCallBar, { bot }))).toContain("Click anywhere in the window to hear the call.");
   });
 
   it("shows the call's controls while this window connects", () => {
     vi.stubGlobal("window", { ogb: { speechStop: vi.fn(async () => {}) } });
     configureLiveMedia({ getUserMedia: () => new Promise<MediaStream>(() => {}) });
     void startLiveCall({ botId: bot.id, threadId: bot.threadId });
+    setLiveMinimized(true);
     const markup = render(createElement(LiveCallBar, { bot }));
     expect(markup).toContain("Live with Atlas · Connecting…");
     expect(markup).toContain('aria-label="Call settings"');
@@ -80,6 +90,7 @@ describe("LiveCallBar", () => {
     vi.stubGlobal("window", { ogb: { speechStop: vi.fn(async () => {}) } });
     configureLiveMedia({ getUserMedia: () => new Promise<MediaStream>(() => {}) });
     void startLiveCall({ botId: bot.id, threadId: bot.threadId });
+    setLiveMinimized(true);
     const markup = render(createElement(LiveCallBar, { bot }));
     expect(markup).toMatch(/^<div role="region"[^>]* class="pointer-events-auto /);
   });
@@ -88,11 +99,54 @@ describe("LiveCallBar", () => {
     vi.stubGlobal("window", { ogb: { platform: "darwin", speechStop: vi.fn(async () => {}) } });
     configureLiveMedia({ getUserMedia: () => new Promise<MediaStream>(() => {}) });
     void startLiveCall({ botId: bot.id, threadId: bot.threadId });
+    setLiveMinimized(true);
     const markup = render(createElement(LiveCallBar, { bot }));
     expect(markup).toContain('title="Mute (⌘⇧M)"');
     expect(markup).toContain('aria-keyshortcuts="Meta+Shift+M"');
     expect(markup).toContain('title="Hang up (⌘⇧H)"');
     expect(markup).toContain('aria-keyshortcuts="Meta+Shift+H"');
+  });
+});
+
+describe("LiveCallOverlay", () => {
+  const connecting = () => {
+    vi.stubGlobal("window", { ogb: { speechStop: vi.fn(async () => {}) } });
+    configureLiveMedia({ getUserMedia: () => new Promise<MediaStream>(() => {}) });
+    void startLiveCall({ botId: bot.id, threadId: bot.threadId });
+  };
+
+  it("takes over the chat when a call starts, with the call's controls", () => {
+    connecting();
+    const markup = render(createElement(LiveCallOverlay, { bot }));
+    expect(markup).toMatch(/^<div role="region"[^>]* class="absolute inset-0 z-30 /);
+    expect(markup).toContain("Live with Atlas · Connecting…");
+    expect(markup).toContain('aria-label="Show chat"');
+    expect(markup).toContain('aria-label="Call settings"');
+    expect(markup).toContain('aria-label="Mute"');
+    expect(markup).toContain('aria-label="Hang up"');
+    // one set of controls: the bar stays out of the way
+    expect(render(createElement(LiveCallBar, { bot }))).toBe("");
+  });
+
+  it("Show chat folds the call into the bar, which can open it again", () => {
+    connecting();
+    setLiveMinimized(true);
+    expect(render(createElement(LiveCallOverlay, { bot }))).toBe("");
+    const bar = render(createElement(LiveCallBar, { bot }));
+    expect(bar).toContain('aria-label="Full screen"');
+    expect(bar).toContain('aria-label="Hang up"');
+  });
+
+  it("every new call opens full screen again", () => {
+    connecting();
+    setLiveMinimized(true);
+    resetLiveMedia();
+    connecting();
+    expect(render(createElement(LiveCallOverlay, { bot }))).toContain('aria-label="Show chat"');
+  });
+
+  it("renders nothing without a call", () => {
+    expect(render(createElement(LiveCallOverlay, { bot }))).toBe("");
   });
 });
 
@@ -109,6 +163,12 @@ describe("LiveCallSettings", () => {
     // nothing to remove without a key
     expect(markup).not.toContain("Remove key");
     expect(markup).toMatch(/role="dialog" tabindex="-1"/);
+  });
+
+  it("says the key stays on the Cloud when the chat is on the person's Cloud", () => {
+    const markup = renderOnCloud(createElement(LiveCallSettings, { onClose: vi.fn() }));
+    expect(markup).toContain(CLOUD_DISCLOSURE);
+    expect(markup).not.toContain("stays on your computer");
   });
 
   it("takes focus when it opens, so Escape closes it", () => {
@@ -140,5 +200,12 @@ describe("LiveKeySetup", () => {
     expect(markup).toContain('aria-label="OpenAI API key for Live calls"');
     expect(markup).toContain("Save and start the call");
     expect(render(createElement(LiveKeySetup, { onSaved: vi.fn(), compact: true }))).toContain(">Save<");
+  });
+
+  // Pasted on the Cloud's page, the key is saved on the Cloud.
+  it("says the key stays on the Cloud when the chat is on the person's Cloud", () => {
+    const markup = renderOnCloud(createElement(LiveKeySetup, { onSaved: vi.fn() }));
+    expect(markup).toContain(CLOUD_DISCLOSURE);
+    expect(markup).not.toContain("stays on your computer");
   });
 });

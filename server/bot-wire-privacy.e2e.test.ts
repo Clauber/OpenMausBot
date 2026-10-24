@@ -121,6 +121,7 @@ describe("bot wire privacy against the real server", () => {
     expect(stored.assignedSkills).toEqual(["some-library-skill"]);
   });
 
+  // Three isolated server boots and their cleanup share this case's budget.
   it("serves an assigned library-only skill on the single-skill GET route only while the library is on", async () => {
     // Install into the spawned server's library root from this process:
     // the store is plain files under DATA_DIR/skills-library, so the
@@ -156,5 +157,5 @@ describe("bot wire privacy against the real server", () => {
     expect(await api("GET", `/api/bots/${botId}/skills/route-library-skill`))
       .toMatchObject({ status: 200, body: { text: instructions } });
     await stop();
-  });
+  }, 45_000);
 });

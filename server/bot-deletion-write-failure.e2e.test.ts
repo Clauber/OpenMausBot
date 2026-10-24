@@ -38,6 +38,7 @@ it("preserves conversations and scheduled work when deletion cannot save, then s
   const scheduleDiskHashes = () => Object.fromEntries(["routines.json", "webhooks.json", "calendar-calls.json"].map(name =>
     [name, createHash("sha256").update(readFileSync(join(dataDir, name))).digest("hex")]));
   try {
+    await api("PATCH", "/api/config", { routineReview: { enabled: false } });
     const bot = (await control("new-bot", "--name", "Deletion failure fixture")).bot;
     const guest = (await control("new-bot", "--name", "Surviving fixture guest")).bot;
     await control("send", "--bot", bot.id, "--text", "Keep this fixture conversation until deletion is saved.");

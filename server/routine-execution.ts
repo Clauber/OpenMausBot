@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { redactSecretsInText } from "./redact.ts";
+import { WINDOWS_JOB_BOOTSTRAP } from "./routine-windows-job.ts";
 import type { RoutineExecutionMode, RoutineExecutionPlan } from "../shared/routines.ts";
 
 export const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -52,7 +53,7 @@ export function loadExecutionPlan(value: unknown): RoutineExecutionPlan | undefi
   if (plan.mode !== "llm" && (typeof plan.script !== "string" || !plan.script.trim())) return undefined;
   return {
     mode: plan.mode!,
-    status: plan.status,
+    status: plan.status === "approved" && plan.mode !== "llm" && plan.scriptHash !== sha256(plan.script!) ? "proposed" : plan.status,
     rationale: plan.rationale.slice(0, MAX_NOTE_CHARS),
     ...(plan.mode !== "llm" ? { script: plan.script!, scriptHash: sha256(plan.script!) } : {}),
     ...(plan.mode === "script-jev" && typeof plan.escalateWhen === "string" ? { escalateWhen: plan.escalateWhen.slice(0, MAX_NOTE_CHARS) } : {}),
@@ -237,6 +238,9 @@ export function runRoutineScript(
   const scratch = mkdtempSync(join(tmpdir(), "omb-routine-"));
   const file = join(scratch, "routine.py");
   writeFileSync(file, script, { mode: 0o600 });
+  const windows = process.platform === "win32";
+  const bootstrap = join(scratch, "routine-job.py");
+  if (windows) writeFileSync(bootstrap, WINDOWS_JOB_BOOTSTRAP, { mode: 0o600 });
   const env: Record<string, string> = {
     PATH: process.env.PATH ?? "/usr/bin:/bin",
     HOME: process.env.HOME ?? options.stateDir,
@@ -251,15 +255,19 @@ export function runRoutineScript(
     let stderr = "";
     let timedOut = false;
     let settled = false;
-    const child = spawn(options.python ?? "python3", [file], {
+    const child = spawn(options.python ?? "python3", windows ? [bootstrap, file] : [file], {
       cwd: options.stateDir,
       env,
       stdio: ["ignore", "pipe", "pipe"],
-      detached: process.platform !== "win32",
+      detached: !windows,
     });
     const kill = () => {
       try {
-        if (child.pid && process.platform !== "win32") process.kill(-child.pid, "SIGKILL");
+        if (child.pid && windows) {
+          const root = process.env.SystemRoot ?? "C:\\Windows";
+          const cleanup = spawn(join(root, "System32", "taskkill.exe"), ["/pid", String(child.pid), "/T", "/F"], { shell: false, stdio: "ignore" });
+          cleanup.on("error", () => child.kill("SIGKILL"));
+        } else if (child.pid) process.kill(-child.pid, "SIGKILL");
         else child.kill("SIGKILL");
       } catch { /* already gone */ }
     };
@@ -278,6 +286,8 @@ export function runRoutineScript(
     const finish = (exitCode: number | null, spawnError?: string) => {
       if (settled) return;
       settled = true;
+      // On Windows the routine's job ends its descendants; the exited parent's PID may already be reused.
+      if (!windows) kill();
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", onAbort);
       rmSync(scratch, { recursive: true, force: true });

@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { isMasterChief, masterAssignment, protectMasterChief } from "./fleet-authority.ts";
+import { peerAllowed } from "./peer-roster.ts";
 import { z } from "zod";
 import { soulDiffLines } from "../shared/line-diff.ts";
 import { newId, type ModelSelection } from "./contracts.ts";
@@ -57,7 +59,7 @@ export function teamSetupRevision(bot: BotRecord, fields?: TeamSetupFields): str
     return createHash("sha256").update(JSON.stringify({
       ...profileSnapshot(bot), section: section(bot.section), modelSelection: bot.modelSelection,
       hidden: Boolean(bot.hidden), chiefOfStaff: Boolean(bot.chiefOfStaff), peers: bot.peers,
-      managedSections: bot.managedSections,
+      managedSections: bot.managedSections, fleetAssignment: masterAssignment(),
       approvalMode: bot.approvalMode, autoApprove: bot.autoApprove, approvalGrant: bot.approvalGrant,
       receipt: bot.lastTeamSetupReceipt?.requestId,
     })).digest("hex");
@@ -163,7 +165,7 @@ export class TeamSetupRequestService {
     if (confirming && !immediate && !this.options.store.messagesFor(request.threadId).some((message) => message.card?.requestId === request.requestId && !message.card.answered && !message.card.dismissed)) throw new TeamSetupError("This setup card is no longer pending", 409);
     if (confirming && teamSetupRevision(chief, this.requesterScope(request)) !== request.requesterRevision) throw new TeamSetupError("The Chief's settings changed. This setup was cancelled; review a new proposal.", 409);
     const existingTeams = new Set(this.options.teams().map(section));
-    if (new Set([...(chief.managedSections ?? []), ...request.newTeams]).size > 100) throw new TeamSetupError("A Chief may coordinate at most 100 additional teams", 409);
+    if (!isMasterChief(chief) && new Set([...(chief.managedSections ?? []), ...request.newTeams]).size > 100) throw new TeamSetupError("A Chief may coordinate at most 100 additional teams", 409);
     for (const name of request.newTeams) if (existingTeams.has(name)) throw new TeamSetupError(`Team ${JSON.stringify(name)} now exists. Review a new proposal.`, 409);
     const allowed = (name?: string) => request.newTeams.includes(section(name)) || this.options.canAccessTeam(chief, name);
     const targets = new Set<string>();
@@ -176,16 +178,17 @@ export class TeamSetupRequestService {
         if (target) throw new TeamSetupError("A proposed bot already exists. Review a new proposal.", 409);
         if (!operation.fields.name?.trim() || !operation.fields.title?.trim() || !operation.fields.soul?.trim() || !operation.fields.modelSelection) throw new TeamSetupError("Each new bot needs a name, title, soul instructions, and exact model selection");
       } else {
-        if (!target || target.hidden || !this.options.canAccessTeam(chief, target.section) || (target.id !== chief.id && Array.isArray(chief.peers) && !chief.peers.includes(target.id))) throw new TeamSetupError("A target bot is outside this Chief's authorized team and peer scope", 403);
+        if (!target || target.hidden || !this.options.canAccessTeam(chief, target.section) || (target.id !== chief.id && !peerAllowed(chief, target))) throw new TeamSetupError("A target bot is outside this Chief's authorized team and peer scope", 403);
         if (teamSetupRevision(target, operation.fields) !== operation.expectedRevision) throw new TeamSetupError(`@${target.name} changed. This setup was cancelled; review a new proposal.`, 409);
         const sourceThreadId = immediate && target.id === chief.id ? request.threadId : undefined;
         if (this.options.targetBusy(target.id, sourceThreadId) && (confirming || target.id !== chief.id)) throw new TeamSetupError(`Stop @${target.name}'s work before changing its setup`, 409);
       }
       const fields = this.fields(operation.fields, target ?? undefined);
+      if (target) protectMasterChief(target, fields);
       if (confirming && target) this.options.validateChange?.(target, fields);
-      const destination = fields.section ?? target?.section ?? chief.section;
+      const destination = fields.section ?? (target ? target.section : chief.section);
       if (!allowed(destination)) throw new TeamSetupError("The destination team is outside this Chief's authorized scope", 403);
-      if (!request.newTeams.includes(section(destination)) && !existingTeams.has(section(destination))) throw new TeamSetupError("The destination team no longer exists", 409);
+      if (!isMasterChief(chief) && !request.newTeams.includes(section(destination)) && !existingTeams.has(section(destination))) throw new TeamSetupError("The destination team no longer exists", 409);
       const next = { id: operation.botId, name: fields.name ?? target!.name, section: section(destination), chiefOfStaff: fields.chiefOfStaff ?? target?.chiefOfStaff, hidden: false };
       const at = projected.findIndex((bot) => bot.id === operation.botId);
       if (at < 0) projected.push(next); else projected[at] = next;
@@ -199,7 +202,7 @@ export class TeamSetupRequestService {
     }
     if (request.deletion) {
       const target = this.options.store.bot(request.deletion.botId);
-      if (!target || target.hidden || target.id === chief.id || !this.options.canAccessTeam(chief, target.section) || (Array.isArray(chief.peers) && !chief.peers.includes(target.id))) throw new TeamSetupError("This deletion target is no longer an authorized teammate", 403);
+      if (!target || target.hidden || target.id === chief.id || !this.options.canAccessTeam(chief, target.section) || !peerAllowed(chief, target)) throw new TeamSetupError("This deletion target is no longer an authorized teammate", 403);
       if (teamSetupRevision(target) !== request.deletion.expectedRevision || this.options.targetBusy(target.id)) throw new TeamSetupError("The deletion target changed or is working. Review a new deletion proposal.", 409);
     }
   }
@@ -217,7 +220,7 @@ export class TeamSetupRequestService {
     if (combined.size > 8) throw new TeamSetupError("Review at most eight bots in one setup");
     const operations: TeamSetupOperation[] = [...combined.values()].map((operation) => {
       const target = operation.action === "update" ? this.options.store.bot(operation.botId) : undefined;
-      const fields = this.fields({ ...operation.fields, section: operation.fields.section ?? target?.section ?? chief.section ?? "" }, target ?? undefined);
+      const fields = this.fields({ ...operation.fields, section: operation.fields.section ?? (target ? target.section ?? "" : chief.section ?? "") }, target ?? undefined);
       return { action: operation.action, botId: operation.action === "create" ? newId() : operation.botId,
         ...(operation.action === "create" ? { threadId: newId() } : {}),
         fields,
@@ -254,7 +257,7 @@ export class TeamSetupRequestService {
   }
 
   async submitDeletion(args: DeletionArgs & SubmitAuthority) {
-    if (this.options.autoApply?.(args.botId, args.threadId)) return this.applyImmediately(this.prepareDeletion(args), args.from, args.canCommit);
+    if (!isMasterChief(this.options.store.bot(args.botId)) && this.options.autoApply?.(args.botId, args.threadId)) return this.applyImmediately(this.prepareDeletion(args), args.from, args.canCommit);
     return { ...this.proposeDeletion(args), applied: false, state: "pending" as const };
   }
 

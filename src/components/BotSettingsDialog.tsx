@@ -17,6 +17,7 @@ import { OverviewSection } from "./bot-settings/OverviewSection";
 import { IdentitySection } from "./bot-settings/IdentitySection";
 import { SlackSection } from "./bot-settings/SlackSection";
 import { useSlackManagementUrl } from "./bot-settings/useSlackManagement";
+import { MessagingSection } from "./bot-settings/MessagingSection";
 import { SoulSection } from "./bot-settings/SoulSection";
 import { SkillsSection } from "./bot-settings/SkillsSection";
 import { MemorySection } from "./bot-settings/MemorySection";
@@ -82,6 +83,8 @@ export function BotSettingsDialog({ bot, overlay = false }: {
   const ownerOrAdmin = useOwnerOrAdmin();
   const sections = BOT_SECTIONS
     .filter((entry) => entry.id !== "slack" || slackUrl !== null)
+    // Messaging bindings hold platform tokens; the owner or an admin only.
+    .filter((entry) => entry.id !== "messaging" || ownerOrAdmin === true)
     .filter((entry) => entry.id !== "visibility" || (!window.ogb && ownerOrAdmin === true));
   const visibleSections = sections.filter((entry) => sectionMatches(entry, q));
 
@@ -298,6 +301,8 @@ export function BotSettingsDialog({ bot, overlay = false }: {
         return <SoulSection bot={bot} patch={derived.patch} />;
       case "slack":
         return slackUrl ? <SlackSection managementUrl={slackUrl} /> : null;
+      case "messaging":
+        return <MessagingSection bot={bot} />;
       case "skills":
         return <SkillsSection bot={bot} />;
       case "memory":

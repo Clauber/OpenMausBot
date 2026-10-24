@@ -64,6 +64,7 @@ export function gateServer(input: {
   threadId: string;
   budget: number;
   toolScope?: ToolScope;
+  discovery?: boolean;
   /** node flags the harness spawns its own helpers with */
   nodeEnv?: Record<string, string>;
   execPath?: string;
@@ -74,11 +75,12 @@ export function gateServer(input: {
   const parsed = parseToolScope(input.toolScope);
   if (!parsed.ok) throw new Error(parsed.error);
   const scoped = parsed.scope !== undefined;
-  if (budget <= 0 && !scoped) return null;
-  if (!scoped && remoteMcpSpec(server)) return null;
+  if (input.discovery !== undefined && typeof input.discovery !== "boolean") throw new Error("Invalid tool discovery setting.");
+  if (budget <= 0 && !scoped && !input.discovery) return null;
+  if (!scoped && !input.discovery && remoteMcpSpec(server)) return null;
   const spec = mcpStdioServer(server, input);
   if (!spec) {
-    if (scoped) throw new Error("Tool selection requires a supported MCP server.");
+    if (scoped || input.discovery) throw new Error("Tool selection or discovery requires a supported MCP server.");
     return null;
   }
   const env = {
@@ -87,8 +89,9 @@ export function gateServer(input: {
     OMB_GATE_SPILL_DIR: spillDir(input.threadId),
     OMB_GATE_BUDGET: String(budget),
     ...(scoped ? { OMB_GATE_TOOL_SCOPE: JSON.stringify(parsed.scope) } : {}),
+    ...(input.discovery ? { OMB_GATE_DISCOVERY: "1" } : {}),
   };
-  if (input.configEnvName && (!scoped || !/^OMB_GATE_CONFIG_[a-f0-9]{64}$/.test(input.configEnvName))) {
+  if (input.configEnvName && ((!scoped && !input.discovery) || !/^OMB_GATE_CONFIG_[a-f0-9]{64}$/.test(input.configEnvName))) {
     throw new Error("Invalid private MCP gate configuration.");
   }
   return {

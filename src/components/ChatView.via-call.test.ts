@@ -22,7 +22,7 @@ vi.mock("./DesktopCapabilities", async (importOriginal) => ({
 }));
 vi.mock("@/lib/analytics", () => ({ track: vi.fn() }));
 // the thread controls are not what this test is about
-vi.mock("./ModelPicker", () => ({ ModelPicker: () => createElement("span") }));
+vi.mock("./ModelPicker", () => ({ ModelPicker: () => createElement("span"), ThinkingPicker: () => null }));
 vi.mock("./ApprovalModeSelector", () => ({ ApprovalModeSelector: () => createElement("span") }));
 
 const { ChatView } = await import("./ChatView");

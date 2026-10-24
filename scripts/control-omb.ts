@@ -396,6 +396,14 @@ export function verificationServerEnvironment(parentEnv: NodeJS.ProcessEnv, data
   // 127.0.0.1) that the SSRF guard admits, honored only in this sealed fixture.
   const webFixtureHost = parentEnv.OMB_TEST_WEB_FIXTURE_HOST?.trim() ?? "";
   if (/^127\.0\.0\.(?:[2-9]|[1-9]\d|1\d\d|2[0-4]\d|25[0-4])$/.test(webFixtureHost)) childEnv.OMB_TEST_WEB_FIXTURE_HOST = webFixtureHost;
+  // The Slack adapter against server/testing/fake-slack.ts, same discipline:
+  // a loopback URL only, so no token can ever reach the real Slack API.
+  const slackBase = parentEnv.SLACK_API_BASE?.trim() ?? "";
+  if (/^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(slackBase)) childEnv.SLACK_API_BASE = slackBase;
+  // The Discord adapter against server/testing/fake-discord.ts, same rule.
+  const discordBase = parentEnv.DISCORD_API_BASE?.trim() ?? "";
+  if (/^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(discordBase)) childEnv.DISCORD_API_BASE = discordBase;
+
   // Voice-note e2e fault injection: arms the one-shot audio-append failure
   // prelude inside the fixture server (see fail-audio-append-once.mjs).
   if (parentEnv.OMB_TEST_FAIL_AUDIO_APPEND_ONCE) {
@@ -418,7 +426,7 @@ export async function launchVerificationServer(
   browser?: { binaryPath: string; executablePath: string },
   room?: { scripted: boolean },
   /** Optional repository-owned fake providers for multi-engine setup checks. */
-  extraProviders: Array<"codex"> = [],
+  extraProviders: Array<"codex" | "zcode"> = [],
   /** Programmatic tests only: an owned loopback Boat provider, never a live account. */
   boatFixtureApi?: string,
   /** Repository fake MCP computer; isolated fixture launch only. */
@@ -469,6 +477,9 @@ export async function launchVerificationServer(
       ...(boatFixtureApi ? { computer: { driver: "boxAgent" } } : {}),
       ...(extraProviders.includes("codex") ? { codex: {
         driver: "codex", displayName: "Verification Codex", config: { cli: fileURLToPath(new URL("../server/testing/fake-codex-app-server.ts", import.meta.url)) },
+      } } : {}),
+      ...(extraProviders.includes("zcode") ? { zcode: {
+        driver: "zcodeAgent", displayName: "Verification ZCode", config: { cli: fileURLToPath(new URL("../server/testing/fake-zcode-app-server.ts", import.meta.url)) },
       } } : {}),
       claude: {
         driver: "claudeAgent",
@@ -613,13 +624,30 @@ async function main() {
   }
   if (command === "launch") {
     requireForegroundTerminal("launch");
+    const extras: string[] = [];
+    const rest = process.argv.slice(3);
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "--extra") extras.push(rest[++i] ?? "");
+      else if (rest[i]?.startsWith("--")) {
+        process.stderr.write(`${JSON.stringify({ ok: false, error: `unknown launch option: ${rest[i]}` }, null, 2)}\n`);
+        process.exitCode = 1;
+        return;
+      }
+    }
+    const knownExtras = new Set(["codex", "zcode"]);
+    const unknown = extras.filter((name) => !knownExtras.has(name));
+    if (unknown.length) {
+      process.stderr.write(`${JSON.stringify({ ok: false, error: `unknown --extra provider(s): ${unknown.join(", ")}; known: ${[...knownExtras].join(", ")}` }, null, 2)}\n`);
+      process.exitCode = 1;
+      return;
+    }
     const startup = new AbortController();
     const cancelStartup = () => startup.abort();
     process.once("SIGINT", cancelStartup);
     process.once("SIGTERM", cancelStartup);
     let session: VerificationServer;
     try {
-      session = await launchVerificationServer(process.env, startup.signal);
+      session = await launchVerificationServer(process.env, startup.signal, undefined, undefined, undefined, extras as Array<"codex" | "zcode">);
     } finally {
       process.removeListener("SIGINT", cancelStartup);
       process.removeListener("SIGTERM", cancelStartup);

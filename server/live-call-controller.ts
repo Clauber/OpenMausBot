@@ -80,11 +80,20 @@ export interface LiveCallDeps {
   personKey?(auth: RequestAuth): string | undefined;
   activity(botId: string, threadId: string): LiveActivity;
   broadcast(frame: { kind: "live.call"; botId: string; threadId: string; call: LiveCallState | null }): void;
-  settings(): { key: string; voice: string; readTypedReplies: boolean; idleMinutes: number };
+  /** The call's settings for this bot: which key it spends, and (from the
+   * engine pick) which voice engine carries it. */
+  settings(botId: string): { key: string; provider?: "openai" | "codex"; voice: string; readTypedReplies: boolean; idleMinutes: number };
   createSession(input: { key: string; sdp: string; botId: string; threadId: string; voice: string; compute?: boolean }): Promise<{ sessionId: string; sdp: string }>;
+
   openSocket(url: string, key: string): LiveSocket;
-  attachUrl(sessionId: string): string;
+  /** The socket URL for a session. `callId` (the controller's own call id)
+   * rides along for engines whose sideband is named by it, not the session
+   * id; the API-key engine ignores it. */
+  attachUrl(sessionId: string, callId?: string): string;
   speakable(text: string): string[];
+  /** The bot's reply text as it streams (assistant text deltas, any
+   * thread). Omitted: answers are spoken once the bot finishes them. */
+  onBotText?(listener: (threadId: string, delta: string) => void): () => void;
   log(line: string): void;
   now?(): number;
   /** Whether the voice may use ask_compute on this bot (the per-bot kill switch). Omitted: yes. */
@@ -97,6 +106,13 @@ export interface LiveCallDeps {
     append(receipt: CallReceiptData): string | null;
     update(messageId: string | null, receipt: CallReceiptData): void;
   };
+}
+
+/** Streaming markdown up to its last unclosed code fence: a code block is
+ * only ever spoken (or skipped) whole. */
+export function closedMarkdown(text: string): string {
+  const fences = text.split("```").length - 1;
+  return fences % 2 === 0 ? text : text.slice(0, text.lastIndexOf("```"));
 }
 
 export class LiveCallBusyError extends Error {
@@ -189,11 +205,16 @@ interface Call {
   batches: Map<string, string[]>;
   drainBatch: string[] | null;
   spokenAnswers: Set<string>;
+  /** The reply text the bot is writing for the call: its current text item
+   * (`messageId` once that item became a message) and how many of its
+   * utterances the voice already has. */
+  writing: { text: string; spoken: number; messageId: string | null } | null;
   pendingEnd: LiveEndReason | null;
   timers: Set<Timer>;
   consentTimer: Timer | null;
   idleTimer: ReturnType<typeof setInterval> | null;
   unsubscribe: (() => void) | null;
+  unsubscribeText: (() => void) | null;
   closeWaiters: Array<() => void>;
   /** every transcript line, both sides, for the receipt */
   log: ReceiptTranscript;
@@ -233,11 +254,17 @@ export class LiveCallController {
   async start(input: { auth: RequestAuth; device?: string; botId: string; botName: string; threadId: string; client: LiveClient; sdp: string }): Promise<{ call: LiveCallState; sdp: string }> {
     if (this.call && this.call.state.status !== "ended") throw new LiveCallBusyError({ ...this.call.state });
     if (input.device && this.revokedDevices.has(input.device)) throw new LiveCallSignedOutError();
-    const settings = this.deps.settings();
+    const settings = this.deps.settings(input.botId);
     const key = settings.key.trim();
     if (!key) throw new LiveSessionError("Add an OpenAI API key to use Live calls.", 409);
+    const provider = settings.provider === "codex" ? "codex" : "openai";
+    // A codex call's data channel is piped through the harness by the
+    // desktop's media module; the phones do not carry that pipe yet.
+    if (provider === "codex" && input.client !== "desktop") {
+      throw new LiveSessionError("Codex voice calls run in the desktop app for now.", 400);
+    }
     const voice = liveVoice(settings.voice);
-    const call = this.newCall(input, key, voice);
+    const call = this.newCall(input, key, voice, provider);
     // Taken before the first await: a second start in the same tick is refused.
     this.call = call;
     let session: { sessionId: string; sdp: string };
@@ -259,6 +286,9 @@ export class LiveCallController {
       call.lastActivity = this.deps.activity(input.botId, input.threadId);
       if (call.lastActivity === "working") this.beginWork(call);
       call.unsubscribe = this.deps.store.onChange((change) => this.onStoreChange(call, change));
+      call.unsubscribeText = this.deps.onBotText?.((threadId, delta) => {
+        if (threadId === call.state.threadId) this.soon(call, () => this.onBotText(call, delta));
+      }) ?? null;
       this.deps.log(`[live] call started bot=${input.botId} voice=${voice} client=${input.client}`);
       this.emit(call);
       // Before attach: a sideband that fails at once finishes the call, and
@@ -312,9 +342,9 @@ export class LiveCallController {
 
   // ── lifecycle ────────────────────────────────────────────────────────
 
-  private newCall(input: { auth: RequestAuth; device?: string; botId: string; botName: string; threadId: string; client: LiveClient }, key: string, voice: string): Call {
+  private newCall(input: { auth: RequestAuth; device?: string; botId: string; botName: string; threadId: string; client: LiveClient }, key: string, voice: string, engine: "openai" | "codex"): Call {
     return {
-      state: { callId: randomUUID(), botId: input.botId, threadId: input.threadId, client: input.client, voice, startedAt: this.now(), status: "connecting" },
+      state: { callId: randomUUID(), botId: input.botId, threadId: input.threadId, client: input.client, voice, engine, startedAt: this.now(), status: "connecting" },
       auth: input.auth,
       device: input.device ?? null,
       personKey: this.deps.personKey?.(input.auth),
@@ -347,11 +377,13 @@ export class LiveCallController {
       batches: new Map(),
       drainBatch: null,
       spokenAnswers: new Set(),
+      writing: null,
       pendingEnd: null,
       timers: new Set(),
       consentTimer: null,
       idleTimer: null,
       unsubscribe: null,
+      unsubscribeText: null,
       closeWaiters: [],
       log: new ReceiptTranscript(),
       compute: new Map(),
@@ -369,7 +401,7 @@ export class LiveCallController {
   private attach(call: Call): void {
     let socket: LiveSocket;
     try {
-      socket = this.deps.openSocket(this.deps.attachUrl(call.sessionId), call.key);
+      socket = this.deps.openSocket(this.deps.attachUrl(call.sessionId, call.state.callId), call.key);
     } catch {
       this.finish(call, "sideband-lost", "The call could not connect to OpenAI.");
       return;
@@ -448,6 +480,8 @@ export class LiveCallController {
     call.idleTimer = null;
     call.unsubscribe?.();
     call.unsubscribe = null;
+    call.unsubscribeText?.();
+    call.unsubscribeText = null;
     const socket = call.socket;
     call.socket = null;
     this.writeReceipt(call, reason);
@@ -490,7 +524,7 @@ export class LiveCallController {
       this.maybeStatus(call);
       return;
     }
-    const idleMs = this.deps.settings().idleMinutes * 60_000;
+    const idleMs = this.deps.settings(call.state.botId).idleMinutes * 60_000;
     if (this.now() - call.lastActivityAt >= idleMs) void this.hangUp(call, "idle");
   }
 
@@ -757,7 +791,35 @@ export class LiveCallController {
       }
       return;
     }
+    if (type === "message" && message.role === "bot" && message.kind === "text" && call.writing && call.writing.messageId === null) {
+      call.writing.messageId = message.id;
+    }
     if (message.kind === "text" && message.turnTerminal && !call.spokenAnswers.has(message.id)) this.onAnswer(call, message);
+  }
+
+  /** The bot's reply as it streams. Only for a request made on the call: the
+   * voice speaks each finished sentence while the bot writes the next one,
+   * so a long answer starts at once instead of when the turn ends. The newest
+   * finished sentence always waits, which keeps a one-line remark before a
+   * tool ("Let me look.") unspoken, as before: only the turn's final answer
+   * is read. */
+  private onBotText(call: Call, delta: string): void {
+    if (call.state.status === "ended") return;
+    if (!call.pendingCall.size && !call.claimNextTerminal) {
+      call.writing = null;
+      return;
+    }
+    // A new text item after a finished one: the bot used a tool in between.
+    if (!call.writing || call.writing.messageId !== null) call.writing = { text: "", spoken: 0, messageId: null };
+    call.writing.text += delta;
+    const utterances = this.deps.speakable(closedMarkdown(call.writing.text));
+    // The last utterance may be unfinished, and the one before it may still
+    // absorb a short sentence that follows.
+    const ready = utterances.length - 2;
+    if (ready <= call.writing.spoken) return;
+    const chunks = commentaryChunks(utterances.slice(call.writing.spoken, ready));
+    call.writing.spoken = ready;
+    for (const chunk of chunks) this.append(call, "commentary", chunk, call.activeDelegation);
   }
 
   /** A line the caller typed in a client (every client sends a sendId with
@@ -807,14 +869,25 @@ export class LiveCallController {
       }
     };
     if (!forCall && typed === undefined) return;
-    if (!forCall && !this.deps.settings().readTypedReplies) {
+    if (!forCall && !this.deps.settings(call.state.botId).readTypedReplies) {
       // Off means nothing about a typed exchange reaches OpenAI, not even as context.
       settle();
       call.spokenAnswers.add(message.id);
       return;
     }
     const lead = !forCall && typed !== undefined ? [LIVE_COPY.typedAnswerLead(typed)] : [];
-    const utterances = this.deps.speakable(message.text ?? "");
+    // what the voice already said of this answer while the bot wrote it
+    const streamed = forCall && call.writing?.messageId === message.id ? call.writing.spoken : 0;
+    call.writing = null;
+    const utterances = this.deps.speakable(message.text ?? "").slice(streamed);
+    if (!utterances.length && streamed) {
+      call.spokenAnswers.add(message.id);
+      settle();
+      if (request === undefined || call.claimNextTerminal) call.pendingCall.clear();
+      call.claimNextTerminal = false;
+      call.stats.replies += 1;
+      return;
+    }
     if (!utterances.length) return;
     const chunks = commentaryChunks([...lead, ...utterances]);
     if (!chunks.length) return;
@@ -913,7 +986,7 @@ export class LiveCallController {
    * status notes). With typed replies off, only work on a spoken request:
    * the steps the bot takes for a typed message are about that exchange. */
   private mayNarrate(call: Call): boolean {
-    return this.deps.settings().readTypedReplies || call.pendingCall.size > 0 || call.claimNextTerminal;
+    return this.deps.settings(call.state.botId).readTypedReplies || call.pendingCall.size > 0 || call.claimNextTerminal;
   }
 
   // ── ask_compute ──────────────────────────────────────────────────────

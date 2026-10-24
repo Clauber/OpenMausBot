@@ -41,7 +41,11 @@ const ENTRIES = {
 } as const satisfies Record<string, Parameters<typeof mountPreview>[1]>;
 const FAKE_MODES = ["happy", "exit-early", "hang", "malformed", "stream", "not-logged-in", "slow", "background-result"];
 const SEEDED_BOT = "Pepper";
-const PLATFORM_ENV = ["SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "LANG", "LC_ALL", "TZ"];
+const PLATFORM_ENV = ["SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "LANG", "LC_ALL", "TZ",
+  // agent-browser's daemon socket resolves under the per-user runtime
+  // directory; a verb spawned without it finds a fresh empty daemon and
+  // reports the launched session as not running (Linux headless hosts).
+  "XDG_RUNTIME_DIR"];
 // Where `agent-browser install` unpacks Chrome for Testing below `$HOME/.agent-browser/browsers/chrome-<version>/`.
 const CHROME_LAYOUTS: Partial<Record<NodeJS.Platform, string[]>> = {
   darwin: [

@@ -116,7 +116,7 @@ export function LiveBrowser({ bot }: { bot: Bot }) {
         if (!ownsConnection() || viewer.current !== expected) return;
         haltMessage.current = cause instanceof Error ? cause.message : String(cause);
         setError(haltMessage.current);
-      });
+      }, Number.isSafeInteger(data.inputBatch) ? Math.max(1, Math.min(Number(data.inputBatch), 64)) : 1);
       inputQueue.current = queue;
       browserControl.current = createBrowserControl({
         queue,

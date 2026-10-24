@@ -47,10 +47,13 @@ Use only mapped, tested commands:
 - [Live call receipts and ask_compute](call-receipts.md)
 - [Computer audit log and instant revocation](computer-audit.md)
 - [Chat turns](chat-turns.md)
+- [Persistent chat goals and model changes during work](chat-goals.md)
 - [Conversation context compaction](context-compaction.md)
 - [Work summaries and engine hooks](digests.md)
 - [OpenAI-compatible structured tools](openai-tools.md)
 - [Per-bot tool selection and local-model checks](tool-selection.md)
+- [Apps access manager: which bot may use which app](mcp-access.md)
+- [Skills library: Hermes and shared skills, assigned per bot](skills-library.md)
 - [OpenCode model variants through ACP](opencode-variants.md)
 - [Bot setup, model scope, and file continuity](bot-continuity.md)
 - [Reviewed Chief team setup and scoped deletion](team-setup.md)
@@ -66,6 +69,9 @@ Use only mapped, tested commands:
 - [Chat UI, driven headlessly](chat-ui.md)
 - [Welcome flow and guided tour](onboarding.md)
 - [Channels](channels.md)
+- [Telegram DMs](telegram.md)
+- [Slack DMs over Socket Mode](slack.md)
+- [Discord DMs over the gateway](discord.md)
 - [In-chat team coordination](room-coordination.md)
 - [Chief access to additional teams](team-access.md)
 - [Engines and Doctor](engines.md)
@@ -76,6 +82,7 @@ Use only mapped, tested commands:
 - [Qwen model route selection](qwen-models.md)
 - [Team backups](team-backups.md)
 - [Sharing a whole team](team-sharing.md)
+- [Grok Bot marketplace import](grok-import.md)
 - [The organization library](org-library.md)
 - [Preset bots](presets.md)
 - [Teams and shared instructions](teams.md)
@@ -148,6 +155,11 @@ The [live browser fixture](browser-live.md) mounts the real Browser panel with
 an explicitly selected native engine and Chrome in a disposable home, covering
 watching, takeover, input, and profile switching.
 
+The [built-in stealth browser fixture](browser-stealth.md) drives a real bot
+turn through the fingerprinted Chrome the server launches itself
+(`browserEngine.stealth`) and proves the identity the page sees is the
+session's fingerprint, not the host's.
+
 The [Local VM resume fixture](local-vm-resume.md) checks idle stop, restart
 recovery, guarded resume and the stopped-to-ready Computer panel flow.
 
@@ -169,6 +181,10 @@ route module, and stale-response isolation.
 The [chat and settings polish fixture](chat-polish.md) exercises attachment
 galleries, opt-in video playback, persisted tool details, and responsive settings
 through the real renderer in an isolated fake-engine workspace.
+
+The [file viewer fixture](file-viewer.md) checks that file chips and
+bot-authored Markdown links open a docked, tabbed inline preview instead of a
+download, still authorized through the message-scoped file route.
 
 The [people invitation fixture](people.md) checks hosted workspace sign-in,
 roles and device revocation through the real HTTP API with a stubbed email

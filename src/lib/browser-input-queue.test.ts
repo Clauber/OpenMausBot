@@ -93,6 +93,54 @@ describe("bounded browser input queue", () => {
     expect(send).toHaveBeenLastCalledWith(key("keyDown", "after reconnect"));
   });
 
+  it("sends every input queued behind a request in the next one where the server takes batches, and commands alone", async () => {
+    const first = deferred();
+    const send = vi.fn<(body: Record<string, unknown>) => Promise<void>>().mockResolvedValue();
+    send.mockImplementationOnce(() => first.promise);
+    const queue = createBrowserInputQueue(send, vi.fn(), 64);
+    queue.enqueue(key("keyDown", "a"));
+    queue.enqueue(key("keyUp", "a")); queue.enqueue(key("keyDown", "b")); queue.enqueue(move(1)); queue.enqueue(move(2)); queue.enqueue(key("keyUp", "b"));
+    queue.enqueue({ type: "reload" });
+    queue.enqueue(key("keyDown", "c"));
+    first.resolve(); await queue.settle();
+    expect(send.mock.calls.map(([body]) => body)).toEqual([
+      key("keyDown", "a"),
+      { type: "input_batch", events: [key("keyUp", "a"), key("keyDown", "b"), move(2), key("keyUp", "b")] },
+      { type: "reload" },
+      key("keyDown", "c"),
+    ]);
+  });
+
+  it("keeps a batch to the limit the server gave and under the size it reads", async () => {
+    const send = vi.fn<(body: Record<string, unknown>) => Promise<void>>().mockResolvedValue();
+    for (const [limit, inputs] of [[3, Array.from({ length: 6 }, (_, n) => key("keyDown", String(n)))], [64, Array.from({ length: 10 }, () => ({ type: "input_keyboard", eventType: "char", text: "x".repeat(4_000) }))]] as const) {
+      send.mockClear();
+      const first = deferred();
+      send.mockImplementationOnce(() => first.promise);
+      const queue = createBrowserInputQueue(send, vi.fn(), limit);
+      queue.enqueue(key("keyDown", "first"));
+      for (const input of inputs) queue.enqueue(input);
+      first.resolve(); await queue.settle();
+      const sizes = send.mock.calls.slice(1).map(([body]) => (body.events as unknown[] | undefined)?.length ?? 1);
+      expect(Math.max(...sizes)).toBeLessThanOrEqual(limit);
+      expect(sizes.reduce((sum, size) => sum + size, 0)).toBe(inputs.length);
+      expect(Math.max(...send.mock.calls.map(([body]) => JSON.stringify(body).length))).toBeLessThan(32_768);
+    }
+  });
+
+  it("still sends the releases of a batch that failed, so nothing stays held, and no presses", async () => {
+    const onError = vi.fn();
+    const send = vi.fn<(body: Record<string, unknown>) => Promise<void>>().mockResolvedValue();
+    const first = deferred();
+    send.mockImplementationOnce(() => first.promise).mockRejectedValueOnce(new Error("could not confirm"));
+    const queue = createBrowserInputQueue(send, onError, 64);
+    queue.enqueue(key("keyDown", "a"));
+    queue.enqueue(key("keyDown", "shift")); queue.enqueue(key("keyDown", "b")); queue.enqueue(key("keyUp", "b")); queue.enqueue(up); queue.enqueue(key("keyUp", "shift"));
+    first.resolve(); await queue.settle();
+    expect(send.mock.calls.slice(2).map(([body]) => body)).toEqual([key("keyUp", "b"), up, key("keyUp", "shift")]);
+    expect(onError).toHaveBeenCalledOnce();
+  });
+
   it("does not replay queued presses after a transport failure", async () => {
     const onError = vi.fn();
     const send = vi.fn<(body: Record<string, unknown>) => Promise<void>>().mockRejectedValueOnce(new Error("uncertain input")).mockResolvedValue();

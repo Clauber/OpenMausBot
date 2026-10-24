@@ -7,6 +7,7 @@ import type { McpServerSpec, RemoteMcpSpec, StdioMcpSpec } from "./contracts.ts"
  * stored entry: a command this machine runs, or a URL to connect to. */
 export interface StoredStdioMcpServer extends StdioMcpSpec {
   enabled: boolean;
+  allowedBotIds?: string[];
 }
 /** An app registered in advance with the server's authorization server,
  * for servers that do not let apps register themselves. The secret is a
@@ -19,6 +20,7 @@ export interface McpOAuthClientConfig {
 export interface StoredRemoteMcpServer extends RemoteMcpSpec {
   enabled: boolean;
   oauth?: McpOAuthClientConfig;
+  allowedBotIds?: string[];
 }
 export type StoredMcpServer = StoredStdioMcpServer | StoredRemoteMcpServer;
 
@@ -29,6 +31,7 @@ export interface StdioMcpServerListing {
   args: string[];
   envKeys: string[];
   enabled: boolean;
+  allowedBotIds?: string[];
 }
 export interface RemoteMcpServerListing {
   name: string;
@@ -36,6 +39,7 @@ export interface RemoteMcpServerListing {
   url: string;
   headerKeys: string[];
   enabled: boolean;
+  allowedBotIds?: string[];
   /** present when a pre-registered sign-in app is set */
   oauth?: { clientId: string; scopes: string[]; clientSecretConfigured: boolean };
 }
@@ -51,6 +55,14 @@ export const MAX_MCP_SERVERS = 20;
 const MAX_ARGS = 64;
 const MAX_ENV = 64;
 const MAX_HEADERS = 32;
+// Trusted operator registry metadata, independent of a bot's selected server names.
+// Empty means nobody; absent preserves legacy enabled-server inheritance.
+const allowedBotIdsSchema = z.array(z.string().uuid()).max(100)
+  .refine(ids => new Set(ids).size === ids.length, "Bot restrictions must not contain duplicates.");
+function botRestrictionFor(incoming: string[] | undefined, mutation: boolean, existing?: StoredMcpServer): { allowedBotIds?: string[] } {
+  const ids = incoming ?? (mutation ? existing?.allowedBotIds : undefined);
+  return ids === undefined ? {} : { allowedBotIds: [...ids] };
+}
 const MCP_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** An HTTP header field name: RFC 9110 token characters. */
@@ -94,6 +106,7 @@ function urlError(value: string): string | null {
 }
 
 const RESERVED_MCP_NAMES = new Set([
+  "thread_binding",
   "ogb",
   "computer",
   "agents",
@@ -110,6 +123,7 @@ const stdioEntrySchema = z.object({
   args: z.array(z.string().max(4_096)).max(MAX_ARGS).optional(),
   env: z.record(z.string(), z.string().max(16_384)).optional(),
   enabled: z.boolean().optional(),
+  allowedBotIds: allowedBotIdsSchema.optional(),
 }).strict();
 
 const stdioMutationSchema = stdioEntrySchema.extend({
@@ -136,6 +150,7 @@ const remoteEntrySchema = z.object({
   headers: z.record(z.string(), z.string().max(16_384)).optional(),
   oauth: oauthClientSchema.optional(),
   enabled: z.boolean().optional(),
+  allowedBotIds: allowedBotIdsSchema.optional(),
 }).strict();
 
 const remoteMutationSchema = remoteEntrySchema.extend({
@@ -227,6 +242,7 @@ function parseStdio(raw: unknown, mutation: boolean, existing?: StoredMcpServer)
       args: parsed.data.args ?? [],
       env: env.values,
       enabled: enabledFor(parsed.data.enabled, mutation, existing),
+      ...botRestrictionFor(parsed.data.allowedBotIds, mutation, existing),
     },
   };
 }
@@ -256,6 +272,7 @@ function parseRemote(raw: unknown, mutation: boolean, existing?: StoredMcpServer
       headers: headers.values,
       ...(oauth.value ? { oauth: oauth.value } : {}),
       enabled: enabledFor(parsed.data.enabled, mutation, existing),
+      ...botRestrictionFor(parsed.data.allowedBotIds, mutation, existing),
     },
   };
 }
@@ -310,6 +327,8 @@ export function addDisabledMcpServer(current: Record<string, unknown>, body: unk
     return { ok: false, status: 400, error: "Expected an MCP server object with a name." };
   }
   const record = body as Record<string, unknown>;
+  if (Object.hasOwn(record, "allowedBotIds"))
+    return { ok: false, status: 400, error: "Only the operator can configure MCP bot restrictions." };
   if (Object.hasOwn(record, "enabled")) return { ok: false, status: 400, error: BOT_CANNOT_SWITCH };
   const name = typeof record.name === "string" ? record.name : "";
   if (name && Object.hasOwn(current, name)) {
@@ -336,6 +355,7 @@ export function listMcpServers(raw: Record<string, unknown> | undefined): McpSer
         url: server.url,
         headerKeys: Object.keys(server.headers).sort(),
         enabled: server.enabled,
+        ...botRestrictionFor(server.allowedBotIds, false),
         ...(server.oauth ? {
           oauth: { clientId: server.oauth.clientId, scopes: server.oauth.scopes ?? [], clientSecretConfigured: Boolean(server.oauth.clientSecret) },
         } : {}),
@@ -347,6 +367,7 @@ export function listMcpServers(raw: Record<string, unknown> | undefined): McpSer
       args: server.args,
       envKeys: Object.keys(server.env).sort(),
       enabled: server.enabled,
+      ...botRestrictionFor(server.allowedBotIds, false),
     }];
   });
 }
@@ -410,8 +431,8 @@ export function parseMcpServersImport(
     // A remote entry keeps its transport and headers; `enabled` from the
     // paste is deliberately dropped so nothing runs before it was tested.
     const result = parseMcpServerMutation(name, looksRemote(record)
-      ? pickEntry(record, ["type", "url", "headers"])
-      : pickEntry(record, ["command", "args", "env"]));
+      ? pickEntry(record, ["type", "url", "headers", "allowedBotIds"])
+      : pickEntry(record, ["command", "args", "env", "allowedBotIds"]));
     if (!result.ok) return { ok: false, error: `"${rawName}": ${result.error}` };
     servers[name] = result.server;
   }

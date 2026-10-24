@@ -2,14 +2,16 @@
 // Only the model is fake. Files live in the disposable verification home.
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { createInterface } from "node:readline";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { launchVerificationServer, type VerificationServer } from "../scripts/control-omb.ts";
 import { createComputerSharing, type SharedFolder } from "../electron/computer-sharing.mjs";
 import { sessionCookieName } from "./request-auth.ts";
 
+const helperHome = mkdtempSync(join(tmpdir(), "omb-shared-helper-"));
 let fixture: VerificationServer;
 let connector: ReturnType<typeof createComputerSharing>;
 let proxy: ChildProcess;
@@ -53,7 +55,7 @@ const commandAlive = (marker: string) => {
 };
 
 beforeAll(async () => {
-  fixture = await launchVerificationServer({ FAKE_CLAUDE_MODE: "hang" });
+  fixture = await launchVerificationServer({ FAKE_CLAUDE_MODE: "hang", FAKE_CLAUDE_TEXT_DUMP: join(helperHome, "one-shot.json") });
   // Computer sharing ships off (features.sharedComputers, config.ts). Turn it
   // on for this fixture before anything is paired or dispatched: the routes,
   // the advertised capability and the agent tools all read the same gate, and
@@ -122,6 +124,7 @@ afterAll(async () => {
     console.info(`Computer-sharing evidence: ${receipt}`);
     await fixture.close();
   }
+  rmSync(helperHome, { recursive: true, force: true });
 });
 
 it("asks only after pairing; Not now remembers the choice and grants nothing", async () => {

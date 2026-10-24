@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { describeTool, readBotActivity, type ActivityRow } from "./activity.ts";
 import type { DecisionRow } from "./decision-log.ts";
+import type { WireMessage } from "../shared/wire.ts";
 import { removeTempDir } from "./testing/cleanup.ts";
 
 describe("describeTool", () => {
@@ -91,8 +92,13 @@ const toolRun = (threadId: string, itemId: string, tool: string, startedAt: stri
   }
 };
 
+let stored: WireMessage[] = [];
+beforeEach(() => { stored = []; });
+const toolMessage = (itemId: string, turnId: string | undefined, tool: Partial<NonNullable<WireMessage["tool"]>> = {}) =>
+  stored.push({ id: `m-${itemId}-${turnId}`, at: 0, role: "bot", kind: "activity", ...(turnId ? { turnId } : {}), tool: { name: "Bash", itemId, ...tool } });
+
 const read = (overrides: Partial<Parameters<typeof readBotActivity>[0]> = {}): ActivityRow[] =>
-  readBotActivity({ dataDir, eventsDir, botId: "b1", threadIds: ["t1"], limit: 50, ...overrides });
+  readBotActivity({ dataDir, eventsDir, botId: "b1", threadIds: ["t1"], limit: 50, messagesFor: (threadId) => threadId === "t1" ? stored : [], ...overrides });
 
 describe("readBotActivity", () => {
   it("turns a finished tool item into one row that says it ran", () => {
@@ -171,6 +177,59 @@ describe("readBotActivity", () => {
       "2026-09-07T09:04:00.000Z",
       "2026-09-07T09:03:00.000Z",
     ]);
+  });
+
+  it("carries the chat message's tool details for the same turn and item, running or finished", () => {
+    toolRun("t1", "i1", "Bash", "2026-09-07T09:00:00.000Z", false);
+    toolRun("t1", "i2", "Bash", "2026-09-07T09:01:00.000Z", null);
+    toolMessage("i1", "turn-1", { input: "npm test", output: "1 failed", ok: false });
+    toolMessage("i2", "turn-1", { input: "sleep 60" });
+    expect(read().map((row) => [row.outcome, row.detail])).toEqual([
+      ["running", { name: "Bash", itemId: "i2", input: "sleep 60" }],
+      ["failed", { name: "Bash", itemId: "i1", input: "npm test", output: "1 failed", ok: false }],
+    ]);
+  });
+
+  it("never borrows another turn's message for a reused item ID, and skips an ambiguous legacy run", () => {
+    for (const [turnId, minute] of [["turn-one", "00"], ["turn-two", "01"], [undefined, "02"]] as const) {
+      event("t1", `2026-09-07T09:${minute}:00.000Z`, { type: "item.started", itemType: "tool", itemId: "item_0", turnId, title: "Bash" });
+    }
+    toolMessage("item_0", "turn-one", { input: "first" });
+    toolMessage("item_0", "turn-three", { input: "elsewhere" });
+    expect(read().map((row) => [row.turnId, row.detail?.input])).toEqual([
+      [undefined, undefined], ["turn-two", undefined], ["turn-one", "first"],
+    ]);
+  });
+
+  it("keeps identical turn and item IDs isolated by thread", () => {
+    toolRun("t1", "same", "Bash", "2026-09-07T09:00:00.000Z", true);
+    toolRun("t2", "same", "Bash", "2026-09-07T09:01:00.000Z", true);
+    toolMessage("same", "turn-1", { input: "first thread" });
+    const calls: string[] = [];
+    const rows = read({
+      threadIds: ["t1", "t2"],
+      messagesFor: (threadId) => {
+        calls.push(threadId);
+        return threadId === "t1" ? stored : [{ ...stored[0], tool: { ...stored[0].tool!, input: "second thread" } }];
+      },
+    });
+    expect(rows.map((row) => [row.threadId, row.detail?.input])).toEqual([
+      ["t2", "second thread"], ["t1", "first thread"],
+    ]);
+    expect(calls).toEqual(["t1", "t2"]);
+  });
+
+  it("omits details when multiple messages carry the exact same identity", () => {
+    toolRun("t1", "same", "Bash", "2026-09-07T09:00:00.000Z", true);
+    toolMessage("same", "turn-1", { input: "first" });
+    toolMessage("same", "turn-1", { input: "second" });
+    expect(read()[0].detail).toBeUndefined();
+  });
+
+  it("gives a legacy run without a turn the one message that carries its item ID", () => {
+    event("t1", "2026-09-07T09:00:00.000Z", { type: "item.started", itemType: "tool", itemId: "solo", turnId: undefined, title: "Bash" });
+    toolMessage("solo", "turn-9", { input: "ls" });
+    expect(read()[0].detail?.input).toBe("ls");
   });
 
   it("is empty, not an error, when no log exists yet", () => {

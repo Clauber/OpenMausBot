@@ -110,4 +110,15 @@ describe("remembering exact command approvals", () => {
     expect(result.html).not.toContain("Always allow");
     expect(result.html).toContain("Confirm");
   });
+
+  it("offers Always allow everything only under the operator's Full access opt-in", () => {
+    const pending = pendingApprovals([message()])[0]!;
+    const html = (props: { operatorFullAccess?: boolean; bot?: Bot }) => renderToStaticMarkup(
+      PendingApprovalActions({ pending, bot, threadId: "thread-1", onCancelTurn: vi.fn(), ...props }));
+    expect(html({})).not.toContain("Always allow everything");
+    expect(html({ operatorFullAccess: true })).toContain("Always allow everything");
+    expect(html({ operatorFullAccess: true, bot: { ...bot, approvalMode: "full" } as Bot })).not.toContain("Always allow everything");
+    fixture.admin = false;
+    expect(html({ operatorFullAccess: true })).not.toContain("Always allow everything");
+  });
 });

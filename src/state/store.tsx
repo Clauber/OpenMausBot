@@ -16,11 +16,13 @@ import { flushSync } from "react-dom";
 import type { BotVisibility, CardAnswerer, CloudBackend, ConnectorToolGrant, EffortLevel, InstalledPackageMetadata, LiveCallState, LiveSettings, ServerFrame, GroupThreadUsage, SteerQueueReason } from "../../shared/wire";
 import type { TurnDigest } from "../../shared/digest";
 import type { ToolScope } from "../../shared/tool-scope";
+import type { DeciderJob } from "../../shared/decider-jobs";
 import type { ModelVariantOption, RuntimeEvent } from "../../shared/runtime-events";
 import type { MausColor, MausMotion } from "@/lib/mascot";
 import type { BotAvatarCrop } from "../../shared/bot-avatar";
 import { approvalModeFor, type ApprovalMode } from "../../shared/approval-mode";
 import type { MascotBodyId } from "../../shared/mascot-bodies";
+import type { CustomSkin } from "../../shared/skin-recipe";
 import type { QuestionRequestCardData } from "../../shared/ask-question";
 import type { ProfileRequestCardData } from "../../shared/profile-request";
 import type { ModelRequestCardData } from "../../shared/model-request";
@@ -34,6 +36,9 @@ import {
 } from "../../shared/skill-request";
 import type { Routine, RoutineInput, RoutineRun, RoutineRunStatusFilter } from "@/lib/routines";
 import type { WebhookAttempt, WebhookIngressStatus, WebhookTrigger } from "@/lib/webhooks";
+import { applySkin, DEFAULT_SKIN, isCustomSkinValue } from "@/lib/skins";
+import { customSkinAttr, ensureCustomSkinStyles, readCustomSkinsCache, writeCustomSkinsCache } from "@/lib/custom-skins";
+import type { FileViewerTab } from "@/lib/file-viewer";
 import { botShowsUnread } from "@/lib/bot-unread";
 import { answerResponse, dismissResponse } from "@/lib/card-answer";
 import { currentCall } from "@/lib/call";
@@ -44,7 +49,7 @@ import { t } from "@/lib/i18n";
 import { operatorFullAccessEnabled } from "@/lib/feature-flags";
 import { createBotPatchQueue, type BotUpdatePatch } from "./bot-patch-queue";
 import type { OnboardingStatus } from "@/lib/onboarding";
-import { openLiveEvents } from "@/lib/live-events";
+import { openLiveEvents, publishLiveFrame, publishMissedFrames } from "@/lib/live-events";
 
 const MAX_ROUTINE_RUNS = 2_000;
 const ACTIVE_ROUTINE_RUN_STATUSES = new Set<RoutineRun["status"]>(["queued", "running", "waiting"]);
@@ -161,6 +166,9 @@ export interface Message {
   role: "bot" | "user";
   kind: "text" | "options" | "activity" | "screen" | "connector" | "secret" | "routine.run" | "goal.run" | "digest" | "compaction" | "call_receipt";
   text?: string;
+  /** The harness reasoning that led to this bot text, present only when the
+   * bot has includeThinking. */
+  thinking?: string;
   /** digest messages: what the turn did, rendered in `text` and structured here. */
   digest?: TurnDigest;
   compaction?: import("../../shared/wire").WireMessage["compaction"];
@@ -181,7 +189,7 @@ export interface Message {
    * narration of the same chip ("reading a file"), used by call mode. */
   /** `setup` marks an error fixed by installing something, not by retrying.
    * `summary` is the call's input on one redacted line (the shell command). */
-  tool?: { name: string; ok?: boolean; spoken?: string; setup?: boolean; claudeUpdate?: boolean; summary?: string; input?: string; output?: string ; itemId?: string; outputPath?: string; fullResult?: boolean };
+  tool?: { name: string; ok?: boolean; spoken?: string; setup?: boolean; claudeUpdate?: boolean; summary?: string; input?: string; output?: string ; thought?: string; itemId?: string; outputPath?: string; fullResult?: boolean };
   /** user messages sent into a running turn — the model saw it mid-turn */
   steered?: boolean;
   /** a user message that did not come from typing here: through the
@@ -260,9 +268,15 @@ export interface Group {
   pinnedMessageId?: string;
   /** sidebar section heading this room is filed under (shared with bots) */
   section?: string;
+  /** pinned above the section-ordered list; the saved section is kept for
+   * unpinning, exactly like a pinned bot */
+  pinned?: boolean;
   /** New user-created rooms remain in setup until Save or Skip. */
   setupCompletedAt?: number | null;
   setupSkippedAt?: number | null;
+  /** A direct-message conversation's turn ceiling. Null or absent uses the
+   * global group limit. Channel conversations store theirs on each task. */
+  turnTimeoutMinutes?: number | null;
   /** Separate conversations in this channel. DMs deliberately stay on one
    * thread and omit this collection. */
   tasks?: GroupTask[];
@@ -284,6 +298,9 @@ export interface GroupTask {
   pinned?: boolean;
   /** Newest message time, or createdAt. Server-derived. */
   updatedAt?: number;
+  /** This conversation's turn ceiling, in whole minutes. Absent uses the
+   * global group limit. */
+  turnTimeoutMinutes?: number;
 }
 
 export interface ModelSelection {
@@ -296,6 +313,7 @@ export interface ModelSelection {
 /** One of a bot's separate contexts: its own thread, transcript and
  * provider session. The bot's threadId points at the active one. */
 export interface Task {
+  goal?: import("../../shared/chat-goal").ChatGoal;
   waitingForTeammates?: boolean;
   threadId: string;
   /** Internal routine execution; reachable through its run receipt, not history menus. */
@@ -432,6 +450,8 @@ export interface Bot {
   autoApprove?: boolean;
   /** Explicit approval level; absent records use the legacy autoApprove bit. */
   approvalMode?: ApprovalMode;
+  /** A level chosen while the bot was working; lands when it goes idle. */
+  pendingApprovalMode?: ApprovalMode;
   /** tools this bot may always use without asking */
   alwaysAllow?: string[];
   /** speak this bot's replies aloud as they settle */
@@ -442,8 +462,16 @@ export interface Bot {
   voiceNotes?: boolean;
   /** whether the voice on a Live call may delegate work to this bot (on unless switched off) */
   liveCompute?: boolean;
+  /** which engine a Live call to this bot uses (default: the global Live
+   * provider; none: no Live calls, spoken replies only) */
+  callEngine?: "default" | "openai" | "codex" | "none";
   /** whether this bot uses native memory (on unless switched off) */
   memoryEnabled?: boolean;
+  /** Store reasoning with settled replies (off by default). */
+  includeThinking?: boolean;
+  /** This bot's own cap on parallel threads (1-10); absent follows the
+   * workspace default (config.threads.maxConcurrentPerBot). */
+  maxConcurrentThreads?: number;
   pinned?: boolean;
   hidden?: boolean;
   /** Sidebar section this bot renders under; absent = unsectioned. */
@@ -614,6 +642,7 @@ export function visibleMessages(bot: Pick<Bot, "messages" | "activeLeafId">): Me
 
 /** GET /api/config — configured flags only; secrets are never echoed. */
 export interface ConfigStatus {
+  masterChiefOfStaffBotId?: string | null;
   xai?: { configured: boolean };
   mistral?: { configured: boolean };
   cerebras?: { configured: boolean };
@@ -644,7 +673,9 @@ export interface ConfigStatus {
   threads?: { maxConcurrentPerBot: number; eventLogMaxBytes?: number; eventLogRetentionDays?: number };
   automaticRecovery?: { enabled: boolean; backup?: ModelSelection };
   localVm: { mode: "shared" | "per-bot" | "pool"; maxInstances: number; idleTimeoutMinutes?: number };
-  opencodeGo?: { configured: boolean };
+  /** `providerKeys`: names of the keys saved for OpenCode's other
+   * providers, never the keys. */
+  opencodeGo?: { configured: boolean; providerKeys?: string[] };
   /** Voice. `configured` = the engine has what it needs (an ElevenLabs or
    * Fish Audio key, or a Chatterbox server address); `ready` = that AND a voice, which is
    * what it takes to actually speak. The key itself is never echoed back;
@@ -670,7 +701,7 @@ export interface ConfigStatus {
     configured: boolean;
     included?: boolean;
     enabled: boolean;
-    jobs: { roomRouting: boolean };
+    jobs: Record<DeciderJob, boolean>;
   };
   /** Optional semantic memory provider: settings and stored-or-not, never the key. */
   memoryProvider?: {
@@ -846,6 +877,8 @@ export interface InstanceInfo {
     computerMcp?: boolean;
     agentsMcp?: boolean;
     composioMcp?: boolean;
+    /** the engine can mount the app-wide MCP servers (config.json mcpServers) */
+    customMcp?: boolean;
     browserMcp?: boolean;
     images?: boolean;
     effortLevels?: readonly EffortLevel[];
@@ -878,6 +911,9 @@ export interface InstanceInfo {
 
 export type AppSettingsSection =
   | "general"
+  | "apps"
+  | "servers"
+  | "keyboardShortcuts"
   | "desktopWorkspaces"
   | "organization"
   | "cloudAccount"
@@ -900,6 +936,7 @@ export type BotSettingsSection =
   | "overview"
   | "identity"
   | "slack"
+  | "messaging"
   | "soul"
   | "skills"
   | "memory"
@@ -950,11 +987,17 @@ export interface AppState {
   webhooks: WebhookTrigger[];
   webhookAttempts: WebhookAttempt[];
   webhookIngress: WebhookIngressStatus | null;
+  /** The workspace's user-made skins (Settings → Appearance). Server-owned,
+   *  mirrored to localStorage by the sync effect for pre-paint restores. */
+  customSkins: CustomSkin[];
+  /** True once the server's list has actually arrived: until then the
+   *  localStorage cache, not the empty array, is what the machine knows. */
+  customSkinsLoaded: boolean;
   settingsOpen: boolean;
-  pluginsOpen: boolean;
-  /** Which tab the Plugins panel opens on; "mcp" when a bot's tools
-   * sent the user there to add a server. */
-  pluginsSurface: "apps" | "mcp";
+  /** Which tab Settings → Apps opens on: "access" (which bot may use which
+   * app) by default; "mcp" when a bot's tools sent the user there to add a
+   * server. */
+  appsSurface: "apps" | "mcp" | "access";
   /** The Triggers pop-up (webhooks, as a sentence: when this happens, that
    * bot should…). */
   triggersOpen: boolean;
@@ -966,6 +1009,12 @@ export interface AppState {
   /** the per-thread event inspector (runtime stream + native protocol tee) */
   inspectorOpen: boolean;
   activityOpen: boolean;
+  /** The docked file viewer: inline previews of attachments and file links. */
+  fileViewerOpen: boolean;
+  fileViewerTabs: FileViewerTab[];
+  fileViewerActiveTab: string | null;
+  /** the bottom-docked owner terminal (Ctrl+`); closed again on reload */
+  terminalOpen: boolean;
   appSettingsOpen: boolean;
   appSettingsSection: AppSettingsSection;
   /** Non-zero while Settings → OMB Cloud is open because of the Cloud page's
@@ -984,8 +1033,6 @@ export interface AppState {
   botSettingsSection: BotSettingsSection;
   /** True only when the open action named a section — accordion expands that row. */
   botSettingsExpandAccordion: boolean;
-  /** latest live frame of a bot's computer, per botId */
-  screens: Record<string, { png: string; mime: string; threadId?: string }>;
   /** bots whose cloud computer is being provisioned */
   provisioning: Record<string, boolean>;
   /** Bot removals waiting for the server to verify that no persistent
@@ -1127,6 +1174,9 @@ export type Action =
   | { type: "routineDeleted"; routineId: string }
   | { type: "routineRunPatched"; run: RoutineRun }
   | { type: "webhooksHydrated"; webhooks: WebhookTrigger[]; attempts: WebhookAttempt[]; ingress: WebhookIngressStatus }
+  | { type: "customSkinsHydrated"; skins: CustomSkin[] }
+  | { type: "customSkinPatched"; skin: CustomSkin }
+  | { type: "customSkinDeleted"; skinId: string }
   | { type: "webhookPatched"; webhook: WebhookTrigger }
   | { type: "webhookAttempted"; attempt: WebhookAttempt }
   | { type: "webhookDeleted"; webhookId: string }
@@ -1153,13 +1203,14 @@ export type Action =
   | {
       type: "patchGroup";
       groupId: string;
-      patch: Partial<Pick<Group, "name" | "bulletin" | "memberIds" | "defaultResponder" | "pinnedMessageId" | "section">>;
+      patch: Partial<Pick<Group, "name" | "bulletin" | "memberIds" | "defaultResponder" | "pinnedMessageId" | "section" | "pinned">>;
     }
   | { type: "deleteGroup"; groupId: string }
   | { type: "newGroupTask"; groupId: string }
   | { type: "switchGroupTask"; groupId: string; threadId: string }
   | { type: "renameGroupTask"; groupId: string; threadId: string; title: string }
   | { type: "pinGroupTask"; groupId: string; threadId: string; pinned: boolean; title: string }
+  | { type: "setConversationTurnLimit"; groupId: string; threadId: string; minutes: number | null; dm: boolean }
   | { type: "deleteGroupTask"; groupId: string; threadId: string }
   | { type: "interruptGroup"; groupId: string; threadId?: string; onError?: () => void }
   | { type: "instances"; instances: InstanceInfo[] }
@@ -1230,6 +1281,8 @@ export type Action =
   | { type: "createProject"; botId: string; name: string; emoji?: string | null; onCreated?: (project: BotProject) => void; onError?: (message: string) => void }
   | { type: "updateProject"; botId: string; projectId: string; patch: ProjectUpdatePatch; onSaved?: () => void; onError?: (message: string) => void }
   | { type: "deleteProject"; botId: string; projectId: string; onDeleted?: () => void; onError?: (message: string) => void }
+  | { type: "botsOrdered"; botIds: string[] }
+  | { type: "reorderBots"; botIds: string[]; onSaved?: () => void; onError?: (message: string) => void }
   | { type: "reorderProjects"; botId: string; projectIds: string[]; onSaved?: () => void; onError?: (message: string) => void }
   | { type: "botAdded"; bot: Bot; preserveSelection?: boolean }
   | { type: "deleteBot"; botId: string }
@@ -1242,7 +1295,6 @@ export type Action =
   /** `restoreLeafId` puts back the branch an optimistic edit replaced; a
    * plain send falls back to the removed row's parent. */
   | { type: "optimisticMessageRemoved"; threadId: string; sendId: string; restoreLeafId?: string | null }
-  | { type: "screenFrame"; botId: string; threadId?: string; png: string; mime: string }
   | { type: "provisioning"; botId: string; on: boolean }
   | { type: "computerControl"; botId: string; held: boolean; helpReason: string | null }
   | { type: "modelVariantRuntime"; event: RuntimeEvent }
@@ -1253,15 +1305,19 @@ export type Action =
   | { type: "notice"; notice: AppState["notice"] }
   | { type: "revealThread"; threadId: string }
   | { type: "toggleSettings"; open?: boolean; section?: BotSettingsSection; botId?: string }
-  | { type: "togglePlugins"; open?: boolean; surface?: "apps" | "mcp" }
   | { type: "toggleTriggers"; open?: boolean }
   | { type: "toggleNewBot"; open?: boolean }
   | { type: "toggleComputer"; open?: boolean }
   | { type: "toggleInspector"; open?: boolean }
   | { type: "toggleActivity"; open?: boolean }
+  | { type: "openFileViewerTab"; tab: FileViewerTab }
+  | { type: "closeFileViewerTab"; id: string }
+  | { type: "setFileViewerTab"; id: string }
+  | { type: "toggleFileViewer"; open?: boolean }
+  | { type: "toggleTerminal"; open?: boolean }
   | { type: "focusMessage"; threadId: string; messageId: string; matchText?: string }
   | { type: "focusMessageConsumed"; nonce: number }
-  | { type: "toggleAppSettings"; open?: boolean; section?: AppSettingsSection; cloudLink?: boolean; phonePairing?: boolean }
+  | { type: "toggleAppSettings"; open?: boolean; section?: AppSettingsSection; cloudLink?: boolean; phonePairing?: boolean; appsSurface?: "apps" | "mcp" | "access" }
   | { type: "toggleShortcuts"; open?: boolean }
   | { type: "toggleWelcome"; open?: boolean }
   | { type: "toggleTour"; open?: boolean }
@@ -1547,6 +1603,12 @@ export function reducer(state: AppState, action: Action): AppState {
         bots: state.bots.map(bot => bot.section === action.section ? { ...bot, section: undefined } : bot),
         groups: state.groups.map(group => group.section === action.section ? { ...group, section: undefined } : group),
       };
+    case "botsOrdered": {
+      const byId = new Map(state.bots.map(bot => [bot.id, bot]));
+      const ordered = [...new Set(action.botIds)].flatMap(id => byId.has(id) ? [byId.get(id)!] : []);
+      const known = new Set(action.botIds);
+      return { ...state, bots: [...ordered, ...state.bots.filter(bot => !known.has(bot.id))] };
+    }
     case "sections":
       return { ...state, sections: action.sections };
     case "botQueues":
@@ -1560,12 +1622,12 @@ export function reducer(state: AppState, action: Action): AppState {
         computerOpen: false,
         inspectorOpen: false,
         activityOpen: false,
+        fileViewerOpen: false,
         appSettingsOpen: false,
-        pluginsOpen: false,
         triggersOpen: false,
       };
     case "showPages":
-      return { ...state, activeView: "pages", settingsOpen: false, computerOpen: false, inspectorOpen: false, activityOpen: false };
+      return { ...state, activeView: "pages", settingsOpen: false, computerOpen: false, inspectorOpen: false, activityOpen: false, fileViewerOpen: false, appSettingsOpen: false, triggersOpen: false };
     case "showChat":
       return state.activeView === "chat" ? state : { ...state, activeView: "chat" };
     case "showTeamMap":
@@ -1576,8 +1638,8 @@ export function reducer(state: AppState, action: Action): AppState {
         computerOpen: false,
         inspectorOpen: false,
         activityOpen: false,
+        fileViewerOpen: false,
         appSettingsOpen: false,
-        pluginsOpen: false,
         triggersOpen: false,
       };
     case "routinesHydrated":
@@ -1607,6 +1669,19 @@ export function reducer(state: AppState, action: Action): AppState {
     }
     case "webhooksHydrated":
       return { ...state, webhooks: action.webhooks, webhookAttempts: action.attempts, webhookIngress: action.ingress };
+    case "customSkinsHydrated":
+      return { ...state, customSkins: action.skins, customSkinsLoaded: true };
+    case "customSkinPatched": {
+      const exists = state.customSkins.some((skin) => skin.id === action.skin.id);
+      return {
+        ...state,
+        customSkins: exists
+          ? state.customSkins.map((skin) => (skin.id === action.skin.id ? action.skin : skin))
+          : [action.skin, ...state.customSkins],
+      };
+    }
+    case "customSkinDeleted":
+      return { ...state, customSkins: state.customSkins.filter((skin) => skin.id !== action.skinId) };
     case "webhookPatched": {
       const exists = state.webhooks.some((webhook) => webhook.id === action.webhook.id);
       return {
@@ -1637,7 +1712,11 @@ export function reducer(state: AppState, action: Action): AppState {
         ? fenced.groups.map((g) => (g.id === action.group.id ? {
             ...g, ...action.group,
             section: typeof action.group.threadId === "string" || Object.hasOwn(action.group, "section") ? action.group.section : g.section,
+            pinned: typeof action.group.threadId === "string" || Object.hasOwn(action.group, "pinned") ? action.group.pinned : g.pinned,
             tasks: action.group.tasks ? mergeTaskStamps(g.tasks, action.group.tasks) : g.tasks,
+            turnTimeoutMinutes: Object.hasOwn(action.group, "turnTimeoutMinutes")
+              ? (action.group.turnTimeoutMinutes ?? undefined)
+              : g.turnTimeoutMinutes,
             messages: action.group.messages ?? g.messages,
             // A payload that carries a transcript answers the scrollback
             // question with it: a bounded page says so, and a frame sent
@@ -1809,6 +1888,11 @@ export function reducer(state: AppState, action: Action): AppState {
         // Clear immediately on deletion: old approvals must never be sent
         // to the replacement thread while waiting for its transcript.
         messages: switchedThread ? [] : b.messages,
+        // This branch keeps the transcript it holds, so it keeps that
+        // transcript's scrollback answer too. A frame's hasMore describes
+        // the page it carries (often another thread's); taskSwitched takes
+        // it together with that page.
+        hasMore: switchedThread ? undefined : b.hasMore,
       }));
       return reconcileModelVariantSessions(patched);
     }
@@ -1949,12 +2033,6 @@ export function reducer(state: AppState, action: Action): AppState {
         messages: b.messages.map((m) => (m.id === action.message.id ? action.message : m)),
       }));
     }
-    case "screenFrame":
-      return {
-        ...withMascotMotion(state, action.botId, "success"),
-        screens: { ...state.screens, [action.botId]: { png: action.png, mime: action.mime, threadId: action.threadId } },
-        provisioning: { ...state.provisioning, [action.botId]: false },
-      };
     case "provisioning":
       return {
         ...(action.on ? withMascotMotion(state, action.botId, "launch") : state),
@@ -2034,21 +2112,12 @@ export function reducer(state: AppState, action: Action): AppState {
         appSettingsOpen: open ? false : state.appSettingsOpen,
       };
     }
-    case "togglePlugins": {
-      const open = action.open ?? !state.pluginsOpen;
-      return {
-        ...state,
-        pluginsOpen: open,
-        pluginsSurface: action.surface ?? state.pluginsSurface,
-        ...(open ? { settingsOpen: false, appSettingsOpen: false, newBotOpen: false, shortcutsOpen: false, triggersOpen: false } : {}),
-      };
-    }
     case "toggleTriggers": {
       const open = action.open ?? !state.triggersOpen;
       return {
         ...state,
         triggersOpen: open,
-        ...(open ? { settingsOpen: false, appSettingsOpen: false, newBotOpen: false, shortcutsOpen: false, pluginsOpen: false } : {}),
+        ...(open ? { settingsOpen: false, appSettingsOpen: false, newBotOpen: false, shortcutsOpen: false } : {}),
       };
     }
     case "botCreationPending":
@@ -2057,7 +2126,7 @@ export function reducer(state: AppState, action: Action): AppState {
       const open = action.open ?? !state.newBotOpen;
       return {
         ...state, newBotOpen: open,
-        ...(open ? { settingsOpen: false, appSettingsOpen: false, pluginsOpen: false, shortcutsOpen: false, triggersOpen: false } : {}),
+        ...(open ? { settingsOpen: false, appSettingsOpen: false, shortcutsOpen: false, triggersOpen: false } : {}),
       };
     }
     case "notice":
@@ -2086,6 +2155,7 @@ export function reducer(state: AppState, action: Action): AppState {
         settingsOpen: open ? false : state.settingsOpen,
         inspectorOpen: open ? false : state.inspectorOpen,
         activityOpen: open ? false : state.activityOpen,
+        fileViewerOpen: open ? false : state.fileViewerOpen,
         appSettingsOpen: open ? false : state.appSettingsOpen,
       };
     }
@@ -2097,6 +2167,7 @@ export function reducer(state: AppState, action: Action): AppState {
         settingsOpen: open ? false : state.settingsOpen,
         computerOpen: open ? false : state.computerOpen,
         activityOpen: open ? false : state.activityOpen,
+        fileViewerOpen: open ? false : state.fileViewerOpen,
         appSettingsOpen: open ? false : state.appSettingsOpen,
       };
     }
@@ -2108,8 +2179,59 @@ export function reducer(state: AppState, action: Action): AppState {
         settingsOpen: open ? false : state.settingsOpen,
         computerOpen: open ? false : state.computerOpen,
         inspectorOpen: open ? false : state.inspectorOpen,
+        fileViewerOpen: open ? false : state.fileViewerOpen,
         appSettingsOpen: open ? false : state.appSettingsOpen,
       };
+    }
+    case "openFileViewerTab": {
+      // Re-opening a file refreshes its tab in place; a new path appends.
+      const existing = state.fileViewerTabs.findIndex((tab) => tab.id === action.tab.id);
+      const tabs = existing === -1
+        ? [...state.fileViewerTabs, action.tab]
+        : state.fileViewerTabs.map((tab, index) => (index === existing ? action.tab : tab));
+      return {
+        ...state,
+        fileViewerOpen: true,
+        fileViewerTabs: tabs,
+        fileViewerActiveTab: action.tab.id,
+        settingsOpen: false,
+        computerOpen: false,
+        inspectorOpen: false,
+        activityOpen: false,
+        appSettingsOpen: false,
+      };
+    }
+    case "closeFileViewerTab": {
+      const index = state.fileViewerTabs.findIndex((tab) => tab.id === action.id);
+      if (index === -1) return state;
+      const tabs = state.fileViewerTabs.filter((tab) => tab.id !== action.id);
+      if (tabs.length === 0) return { ...state, fileViewerOpen: false, fileViewerTabs: tabs, fileViewerActiveTab: null };
+      const activeId = state.fileViewerActiveTab === action.id
+        ? tabs[Math.min(index, tabs.length - 1)]!.id
+        : state.fileViewerActiveTab;
+      return { ...state, fileViewerTabs: tabs, fileViewerActiveTab: activeId };
+    }
+    case "setFileViewerTab":
+      return state.fileViewerTabs.some((tab) => tab.id === action.id)
+        ? { ...state, fileViewerOpen: true, fileViewerActiveTab: action.id }
+        : state;
+    case "toggleFileViewer": {
+      const open = action.open ?? !state.fileViewerOpen;
+      return {
+        ...state,
+        fileViewerOpen: open,
+        settingsOpen: open ? false : state.settingsOpen,
+        computerOpen: open ? false : state.computerOpen,
+        inspectorOpen: open ? false : state.inspectorOpen,
+        activityOpen: open ? false : state.activityOpen,
+        appSettingsOpen: open ? false : state.appSettingsOpen,
+      };
+    }
+    // The terminal docks below the whole app, so it never displaces the
+    // side panels; nothing needs closing when it opens.
+    case "toggleTerminal": {
+      const open = action.open ?? !state.terminalOpen;
+      return { ...state, terminalOpen: open };
     }
     case "toggleAppSettings": {
       const open = action.open ?? !state.appSettingsOpen;
@@ -2117,13 +2239,14 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         appSettingsOpen: open,
         activityOpen: open ? false : state.activityOpen,
+        fileViewerOpen: open ? false : state.fileViewerOpen,
         appSettingsSection: action.section ?? state.appSettingsSection,
+        appsSurface: action.appsSurface ?? state.appsSurface,
         appSettingsCloudLink: action.cloudLink && open ? state.appSettingsCloudLink + 1 : 0,
         appSettingsPhonePairing: action.phonePairing && open ? state.appSettingsPhonePairing + 1 : 0,
         settingsOpen: open ? false : state.settingsOpen,
         computerOpen: open ? false : state.computerOpen,
         inspectorOpen: open ? false : state.inspectorOpen,
-        pluginsOpen: open ? false : state.pluginsOpen,
         triggersOpen: open ? false : state.triggersOpen,
       };
     }
@@ -2175,6 +2298,7 @@ export function reducer(state: AppState, action: Action): AppState {
         computer,
         connectorTools,
         connectorScopes,
+        maxConcurrentThreads,
         ...rest
       } = action.patch;
       const botPatch: Partial<Bot> = { ...rest };
@@ -2186,6 +2310,9 @@ export function reducer(state: AppState, action: Action): AppState {
       else if (connectorTools !== undefined) botPatch.connectorTools = connectorTools;
       if (connectorScopes === null) botPatch.connectorScopes = undefined;
       else if (connectorScopes !== undefined) botPatch.connectorScopes = connectorScopes;
+      // null returns the bot to the workspace default: an absent field.
+      if (maxConcurrentThreads === null) botPatch.maxConcurrentThreads = undefined;
+      else if (maxConcurrentThreads !== undefined) botPatch.maxConcurrentThreads = maxConcurrentThreads;
       return updateBot(next, action.botId, (b) => ({ ...b, ...botPatch }));
     }
     case "threadActive": {
@@ -2368,6 +2495,22 @@ export function reducer(state: AppState, action: Action): AppState {
             : group,
         ),
       };
+    case "setConversationTurnLimit":
+      return {
+        ...state,
+        groups: state.groups.map((group) => {
+          if (group.id !== action.groupId) return group;
+          if (action.dm) return { ...group, turnTimeoutMinutes: action.minutes ?? undefined };
+          return {
+            ...group,
+            tasks: (group.tasks ?? []).map((task) =>
+              task.threadId === action.threadId
+                ? { ...task, turnTimeoutMinutes: action.minutes ?? undefined }
+                : task,
+            ),
+          };
+        }),
+      };
     case "taskSwitched": {
       let switched = updateBot(bumpTranscriptGeneration(state, action.bot.threadId), action.bot.id, (bot) => ({
         ...bot,
@@ -2390,6 +2533,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case "createProject":
     case "updateProject":
     case "deleteProject":
+    case "reorderBots":
     case "reorderProjects":
     case "interrupt":
     case "createGroup":
@@ -2450,15 +2594,20 @@ export const initialState: AppState = {
   webhooks: [],
   webhookAttempts: [],
   webhookIngress: null,
+  customSkins: [],
+  customSkinsLoaded: false,
   settingsOpen: false,
-  pluginsOpen: false,
-  pluginsSurface: "apps",
+  appsSurface: "access",
   triggersOpen: false,
   newBotOpen: false,
   botCreationPending: false,
   computerOpen: false,
   inspectorOpen: false,
   activityOpen: false,
+  fileViewerOpen: false,
+  fileViewerTabs: [],
+  fileViewerActiveTab: null,
+  terminalOpen: false,
   appSettingsOpen: false,
   appSettingsSection: "general",
   appSettingsCloudLink: 0,
@@ -2468,7 +2617,6 @@ export const initialState: AppState = {
   tourOpen: false,
   botSettingsSection: "overview",
   botSettingsExpandAccordion: false,
-  screens: {},
   provisioning: {},
   deletingBots: {},
   computerControl: {},
@@ -3561,6 +3709,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             .then(({ bot }) => { dispatch({ type: "botPatched", bot }); action.onDeleted?.(); })
             .catch((error) => { showError(error); action.onError?.(error instanceof Error ? error.message : String(error)); });
           break;
+        case "reorderBots": {
+          const previous = stateRef.current.bots.map(bot => bot.id);
+          rawDispatch({ type: "botsOrdered", botIds: action.botIds });
+          api("/api/bots/order", { method: "PATCH", body: JSON.stringify({ botIds: action.botIds }) })
+            .then(({ botIds }) => { rawDispatch({ type: "botsOrdered", botIds }); action.onSaved?.(); })
+            .catch(async (error) => {
+              // Reconcile a failed write against the server, including concurrent changes from another device.
+              try {
+                const { bots } = await api("/api/bots?messages=0");
+                rawDispatch({ type: "botsOrdered", botIds: bots.map((bot: Bot) => bot.id) });
+              } catch { rawDispatch({ type: "botsOrdered", botIds: previous }); }
+              showError(error);
+              action.onError?.(error instanceof Error ? error.message : String(error));
+            });
+          break;
+        }
         case "reorderProjects":
           api(`/api/bots/${action.botId}/projects/order`, { method: "PATCH", body: JSON.stringify({ projectIds: action.projectIds }) })
             .then(({ bot }) => { dispatch({ type: "botPatched", bot }); action.onSaved?.(); })
@@ -3637,6 +3801,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             body: JSON.stringify({ pinned: action.pinned, title: action.title }),
           }).catch(showError);
           break;
+        case "setConversationTurnLimit":
+          api(action.dm ? `/api/groups/${action.groupId}` : `/api/groups/${action.groupId}/tasks/${action.threadId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ turnTimeoutMinutes: action.minutes }),
+          }).catch(showError);
+          break;
         case "deleteGroupTask":
           api<{ group?: Partial<Group> & { id: string } }>(`/api/groups/${action.groupId}/tasks/${action.threadId}`, { method: "DELETE" })
             .then((r) => r?.group && dispatch({ type: "groupPatched", group: r.group }))
@@ -3667,7 +3837,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // ── initial load + SSE fold ──────────────────────────────────────────
   useEffect(() => {
     let alive = true;
-    type PeripheralKey = "instances" | "config" | "routines" | "webhooks";
+    type PeripheralKey = "instances" | "config" | "routines" | "webhooks" | "skins";
     type PeripheralPart = {
       key: PeripheralKey;
       request: () => Promise<() => void>;
@@ -3707,6 +3877,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         request: async () => {
           const { routines, runs } = await api("/api/routines", { timeoutMs: 10_000 });
           return () => rawDispatch({ type: "routinesHydrated", routines, runs });
+        },
+      },
+      {
+        key: "skins",
+        request: async () => {
+          const { skins } = await api("/api/skins");
+          return () => rawDispatch({ type: "customSkinsHydrated", skins: Array.isArray(skins) ? skins : [] });
         },
       },
       ...(window.ogb?.remoteClient?.active ? [] : [{
@@ -3849,6 +4026,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (frame.kind === "config") bumpPeripheralVersion("config", "instances");
       else if (frame.kind === "routine" || frame.kind === "routine.deleted" || frame.kind === "routine.run") {
         bumpPeripheralVersion("routines");
+      } else if (frame.kind === "skin" || frame.kind === "skin.deleted") {
+        // Folded directly, like a webhook patch; the bump only keeps an
+        // in-flight hydration lane from overwriting this newer news.
+        bumpPeripheralVersion("skins");
+        rawDispatch(
+          frame.kind === "skin"
+            ? { type: "customSkinPatched", skin: frame.skin }
+            : { type: "customSkinDeleted", skinId: frame.skinId },
+        );
       } else if (
         frame.kind === "webhook" ||
         frame.kind === "webhook.attempt" ||
@@ -3857,6 +4043,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         bumpPeripheralVersion("webhooks");
       }
       switch (frame.kind) {
+        case "bots.order":
+          rawDispatch({ type: "botsOrdered", botIds: frame.botIds });
+          break;
         case "sections":
           rawDispatch({ type: "sections", sections: frame.sections });
           break;
@@ -3968,7 +4157,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           break;
         }
         case "screen":
-          rawDispatch({ type: "screenFrame", botId: frame.botId, threadId: frame.threadId, png: frame.png, mime: frame.mime ?? "image/png" });
+          // The picture went to the Computer panel (publishLiveFrame). For
+          // the store, a first frame only means the computer is set up.
+          if (stateRef.current.provisioning[frame.botId]) {
+            rawDispatch({ type: "provisioning", botId: frame.botId, on: false });
+          }
           break;
         case "computer":
           rawDispatch({ type: "provisioning", botId: frame.botId, on: frame.state === "provisioning" });
@@ -4015,12 +4208,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       onError: () => rawDispatch({ type: "connected", value: false }),
       onSnapshotRequired: () => {
         clearTimeout(hydrationFallback);
+        publishMissedFrames();
         // Frames buffered before this non-resumable stream belong to an
         // abandoned generation. Keep the new generation behind hydrate().
         pendingFrames.splice(0);
         return hydrate();
       },
       onFrame: (frame) => {
+        // Open panels read what the store does not keep (live screens, raw
+        // runtime events) from this same stream.
+        publishLiveFrame(frame as ServerFrame);
         if (hydrated) handleFrame(frame as ServerFrame);
         else pendingFrames.push(frame as ServerFrame);
       },
@@ -4034,6 +4231,26 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       stopLive();
     };
   }, []);
+
+  // Custom skins: keep the document's generated CSS, the pre-paint cache and
+  // the active choice in step with the server's collection. Runs on mount and
+  // on every collection change (hydration and each folded skin frame).
+  const customSkins = state.customSkins;
+  const customSkinsLoaded = state.customSkinsLoaded;
+  useEffect(() => {
+    // Until the first hydration lands the empty list is not authoritative —
+    // the cache main.tsx restored from knows this machine's skins. Only a
+    // loaded collection may unwear one (deleted here or elsewhere): then the
+    // active choice falls back to the default instead of claiming a missing
+    // skin, and the cache is rewritten from the server's truth.
+    const known = customSkinsLoaded ? customSkins : readCustomSkinsCache();
+    ensureCustomSkinStyles(known);
+    if (customSkinsLoaded) writeCustomSkinsCache(customSkins);
+    const active = document.documentElement.dataset.skin;
+    if (isCustomSkinValue(active) && !known.some((skin) => customSkinAttr(skin.id) === active)) {
+      applySkin(DEFAULT_SKIN);
+    }
+  }, [customSkins, customSkinsLoaded]);
 
   // Re-probe the engines on demand. A CLI installed while the app is running
   // is invisible until something asks again — the setup screens expose this

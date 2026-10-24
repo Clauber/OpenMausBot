@@ -16,6 +16,7 @@ import {
   ChevronRight,
   Download,
   ExternalLink,
+  Eye,
   FileText,
   ImageOff,
   LoaderCircle,
@@ -30,6 +31,7 @@ import {
   type TranscriptFileAttachment,
   type TranscriptImageAttachment,
 } from "@/lib/composer-attachments";
+import { fileViewerTabId, useFileViewerOpener } from "@/lib/file-viewer";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 
@@ -766,6 +768,7 @@ export function AttachedFileChip({ file, message, linked = false, className }: {
   className?: string;
 }) {
   const save = useLocalFileSave(file.path, file.name, message);
+  const openViewer = useFileViewerOpener();
   const failed = save.state === "failed";
   if (!message || (!file.private && !linked)) {
     return (
@@ -776,39 +779,60 @@ export function AttachedFileChip({ file, message, linked = false, className }: {
       </div>
     );
   }
+  // With the viewer mounted the chip opens a preview tab; without it (bare
+  // test mounts, secondary windows) the whole chip keeps saving a copy.
+  const openTab = openViewer && message ? () => openViewer({
+    id: fileViewerTabId(message.threadId, message.messageId, file.path),
+    path: file.path,
+    name: file.name,
+    threadId: message.threadId,
+    messageId: message.messageId,
+  }) : null;
   return (
     <div
       title={save.state === "saved" && save.savedTo ? t("attach.savedTo", { path: save.savedTo }) : file.name}
-      className={cn("max-w-[280px] overflow-hidden rounded-lg border border-hairline/40 bg-inset/70 text-[12px] text-ink-secondary", className)}
+      className={cn("flex max-w-[280px] flex-wrap overflow-hidden rounded-lg border border-hairline/40 bg-inset/70 text-[12px] text-ink-secondary", className)}
     >
+      <button
+        type="button"
+        onClick={() => (openTab ? openTab() : void save.save())}
+        disabled={!openTab && save.state === "saving"}
+        aria-label={
+          openTab
+            ? t("attach.viewer.viewAria", { name: file.name })
+            : failed
+              ? t("attach.retrySaveAria", { name: file.name })
+              : t("attach.saveAria", { name: file.name })
+        }
+        className="flex min-h-10 min-w-0 flex-1 items-center gap-2 px-2.5 py-2 text-left transition-colors hover:bg-raised/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60 disabled:cursor-wait disabled:hover:bg-transparent"
+      >
+        <FileText size={14} className="shrink-0" aria-hidden="true" />
+        <span className="min-w-0 flex-1 truncate text-ink">{file.name}</span>
+        {openTab && <Eye size={13} className="shrink-0 text-ink-secondary" aria-hidden="true" />}
+      </button>
       <button
         type="button"
         onClick={() => void save.save()}
         disabled={save.state === "saving"}
-        aria-label={
-          failed
-            ? t("attach.retrySaveAria", { name: file.name })
-            : t("attach.saveAria", { name: file.name })
-        }
-        className="flex min-h-10 w-full items-center gap-2 px-2.5 py-2 text-left transition-colors hover:bg-raised/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60 disabled:cursor-wait disabled:hover:bg-transparent"
+        aria-label={t("attach.saveAria", { name: file.name })}
+        title={t("attach.saveAria", { name: file.name })}
+        className="flex w-9 shrink-0 items-center justify-center border-l border-hairline/30 text-ink-secondary transition-colors hover:bg-raised/70 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60 disabled:cursor-wait disabled:hover:bg-transparent"
       >
-        <FileText size={14} className="shrink-0" aria-hidden="true" />
-        <span className="min-w-0 flex-1 truncate text-ink">{file.name}</span>
         {save.state === "saving" ? (
-          <LoaderCircle size={13} className="shrink-0 animate-spin" />
+          <LoaderCircle size={13} className="animate-spin" />
         ) : save.state === "saved" ? (
-          <Check size={13} className="shrink-0 text-success" />
+          <Check size={13} className="text-success" />
         ) : save.state === "failed" ? (
-          <RotateCcw size={13} className="shrink-0 text-danger" />
+          <RotateCcw size={13} className="text-danger" />
         ) : (
-          <Download size={13} className="shrink-0" />
+          <Download size={13} />
         )}
       </button>
       {save.state !== "idle" && (
         <div
           role={failed ? "alert" : "status"}
           className={cn(
-            "border-t border-hairline/30 px-2.5 py-1.5 text-[10.5px]",
+            "w-full border-t border-hairline/30 px-2.5 py-1.5 text-[10.5px]",
             failed ? "text-danger" : save.state === "saved" ? "text-success" : "text-ink-secondary",
           )}
         >

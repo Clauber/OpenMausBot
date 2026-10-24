@@ -22,4 +22,12 @@ describe("ToolActivity", () => {
     expect(render(false)).toContain("No output was recorded");
     expect(render(true)).toContain("No output was recorded");
   });
+  it("shows the thought before a step as readable text, clamped until opened", () => {
+    const html = renderToStaticMarkup(createElement(ToolActivity, { tool: { name: "Bash", ok: true, summary: "ls", thought: "Check what is in <tmp> first." } }));
+    expect(html).toContain('data-testid="tool-thought"');
+    expect(html).toContain("Check what is in &lt;tmp&gt; first.");
+    expect(html).toContain("line-clamp-3");
+    expect(html.indexOf("tool-thought")).toBeLessThan(html.indexOf("<details"));
+    expect(renderToStaticMarkup(createElement(ToolActivity, { tool: { name: "Bash", ok: true } }))).not.toContain("tool-thought");
+  });
 });

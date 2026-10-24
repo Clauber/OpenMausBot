@@ -359,8 +359,14 @@ describe("independent bot tasks through the isolated control surface", () => {
     await tool("switch_task", { target_type: "bot", target_id: botId, task_id: taskB });
     expect((await botState(botId)).tasks.filter((task: any) => task.busy)).toHaveLength(2);
     expect((await control(["wait", "--bot", botId, "--task", taskA, "--timeout", "1"])).status).toBe("timed-out");
-    const changeBusy = await api("PATCH", `/api/bots/${botId}/tasks/${taskA}`, { modelSelection: { instanceId: "claude", model: models[1] } });
-    expect(changeBusy.status).toBe(409);
+    const nextRunA = { instanceId: "claude", model: models[1] };
+    expect((await api("PATCH", `/api/bots/${botId}/tasks/${taskA}`, { modelSelection: nextRunA, resetApprovalToAsk: true })).status).toBe(409);
+    expect((await api("PATCH", `/api/bots/${botId}/tasks/${taskA}`, { modelSelection: nextRunA })).status).toBe(200);
+    const savedA = (await botState(botId)).tasks.find((task: any) => task.taskId === taskA);
+    expect(savedA).toMatchObject({ busy: true, modelSelection: nextRunA });
+    const savedProfile = (await api("GET", "/api/bots")).body.bots.find((bot: any) => bot.id === botId);
+    expect(savedProfile.tasks.find((task: any) => task.threadId === taskA)).toMatchObject({ approvalMode: "ask" });
+    expect((await dump(models[0])).pid).toBe(launchedA.pid);
 
     const answerA = await permission(models[0], "approval-a");
     await expect.poll(async () => (await botState(botId)).tasks.find((task: any) => task.taskId === taskA)?.activity).toBe("waiting-on-you");
@@ -392,7 +398,7 @@ describe("independent bot tasks through the isolated control surface", () => {
     expect((await api("PATCH", `/api/bots/${botId}`, { modelSelection: { instanceId: "claude", model: legacyModel } })).status).toBe(200);
     const final = await botState(botId);
     expect(final.tasks.find((task: any) => task.taskId === taskB).modelSelection.model).toBe(legacyModel);
-    expect(final.tasks.find((task: any) => task.taskId === taskA).modelSelection.model).toBe(models[0]);
+    expect(final.tasks.find((task: any) => task.taskId === taskA).modelSelection.model).toBe(models[1]);
   }, 45_000);
 
   it("cancels a detached routine on its captured provider after an idle sibling changes the default", async () => {
@@ -424,7 +430,7 @@ describe("independent bot tasks through the isolated control surface", () => {
     evidence.push({ routineCancelledOnOriginalProvider: true, runId: run.id, taskId: run.threadId });
   }, 30_000);
 
-  it("keeps a Group's profile model fixed while allowing independent idle task settings", async () => {
+  it("saves a Group's default for its next dispatch while the running Group turn keeps its captured provider", async () => {
     const created = await tool("create_bot", { name: "Group model fixture", instance_id: "claude", model: models[0] });
     const botId = created.bot.id;
     const threadId = created.bot.activeTaskId;
@@ -433,25 +439,29 @@ describe("independent bot tasks through the isolated control surface", () => {
       action: "complete", cwd: null, bulletin: "", defaultResponder: { kind: "member", botId },
     })).status).toBe(200);
     expect((await api("POST", `/api/groups/${group.id}/messages`, { text: "GROUP_MODEL_OWNER" })).status).toBe(202);
-    await dump(models[0]);
+    const launchedGroup = await dump(models[0]);
     const selection = { instanceId: "claude", model: models[1] };
     expect((await api("PATCH", `/api/bots/${botId}/tasks/${threadId}`, { modelSelection: selection })).status).toBe(200);
     // The selected task already has B, but the Group still owns default A:
     // a no-op relative to the task is not a no-op relative to the Group.
     expect((await api("PATCH", `/api/bots/${botId}/model`, selection)).status).toBe(409);
     expect((await api("PATCH", `/api/bots/${botId}`, { modelSelection: selection })).status).toBe(409);
-    expect((await api("PATCH", `/api/bots/${botId}/tasks/${threadId}`, { modelSelection: selection, updateBotDefault: true })).status).toBe(409);
+    expect((await api("PATCH", `/api/bots/${botId}/tasks/${threadId}`, { modelSelection: selection, updateBotDefault: true, resetApprovalToAsk: true })).status).toBe(409);
+    expect((await api("PATCH", `/api/bots/${botId}/tasks/${threadId}`, { modelSelection: selection, updateBotDefault: true })).status).toBe(200);
     expect((await botState(botId)).tasks.find((task: any) => task.taskId === threadId)?.modelSelection).toEqual(selection);
     const profile = (await api("GET", "/api/bots")).body.bots.find((bot: any) => bot.id === botId);
-    expect(profile.modelSelection.model).toBe(models[0]);
+    expect(profile.modelSelection).toEqual(selection);
+    expect(profile.busy).toBe(true);
+    expect((await dump(models[0])).pid).toBe(launchedGroup.pid);
+    expect(existsSync(modelFile(models[1], "json"))).toBe(false);
     expect((await api("POST", `/api/groups/${group.id}/interrupt`, {})).status).toBe(200);
     await expect.poll(async () => (await botState(botId)).busy, { timeout: 10_000 }).toBe(false);
-    expect((await api("PATCH", `/api/bots/${botId}/tasks/${threadId}`, { modelSelection: selection, updateBotDefault: true })).status).toBe(200);
+    expect(existsSync(modelFile(models[1], "json"))).toBe(false);
     expect((await botState(botId)).modelSelection).toEqual(selection);
-    evidence.push({ groupDefaultPreservedUntilStop: true, groupId: group.id, selectedTaskId: threadId });
+    evidence.push({ groupDefaultSavedForNextDispatch: true, groupId: group.id, selectedTaskId: threadId });
   }, 30_000);
 
-  it("refuses a second engine in the same selected project folder until its owner stops", async () => {
+  it("runs a second engine of the same bot in the selected project folder at the same time", async () => {
     const created = await tool("create_bot", { name: "Shared project fixture", instance_id: "claude", model: models[0] });
     const botId = created.bot.id;
     const taskA = created.bot.activeTaskId;
@@ -463,18 +473,18 @@ describe("independent bot tasks through the isolated control surface", () => {
     const second = await tool("create_task", { target_type: "bot", target_id: botId, title: "Project sibling" });
     const taskB = second.task.taskId;
     await control(["set-model", "--bot", botId, "--task", taskB, "--instance", "claude", "--model", models[1]]);
-    await control(["send", "--bot", botId, "--task", taskB, "--text", "PROJECT_B_CONFLICT"]);
-    const blocked = await control(["wait", "--bot", botId, "--task", taskB, "--timeout", "10"]);
-    expect(blocked.status).toBe("failed");
-    expect(JSON.stringify(blocked.messages)).toContain("project folder");
-    expect(existsSync(modelFile(models[1], "json"))).toBe(false);
-    expect((await botState(botId)).tasks.find((task: any) => task.taskId === taskA)?.busy).toBe(true);
-
-    await control(["interrupt", "--bot", botId, "--task", taskA]);
-    await control(["wait", "--bot", botId, "--task", taskA, "--timeout", "10"]);
-    await control(["send", "--bot", botId, "--task", taskB, "--text", "PROJECT_B_NOW_OWNS_FOLDER"]);
+    await control(["send", "--bot", botId, "--task", taskB, "--text", "PROJECT_B_PARALLEL"]);
+    // Like two Claude Code sessions open in one repo: the second engine starts
+    // in the same folder while the first still works there. The per-turn
+    // snapshot queues per folder on its own (server/checkpoints.ts).
     expect((await dump(models[1])).env.OMB_FIXTURE_CWD).toBe(realpathSync(cwd));
+    const both = await botState(botId);
+    expect(both.tasks.find((task: any) => task.taskId === taskA)?.busy).toBe(true);
+    expect(both.tasks.find((task: any) => task.taskId === taskB)?.busy).toBe(true);
+    expect(JSON.stringify((await control(["messages", "--bot", botId, "--task", taskB])).messages)).not.toContain("project folder");
+    await control(["interrupt", "--bot", botId, "--task", taskA]);
     await control(["interrupt", "--bot", botId, "--task", taskB]);
+    evidence.push({ parallelThreadsInOneProjectFolder: true, botId, taskA, taskB });
   }, 45_000);
 
   it.skipIf(process.platform !== "darwin")("claims the shared computer only on first use and keeps a sibling stop from releasing it", async () => {

@@ -148,10 +148,16 @@ const __APP_VERSION__: string;
           remote: boolean;
           activeId: string;
           environments: Array<{ id: string; name: string; origin: string }>;
+          /** This computer was taken out of the server lists. */
+          localHidden: boolean;
         }>;
         switch: (id: string) => Promise<void>;
         addFromLink: (link: string, name?: string) => Promise<boolean | void>;
         forget: (id: string) => Promise<void>;
+        rename: (id: string, name: string) => Promise<void>;
+        /** Remove This computer from the lists (asks first); needs a saved server. */
+        hideLocal: () => Promise<void>;
+        showLocal: () => Promise<void>;
         /** `panel` "copy": that server's Copy this computer here panel; otherwise its Computer access. */
         onOpenSettings?: (callback: (computerId?: string | null, panel?: "copy") => void) => () => void;
       };
@@ -239,8 +245,10 @@ const __APP_VERSION__: string;
       openInstallTerminal?(command: string): Promise<boolean>;
       /** Opens an http(s) link in the user's default browser. */
       openExternal?(url: string): Promise<boolean>;
-      /** Recolor the native window chrome for a skin; absent on older builds. */
-      applySkin?(skin: string): Promise<boolean>;
+      /** Recolor the native window chrome for a skin; absent on older builds.
+       * A custom skin passes its derived ground colour along — the main
+       * process has no table for ids it has never heard of. */
+      applySkin?(skin: string, color?: string): Promise<boolean>;
       /** The renderer-drawn Windows caption buttons; absent outside the
        * frameless Windows shell (macOS/Linux/browser keep native chrome). */
       windowControls?: {

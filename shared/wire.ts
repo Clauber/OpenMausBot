@@ -19,7 +19,6 @@ import type { TeamSetupRequest } from "./team-setup.ts";
 import type { RoutineRequestCardData } from "./routine-request.ts";
 import type { ProfileRequestCardData } from "./profile-request.ts";
 import type { ModelRequestCardData } from "./model-request.ts";
-import type { TighteningRequestCardData } from "./tightening-request.ts";
 import type { SkillRequestCardData } from "./skill-request.ts";
 import type { QuestionRequestCardData } from "./ask-question.ts";
 import type { RoutineRunCardData } from "./routine-run.ts";
@@ -28,6 +27,7 @@ import type { RuntimeEvent } from "./runtime-events.ts";
 import type { Notification } from "./notification.ts";
 import type { Routine, RoutineRun } from "./routines.ts";
 import type { WebhookAttempt, WebhookTrigger } from "./webhooks.ts";
+import type { CustomSkin } from "./skin-recipe.ts";
 
 /** Reasoning-effort levels, ascending. A union of everything any engine
  * accepts; each driver declares the subset its CLI will take. Lives here
@@ -120,6 +120,7 @@ export interface GroupThreadUsage extends TaskUsage {
  * session. Wire form: no resumeCursors or lastInstanceId — the harness's
  * own bookkeeping that no client has ever used. */
 export interface WireTask {
+  goal?: import("./chat-goal.ts").ChatGoal;
   /** Outstanding handoffs, not an active provider turn. */
   waitingForTeammates?: boolean;
   threadId: string;
@@ -240,6 +241,9 @@ export const CONNECTOR_TOOL_NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,127}$/;
  * (null when the bot has none). */
 export interface WireBot {
   waitingForTeammates?: boolean;
+  /** An approval level chosen while the bot was working; it lands when the
+   * bot goes idle. */
+  pendingApprovalMode?: ApprovalMode;
   id: string;
   /** The task selected in the UI; running turns keep their own thread id. */
   threadId: string;
@@ -299,10 +303,21 @@ export interface WireBot {
   /** Whether the voice on a Live call may delegate work to this bot's engine
    * (ask_compute). Absent/true = allowed; false removes the tool. */
   liveCompute?: boolean;
+  /** Which voice engine a Live call to this bot uses. Absent/"default"
+   * follows the global Live provider; "openai" forces the GPT-Live key,
+   * "codex" forces the Codex CLI's ChatGPT sign-in, and "none" refuses Live
+   * calls so the phone button always starts a spoken-replies call. */
+  callEngine?: "default" | "openai" | "codex" | "none";
+
   /** Whether this bot uses native memory. Absent/true = enabled. */
   memoryEnabled?: boolean;
+  /** Store this bot's reasoning with settled replies when opted in. */
+  includeThinking?: boolean;
   /** Queue direct-chat messages behind outstanding delegated work. */
   parkDirectMessages?: boolean;
+  /** This bot's own cap on parallel threads (1-10). Absent follows the
+   * workspace default (`threads.maxConcurrentPerBot`). */
+  maxConcurrentThreads?: number;
   /** true after an edit/branch-switch rewound the visible conversation. */
   rewound?: boolean;
   pinned?: boolean;
@@ -399,6 +414,11 @@ export interface WireMessage {
   text?: string;
   /** call_receipt messages: the finished Live call, updated in place by late transcript. */
   callReceipt?: import("./call-receipt.ts").CallReceiptData;
+  /** The harness reasoning that led to this bot text, stored only when the
+   * bot has includeThinking. Redacted like the text; renderers that do not
+   * know the field ignore it. */
+  thinking?: string;
+
   digest?: TurnDigest;
   compaction?: {
     summary: string;
@@ -426,6 +446,8 @@ export interface WireMessage {
   /** activity messages: tool name + outcome. */
   tool?: {
     name: string; ok?: boolean; spoken?: string; setup?: boolean; terminal?: boolean; summary?: string; input?: string; output?: string;
+    /** The reasoning the model streamed just before this call, redacted. */
+    thought?: string;
     /** error rows: the installed Claude Code is too old for the model, and
      * the UI can offer to update it in place. */
     claudeUpdate?: boolean;
@@ -435,6 +457,10 @@ export interface WireMessage {
      * server-local spill paths are not exposed to clients. */
     fullResult?: boolean;
   };
+  /** A bot line a "post" webhook wrote: whoever called the webhook chose
+   * its words. On a Cloud home a conversation holding one is someone else's
+   * for lending and memory (server/cloud-lending.ts reportsFromOthers). */
+  webhookPost?: boolean;
   /** user messages sent INTO a running turn (capabilities.queueing). */
   steered?: boolean;
   /** user messages a peer bot handed to this thread's RUNNING turn through
@@ -552,8 +578,6 @@ export interface OptionCardData {
   pageRequest?: import("./pages.ts").PageRequestCardData;
   /** A durable default-model proposal (propose_model). */
   modelRequest?: ModelRequestCardData;
-  /** A durable authority-tightening proposal (propose_tightening). */
-  tighteningRequest?: TighteningRequestCardData;
   teamSetupRequest?: TeamSetupRequest;
   /** A durable learned-skill proposal. */
   skillRequest?: SkillRequestCardData;
@@ -578,6 +602,10 @@ export interface LiveCallState {
   threadId: string;
   client: LiveClient;
   voice: string;
+  /** Which voice engine the call runs on: the GPT-Live key ("openai"), or
+   * "codex" — the ChatGPT sign-in, whose data channel is relayed through the
+   * server. Clients use it to know how to carry the call's events. */
+  engine?: "openai" | "codex";
   /** epoch ms when the session was created */
   startedAt: number;
   status: LiveCallStatus;
@@ -589,6 +617,12 @@ export interface LiveCallState {
 /** Non-secret Live settings, as GET /api/config and PATCH /api/live/settings report them. */
 export interface LiveSettings {
   configured: boolean;
+  /** Which voice engine Live calls use: "openai" bills the GPT-Live key;
+   * "codex" rides the local Codex CLI's ChatGPT sign-in (no key). */
+  provider: "openai" | "codex";
+  /** Whether a usable Codex sign-in exists on this computer, whatever the
+   * provider — so the engine pickers can offer it honestly. */
+  codexConfigured: boolean;
   voice: string;
   readTypedReplies: boolean;
   idleMinutes: number;
@@ -646,6 +680,9 @@ export interface GroupTask {
   pinnedMessageId?: string;
   /** The person pinned this channel thread above the update-ordered list. */
   pinned?: boolean;
+  /** This conversation's own turn ceiling, in whole minutes. Absent uses
+   * the global group turn limit. Direct chats do not use this ceiling. */
+  turnTimeoutMinutes?: number;
   /** Epoch ms of the newest message, or createdAt when the thread has none. */
   updatedAt?: number;
   /** The first message already drove a title attempt for this thread, so a
@@ -686,6 +723,9 @@ export interface WireGroup {
   pinnedMessageId?: string;
   /** sidebar section heading this room is filed under. */
   section?: string;
+  /** The person pinned this room above the section-ordered list. Only true
+   * is stored; absence means unpinned. */
+  pinned?: boolean;
   /** New user-created rooms start with setup pending. */
   setupCompletedAt?: number | null;
   setupSkippedAt?: number | null;
@@ -696,6 +736,9 @@ export interface WireGroup {
   /** True while any member (or hand-off) is mid-turn. Computed at
    * projection time, never persisted. */
   working: boolean;
+  /** A direct-message channel's turn ceiling. Null on the wire means the
+   * global group limit. Channel conversations store theirs on each task. */
+  turnTimeoutMinutes?: number | null;
 }
 
 // ── live wire frames ───────────────────────────────────────────────────
@@ -728,6 +771,8 @@ export interface SkillsLibrarySkillWire {
   license?: string;
   compatibility?: string;
   warnings: string[];
+  /** supporting files the library does not carry (SKILL.md only) */
+  skippedFiles?: string[];
   assignedBots: Array<{ id: string; name: string }>;
 }
 
@@ -738,6 +783,7 @@ export interface BotAssignedSkillsWire {
 }
 
 export type ServerFrame =
+  | { kind: "bots.order"; botIds: string[] }
   | { kind: "sections"; sections: string[] }
   | { kind: "bot.queued"; queues: BotQueuedMessages }
   | { kind: "message"; threadId: string; message: WireMessage }
@@ -753,6 +799,8 @@ export type ServerFrame =
   | { kind: "webhook"; webhook: WebhookTrigger }
   | { kind: "webhook.attempt"; attempt: WebhookAttempt }
   | { kind: "webhook.deleted"; webhookId: string }
+  | { kind: "skin"; skin: CustomSkin }
+  | { kind: "skin.deleted"; skinId: string }
   | { kind: "runtime"; event: RuntimeEvent }
   | { kind: "screen"; botId: string; threadId: string; png: string; mime?: string }
   | { kind: "computer"; botId: string; state: "provisioning" | "waking" }

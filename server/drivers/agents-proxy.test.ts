@@ -50,6 +50,7 @@ let askResponse: StubAskResponse = { botName: "Helper", text: "hi from helper" }
 let lastDelegateBody: any = null;
 let lastDelegationUrl: string | null = null;
 let delegationStatusResponse: unknown = { status: "done", toBotName: "Helper", result: "All done." };
+let delegationStatusCode = 200;
 let delegateResponse: unknown = { queued: true, message: "Delegation queued." };
 let lastThreadBody: any = null;
 let threadCalls = 0;
@@ -272,7 +273,7 @@ beforeAll(async () => {
     }
     if (req.method === "GET" && req.url?.startsWith("/api/internal/delegations/")) {
       lastDelegationUrl = req.url;
-      res.writeHead(200, { "content-type": "application/json" });
+      res.writeHead(delegationStatusCode, { "content-type": "application/json" });
       res.end(JSON.stringify(delegationStatusResponse));
       return;
     }
@@ -608,6 +609,9 @@ describe("agents-proxy MCP surface", () => {
     expect(init.result.serverInfo.name).toBe("openmausbot-agents");
     const list = await rpc("tools/list");
     expect(list.result.tools.map((t: { name: string }) => t.name)).toEqual([
+      "bot_folders",
+      "set_bot_approval",
+      "authorize_room_task",
       "tool_result_read",
       "list_shared_computers",
       "shared_computer",
@@ -626,6 +630,7 @@ describe("agents-proxy MCP surface", () => {
       "web_fetch",
       "web_search",
       "post_to_room",
+      "create_skin",
       "create_bot",
       "list_team_setup",
       "propose_team_setup",
@@ -711,6 +716,7 @@ describe("agents-proxy MCP surface", () => {
   it("advertises read annotations only for the reviewed built-in reads", async () => {
     const list = await rpc("tools/list");
     const readNames = [
+      "bot_folders",
       "tool_result_read",
       "list_shared_computers",
       "list_bots", "list_rooms", "check_delegation", "wait_delegation", "list_threads",
@@ -838,12 +844,12 @@ describe("agents-proxy MCP surface", () => {
     // the reason travels to the model, an id it could retry against does not
     roomsResponse = {
       rooms: [],
-      unpostable: [{ name: "Planning", reason: "that room includes @Scout, who is outside your section — tell the user what you wanted to post there instead" }],
+      unpostable: [{ name: "Planning", reason: "that room is still being set up — it cannot receive messages yet" }],
     };
     const res = await callTool("list_rooms", {});
     const text = res.result.content[0].text;
     expect(text).toContain("cannot post into");
-    expect(text).toContain("- Planning: that room includes @Scout, who is outside your section");
+    expect(text).toContain("- Planning: that room is still being set up");
     expect(text).toContain("nothing to retry");
     expect(text).not.toContain("[id:");
     roomsResponse = { rooms: [{ id: "room-launch", name: "Launch", members: ["Asker", "Helper"] }] };
@@ -923,19 +929,13 @@ describe("agents-proxy MCP surface", () => {
     postResponse = { ok: true, messageId: "msg-1", roomName: "Launch" };
   });
 
-  it("stops a turn at three posts and says so without another round trip", async () => {
+  it("counts no posts of its own: a proxy serving several turns leaves the per-turn limit to the harness", async () => {
     const before = postCalls;
-    // one post is already spent by the test above
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < 4; i++) {
       const ok = await callTool("post_to_room", { group_id: "room-launch", message: `update ${i}` });
       expect(ok.result.isError).toBeFalsy();
     }
-    expect(postCalls).toBe(before + 2);
-    const capped = await callTool("post_to_room", { group_id: "room-launch", message: "one more" });
-    expect(capped.result.isError).toBe(true);
-    expect(capped.result.content[0].text).toMatch(/do not retry/i);
-    // the refusal is the proxy's own: the harness was never asked
-    expect(postCalls).toBe(before + 2);
+    expect(postCalls).toBe(before + 4);
   });
 
   it("ask_bot forwards sender + depth and returns the reply", async () => {
@@ -970,13 +970,6 @@ describe("agents-proxy MCP surface", () => {
     expect(text).toContain("delivered to this conversation automatically");
     expect(text).not.toContain("wait_delegation");
     expect(res.result.isError).toBeFalsy();
-
-    lastDelegationUrl = null;
-    const check = await callTool("check_delegation", { task_id: "task-9" });
-    expect(check.result.isError).toBe(true);
-    expect(check.result.content[0].text).toContain("delegated during this turn");
-    expect(check.result.content[0].text).toContain("Finish your response now");
-    expect(lastDelegationUrl).toBeNull();
   });
 
   it.each([[15_000, "15 seconds"], [240_000, "4 minutes"]])("renders a timeout conversion after %s ms with the task id and guidance", async (waitedMs, duration) => {
@@ -990,13 +983,6 @@ describe("agents-proxy MCP surface", () => {
     expect(text).toContain("delivered to this conversation automatically");
     expect(text).not.toContain("wait_delegation");
     expect(res.result.isError).toBeFalsy();
-
-    lastDelegationUrl = null;
-    const wait = await callTool("wait_delegation", { task_id: "task-42", timeout_seconds: 240 });
-    expect(wait.result.isError).toBe(true);
-    expect(wait.result.content[0].text).toContain("delegated during this turn");
-    expect(wait.result.content[0].text).toContain("delivered to this conversation automatically");
-    expect(lastDelegationUrl).toBeNull();
   });
 
   it("surfaces the harness's depth refusal as a tool error", async () => {
@@ -1133,20 +1119,15 @@ describe("agents-proxy MCP surface", () => {
     expect(refused.result.content[0].text).toContain("title must fit on one line");
   });
 
-  it("stops a turn at five opened threads and tells the model not to retry", async () => {
-    // three threads were already opened above (the refusal did not count)
+  it("counts no threads of its own: a proxy serving several turns leaves the per-turn limit to the harness", async () => {
+    // three threads were already opened above
     threadResponse = { threadId: "thread-n", title: "More", botId: "bot-asker", botName: "Asker", self: true, state: "running", limit: 3 };
-    for (let i = 0; i < 2; i++) {
+    const before = threadCalls;
+    for (let i = 0; i < 3; i++) {
       const ok = await callTool("start_thread", { title: `More ${i}`, message: "go" });
       expect(ok.result.isError).toBeFalsy();
     }
-    const before = threadCalls;
-    const capped = await callTool("start_thread", { title: "One more", message: "go" });
-    expect(capped.result.isError).toBe(true);
-    expect(capped.result.content[0].text).toMatch(/do not retry/i);
-    expect(capped.result.content[0].text).toContain("which threads you still wanted to open");
-    // the refusal is the proxy's own: the harness was never asked
-    expect(threadCalls).toBe(before);
+    expect(threadCalls).toBe(before + 3);
   });
 
   it("lets a Chief create a bounded specialist through the harness", async () => {
@@ -1241,7 +1222,7 @@ describe("agents-proxy MCP surface", () => {
     expect(lastCredentialBody).toBeNull();
   });
 
-  it("hands back the task id and rejects sequential same-turn status calls", async () => {
+  it("hands back the task id, and relays the harness's refusal to check it in the same turn", async () => {
     delegateResponse = {
       queued: true,
       taskId: "task-abc123",
@@ -1253,15 +1234,22 @@ describe("agents-proxy MCP surface", () => {
     expect(res.result.content[0].text).toContain("Do not check or wait for it in this turn");
     expect(res.result.content[0].text).not.toContain("wait_delegation");
 
-    lastDelegationUrl = null;
-    for (const name of ["check_delegation", "wait_delegation"]) {
-      const status = await callTool(name, { task_id: "task-abc123", timeout_seconds: 240 });
-      expect(status.result.isError).toBe(true);
-      expect(status.result.content[0].text).toContain("delegated during this turn");
-      expect(status.result.content[0].text).toContain("Finish your response now");
-      expect(status.result.content[0].text).toContain("delivered to this conversation automatically");
+    // Which turn made it is the harness's to know: a warm proxy serves many.
+    delegationStatusCode = 409;
+    delegationStatusResponse = { error: "Task task-abc123 was delegated during this turn. Finish your response now so the other bot can work; its result will be delivered to this conversation automatically." };
+    try {
+      for (const name of ["check_delegation", "wait_delegation"]) {
+        lastDelegationUrl = null;
+        const status = await callTool(name, { task_id: "task-abc123", timeout_seconds: 240 });
+        expect(status.result.isError).toBe(true);
+        expect(status.result.content[0].text).toContain("delegated during this turn");
+        expect(status.result.content[0].text).toContain("Finish your response now");
+        expect(lastDelegationUrl).toContain("/api/internal/delegations/task-abc123?");
+      }
+    } finally {
+      delegationStatusCode = 200;
+      delegationStatusResponse = { status: "done", toBotName: "Helper", result: "All done." };
     }
-    expect(lastDelegationUrl).toBeNull();
     delegateResponse = { queued: true, message: "Delegation queued." };
   });
 

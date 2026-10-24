@@ -21,6 +21,8 @@ import {
 
 import { BotAvatar } from "@/components/Avatar";
 import { cn } from "@/lib/cn";
+import { copyText } from "@/lib/clipboard";
+import { t } from "@/lib/i18n";
 import type { RoutineRun, RoutineRunOn } from "@/lib/routines";
 import {
   loadWebhookCredentials,
@@ -267,7 +269,7 @@ export function useWebhookActions() {
         saveWebhookCredential(webhookCredentialStore(), webhook.id, credential!);
       }
       if (!credential) throw new Error("Could not create a terminal command");
-      await navigator.clipboard.writeText(copy === "link" ? credential.url : terminalCommand(credential));
+      if (!(await copyText(copy === "link" ? credential.url : terminalCommand(credential)))) throw new Error(t("clipboard.copyFailedHint"));
       setCopiedId(webhook.id);
       setCopiedKind(copy);
       setTimeout(() => setCopiedId((current) => current === webhook.id ? null : current), 1_800);

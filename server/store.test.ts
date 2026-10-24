@@ -1934,6 +1934,14 @@ describe("Store redacts bot-authored secrets on write", () => {
     const reply = store.appendMessage(bot.threadId, { role: "bot", kind: "text", text: `Your key is ${key}` });
     expect(reply.text).not.toContain(key);
     expect(reply.text).toContain("«redacted");
+    const thinking = store.appendMessage(bot.threadId, {
+      role: "bot",
+      kind: "text",
+      text: "Done.",
+      thinking: `I should mention the key ${key} in the reply.`,
+    });
+    expect(thinking.thinking).not.toContain(key);
+    expect(thinking.thinking).toContain("«redacted");
     const chip = store.appendMessage(bot.threadId, {
       role: "bot",
       kind: "activity",

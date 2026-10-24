@@ -8,7 +8,7 @@ import { api } from "@/state/store";
 // server rendering, so the catalog is put in place the way a finished fetch
 // would leave it. Indexes outside the map keep their initial values.
 const fixture = vi.hoisted(() => ({
-  surface: "apps" as "apps" | "mcp",
+  surface: "apps" as "apps" | "mcp" | "access",
   dispatch: vi.fn(),
   bots: [] as unknown[],
   instances: [] as unknown[],
@@ -36,12 +36,15 @@ vi.mock("react", async (original) => {
 vi.mock("@/state/store", () => ({
   api: vi.fn(() => new Promise(() => {})),
   useStore: () => ({
-    state: { pluginsSurface: fixture.surface, bots: fixture.bots, instances: fixture.instances },
+    state: { appsSurface: fixture.surface, bots: fixture.bots, instances: fixture.instances },
     dispatch: fixture.dispatch,
   }),
 }));
 vi.mock("./McpServersPanel", () => ({
   McpServersPanel: ({ embedded }: { embedded?: boolean }) => createElement("div", { "data-embedded": String(Boolean(embedded)) }, "MCP inventory"),
+}));
+vi.mock("./AppAccessManager", () => ({
+  AppAccessManager: ({ search }: { search: string }) => createElement("div", { "data-access-manager": "stub", "data-search": search }, "Access manager"),
 }));
 vi.mock("./Avatar", () => ({ BotAvatar: ({ bot }: { bot: Bot }) => createElement("span", { "data-avatar": bot.id }) }));
 import { APPS_PREVIEW_COUNT, PluginsPanel, USED_BY_AVATAR_SIZE, botsUsingService } from "./PluginsPanel";
@@ -93,7 +96,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-describe("Apps pop-up", () => {
+describe("Apps settings", () => {
   it("keeps a safe explicit authorization link and reopens without creating another account", async () => {
     const url = "https://auth.example.test/flow";
     fixture.overrides.set(STATUS, { gmail: { connected: false, pending: true } });
@@ -196,63 +199,18 @@ describe("Apps pop-up", () => {
     expect(page.location.replace).not.toHaveBeenCalled();
   });
 
-  it("focuses and wraps through visible controls in a narrow window", () => {
-    let active: Control;
-    const focusElement = (element: Control) => { active = element; };
-    class Control {
-      constructor(readonly input = false, public visible = true) {}
-      focus = vi.fn(() => focusElement(this));
-      getClientRects = () => this.visible ? [{}] : [];
-      matches = (selector: string) => selector === "input" && this.input;
-    }
-    const hiddenDesktopSearch = new Control(true, false);
-    const first = new Control();
-    const mobileSearch = new Control(true);
-    const last = new Control();
-    const opener = new Control();
-    active = opener;
-    const pane = Object.assign(new Control(), {
-      querySelectorAll: () => [hiddenDesktopSearch, first, mobileSearch, last],
-    });
-    const listeners = new Map<string, (event: KeyboardEvent) => void>();
-    vi.stubGlobal("HTMLElement", Control);
-    vi.stubGlobal("document", { get activeElement() { return active; } });
-    vi.stubGlobal("window", {
-      addEventListener: (name: string, listener: (event: KeyboardEvent) => void) => listeners.set(name, listener),
-      removeEventListener: (name: string) => listeners.delete(name),
-    });
-    const { nodes: tree } = render();
-    const dialog = tree.find((node) => node.props.role === "dialog")!;
-    (dialog.props.ref as { current: unknown }).current = pane;
-    const cleanup = fixture.effects.find(({ deps }) => deps?.length === 1 && deps[0] === fixture.dispatch)!.effect();
-    expect(mobileSearch.focus).toHaveBeenCalledOnce();
-    expect(hiddenDesktopSearch.focus).not.toHaveBeenCalled();
-
-    const tab = (shiftKey = false) => {
-      const event = { key: "Tab", shiftKey, preventDefault: vi.fn() };
-      listeners.get("keydown")!(event as unknown as KeyboardEvent);
-      return event;
-    };
-    active = last;
-    expect(tab().preventDefault).toHaveBeenCalledOnce();
-    expect(active).toBe(first);
-    expect(tab(true).preventDefault).toHaveBeenCalledOnce();
-    expect(active).toBe(last);
-
-    // A resize can hide whichever search previously held focus.
-    active = hiddenDesktopSearch;
-    expect(tab().preventDefault).toHaveBeenCalledOnce();
-    expect(active).toBe(first);
-    expect(hiddenDesktopSearch.focus).not.toHaveBeenCalled();
-    if (typeof cleanup === "function") cleanup();
-    expect(active).toBe(opener);
+  it("leaves modal focus and dismissal to Settings", () => {
+    const { html } = render();
+    expect(html).not.toContain('role="dialog"');
+    expect(html).not.toContain("glass-popup-frame");
+    expect(html).not.toContain("apps-close");
   });
 
   it("is titled Apps and shows app tiles and the MCP servers section on one view", () => {
     const { html } = render();
     expect(html).toContain(">Apps</h2>");
     expect(html).toContain("Connect an app or your own MCP server once. Then choose which bots may use it.");
-    expect(html).toContain("glass-surface");
+    expect(html).not.toContain("glass-popup");
     expect(html).toContain("@container");
     expect(html).toContain("grid-cols-1 gap-3 @lg:grid-cols-2 @3xl:grid-cols-3");
     for (const slug of ["gmail", "slack", "notion"]) expect(html).toContain(`data-app-tile="${slug}"`);
@@ -264,11 +222,37 @@ describe("Apps pop-up", () => {
     expect(html).not.toContain('role="tab"');
   });
 
+  it("opens on the access manager, with the marketplace and its chips only once a Composio key exists", () => {
+    fixture.surface = "access";
+    const configured = render();
+    expect(configured.html).toContain('data-access-manager="stub"');
+    expect(chip(configured.nodes, "access").props["aria-pressed"]).toBe(true);
+    expect(chip(configured.nodes, "all").props["aria-pressed"]).toBe(false);
+    expect(configured.html).not.toContain("data-app-tile");
+    expect(configured.html).not.toContain("MCP inventory");
+    chip(configured.nodes, "access").props.onClick!();
+    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "toggleAppSettings", open: true, section: "apps", appsSurface: "access" });
+  });
+
+  it("hides connected apps entirely when no Composio key is configured", () => {
+    fixture.overrides.set(CONFIGURED, false);
+    for (const surface of ["access", "apps"] as const) {
+      fixture.surface = surface;
+      const { html, nodes: tree } = render();
+      expect(html).toContain('data-access-manager="stub"');
+      expect(html).not.toContain("Connected apps are not set up yet");
+      expect(html).not.toContain("Composio");
+      expect(html).not.toContain("data-app-tile");
+      expect(tree.filter((node) => node.props["data-apps-filter"] !== undefined).map((node) => node.props["data-apps-filter"])).toEqual(["access", "mcp"]);
+      expect(chip(tree, "access").props["aria-pressed"]).toBe(true);
+    }
+  });
+
   it("filters with chips, keeping the MCP chip on the store's surface", () => {
     const initial = render();
     expect(chip(initial.nodes, "all").props["aria-pressed"]).toBe(true);
     chip(initial.nodes, "mcp").props.onClick!();
-    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "togglePlugins", open: true, surface: "mcp" });
+    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "toggleAppSettings", open: true, section: "apps", appsSurface: "mcp" });
 
     fixture.surface = "mcp";
     const mcp = render();
@@ -276,7 +260,7 @@ describe("Apps pop-up", () => {
     expect(mcp.html).toContain("MCP inventory");
     expect(mcp.html).not.toContain("data-app-tile");
     chip(mcp.nodes, "connected").props.onClick!();
-    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "togglePlugins", open: true, surface: "apps" });
+    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "toggleAppSettings", open: true, section: "apps", appsSurface: "apps" });
   });
 
   it("shows only connected apps, and no MCP section, under Connected", () => {

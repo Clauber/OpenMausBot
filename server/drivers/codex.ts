@@ -49,6 +49,7 @@ import type { ApprovalMode } from "../../shared/approval-mode.ts";
 import { CodexDeviceAuthController } from "./codex-device-auth.ts";
 import { codexAccountEmail } from "./codex-identity.ts";
 import { classifyResumeFailure, mayReplay, recoveryPromptFor } from "../resume-recovery.ts";
+import { announcesAction, CONTINUATION_NUDGE } from "./announced-action.ts";
 import { extractMcpImages } from "../mcp-tool-images.ts";
 import { parseProtocolAskQuestions, questionAnswersById, questionChoices } from "../../shared/ask-question.ts";
 import { codexVersionBehind, readLatestCodexRelease } from "./codex-release.ts";
@@ -800,6 +801,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         // remote url is "invalid configuration" and kills the turn before the
         // model is asked. Such a server mounts under a name of its own.
         const declaredInCodexConfig = codexConfigMcpServerNames(env);
+        const customMountNames: string[] = [];
         if (turn.toolScope !== undefined) {
           for (const name of declaredInCodexConfig) appServerArgs.push("-c", `mcp_servers.${name}.enabled=false`);
         }
@@ -814,6 +816,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           const mountName = mountedMcpServerName(name, declaredInCodexConfig);
           if (mountName !== name) noteRenamedMcpServer(name, mountName);
           mountSelected(name, mountName, server, false);
+          if (selectedMcp.has(mountName)) customMountNames.push(mountName);
         }
         if (turn.integrations?.phone) {
           if (turn.toolScope !== undefined) {
@@ -845,6 +848,10 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         });
 
       let abandoned = false;
+      // Assigned inside the attempt body's try, but hoisted here because the
+      // announced-action nudge re-issues turn/start from handleNotification,
+      // which must send the same approval surface the turn itself ran on.
+      let approvalParams: CodexApprovalParams;
       let codexThreadId: string | null = null;
       let codexTurnId: string | null = null;
       let startingNativeTurn = false;
@@ -854,6 +861,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         lastError: "",
         lastText: "",
         sawStreamDelta: false,
+        /** One announced-action continuation per turn: a nudge already sent
+         * must never send another, whatever the continuation announces. */
+        nudged: false,
         // codex reports token usage as a running total for this app-server
         // process. The harness wants this turn's figure: the total minus
         // whatever the process already carried before turn/start (a resumed
@@ -1386,6 +1396,26 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
                 ...(classifyError({ text: message }).reason === "auth" ? { setup: true } : {}),
               });
             }
+            // The announced-action nudge: a completed turn whose last agent
+            // message only announces the next step ("Now let me run the
+            // build.") gets one continuation turn on the same thread — the
+            // nudge the person would otherwise have to type. Usage keeps
+            // accumulating against this turn's baseline, and the
+            // continuation's own turn/completed settles below.
+            if (t.status === "completed" && !state.lastError && !state.settled && !stopRequested && !state.nudged &&
+                codexThreadId && state.lastText && announcesAction(state.lastText)) {
+              state.nudged = true;
+              startingNativeTurn = true;
+              request("turn/start", {
+                threadId: codexThreadId,
+                input: [{ type: "text", text: CONTINUATION_NUDGE }],
+                ...approvalParams.turn,
+              }).catch(() => {
+                // The continuation never started: the round that ran stands.
+                void settle(true, null);
+              });
+              break;
+            }
             void settle(t.status === "completed", t.status === "completed" ? null :
               (classifyError({ text: message || state.lastError }).reason === "provider_safety" ? "provider_safety" : (message || t.status || "failed")));
             break;
@@ -1404,6 +1434,22 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         }
       };
 
+      // Codex starts MCP servers in the background and a turn sees only those
+      // already up, so a slow remote server silently missed the first turn.
+      // Only servers codex reported as starting are awaited, capped at 30s.
+      const mcpStartup = new Map<string, string>();
+      let mcpStartupChanged: (() => void) | undefined;
+      const customMcpStarted = (timeoutMs = 30_000) => new Promise<void>((resolve) => {
+        const done = () => {
+          if (customMountNames.some((name) => mcpStartup.get(name) === "starting")) return;
+          clearTimeout(timer);
+          mcpStartupChanged = undefined;
+          resolve();
+        };
+        const timer = setTimeout(() => { mcpStartupChanged = undefined; resolve(); }, timeoutMs);
+        mcpStartupChanged = done;
+        done();
+      });
       let buf = "";
       // decode as UTF-8 across chunk boundaries — a raw `buf += chunk` splits
       // multibyte characters that straddle two reads and corrupts the text
@@ -1435,6 +1481,10 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           } else if (msg.id !== undefined && msg.method) {
             handleServerRequest(msg);
           } else if (msg.method) {
+            if (msg.method === "mcpServer/startupStatus/updated" && typeof msg.params?.name === "string") {
+              mcpStartup.set(msg.params.name, String(msg.params.status));
+              mcpStartupChanged?.();
+            }
             handleNotification(msg);
           }
         }
@@ -1632,7 +1682,6 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           effectiveConfig,
           stableInstructions ?? turn.system ?? "",
         );
-        let approvalParams: CodexApprovalParams;
         if (approvalMode === "custom") {
           // config/read returns the effective global + project config for this
           // cwd. Reasserting those values is essential: simply omitting them
@@ -1774,6 +1823,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             ...(turn.effort ? { effort: turn.effort } : {}),
           });
         };
+        await customMcpStarted();
         try {
           await startTurn();
         } catch (error) {

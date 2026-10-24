@@ -6,7 +6,10 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, mkdirSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
-import { writeFileAtomic } from "./atomic.ts";
+import { isMasterChief, masterAssignment, protectMasterChief } from "./fleet-authority.ts";
+import { fleetRoomSpacesAllowed, type FleetRoomGrant } from "./fleet-rooms.ts";
+import { sameAudience } from "./bot-visibility.ts";
+import { auditedWrite, fleetAuditScope, recordRuntimeRevocation } from "./fleet-audit.ts";
 import { parseToolScope, toolScopeWidens } from "../shared/tool-scope.ts";
 import { ensureSections, readSections, changeEmptySection } from "./section-context.ts";
 import type { TeamComputers } from "./team-computers.ts";
@@ -22,12 +25,13 @@ import { newId, type ModelSelection } from "./contracts.ts";
 import { pickBotName } from "./names.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { AVATAR_FOCUS_CENTER, AVATAR_ZOOM_MIN, botAvatarProfile, clampAvatarFocus, clampAvatarZoom } from "../shared/bot-avatar.ts";
-import { approvalModeFor, isApprovalMode } from "../shared/approval-mode.ts";
+import { approvalModeFor, approvalModeWidens, isApprovalMode, type ApprovalFields } from "../shared/approval-mode.ts";
 import type { ProfileRequestChanges } from "../shared/profile-request.ts";
 import type { TeamSetupRequest, TeamSetupResult } from "../shared/team-setup.ts";
 import type { GroupGoalRunCardData } from "../shared/group-goal-run.ts";
 import { isMentionBoundary, isMentionNameContinuation } from "../shared/mention-boundary.ts";
 import type { HandedState } from "./delta-context.ts";
+import { pastedTextTitleLine } from "./thread-title.ts";
 import type { AgentPart, PartPair, RoomPart } from "./package-parts.ts";
 import type {
   BotActivity, GroupDefaultResponder, GroupTask as GroupTaskRecord, MausColor,
@@ -58,9 +62,9 @@ export interface GroupPackageStamp {
 
 /** A room record excludes working state and ledger usage, both computed by
  * publicGroupState at projection time. */
-export type GroupRecord = Omit<WireGroup, "working" | "usage"> & { installedPackage?: GroupPackageStamp };
+export type GroupRecord = Omit<WireGroup, "working" | "usage"> & { installedPackage?: GroupPackageStamp; fleetRoomGrants?: Record<string, FleetRoomGrant> };
 /** The one private field is stripped; projection adds computed display fields. */
-export type GroupWirePrivateKeys = "installedPackage";
+export type GroupWirePrivateKeys = "installedPackage" | "fleetRoomGrants";
 export type GroupWireProjection = Omit<GroupRecord, GroupWirePrivateKeys> & Pick<WireGroup, "usage"> & { working: boolean };
 export type GroupWireProjectionIsExact = AssertExact<WireGroup, GroupWireProjection> & AssertSameKeys<WireGroup, GroupWireProjection>;
 export const groupWireProjectionIsExact: GroupWireProjectionIsExact = true;
@@ -124,11 +128,39 @@ export function toWireTask(task: TaskRecord): WireTask {
 }
 
 const TASK_PATCH_FIELDS = [
-  "title", "projectId", "modelSelection", "approvalMode", "autoApprove", "alwaysAllow",
+  "title", "projectId", "modelSelection", "approvalMode", "autoApprove", "alwaysAllow", "goal",
   "unread", "rewound", "archivedAt", "pinned", "pinnedMessageId", "resumeCursors", "lastInstanceId", "cwd",
   "routineRunId", "surface", "surfaceSource", "snoozedUntil", "appliedCompactionId", "contextFloor", "lastContextModel",
 ] as const satisfies readonly (keyof TaskRecord)[];
 export type TaskPatch = Partial<Pick<TaskRecord, typeof TASK_PATCH_FIELDS[number]>>;
+
+const PERMISSION_FIELDS = ["approvalMode", "autoApprove", "alwaysAllow", "approvalGrant"] as const;
+type PermissionFields = ApprovalFields & { approvalGrant?: unknown };
+
+/** A tightening stays enforced in memory when its save fails, and is audited as runtime-only; a widening is restored before the error surfaces. */
+function permissionChange(record: PermissionFields & { threadId?: string }, patch: PermissionFields) {
+  const fields = PERMISSION_FIELDS.filter((key) => Object.hasOwn(patch, key));
+  const before = structuredClone(Object.fromEntries(PERMISSION_FIELDS.map((key) => [key, record[key]]))) as PermissionFields;
+  const after = { ...record, ...patch };
+  // Clearing a grant activates it, including a thread-only grant on a thread the bot-level mode does not mask.
+  const widens = fields.length > 0 && ((record.approvalGrant !== undefined && after.approvalGrant === undefined)
+    || approvalModeWidens(approvalModeFor(record), approvalModeFor(after))
+    || (after.alwaysAllow ?? []).some((key) => !(record.alwaysAllow ?? []).includes(key)));
+  const tightens = fields.length > 0 && !widens && (approvalModeWidens(approvalModeFor(after), approvalModeFor(record))
+    || (record.alwaysAllow ?? []).some((key) => !(after.alwaysAllow ?? []).includes(key)) || (record.autoApprove === true && after.autoApprove === false));
+  return {
+    save(target: PermissionFields, botId: string, save: () => void, threadId?: string) {
+      try { save(); } catch (error) {
+        if (widens) for (const key of PERMISSION_FIELDS) {
+          if (before[key] === undefined) delete target[key]; else Object.assign(target, { [key]: before[key] });
+        } else if (tightens) {
+          recordRuntimeRevocation(botId, { ...before }, { ...Object.fromEntries(fields.map((key) => [key, patch[key]])), ...(threadId ? { threadId } : {}) });
+        }
+        throw error;
+      }
+    },
+  };
+}
 
 /** Only `true` is a pin. false/undefined must not land in bots.json or groups.json. */
 function persistedPin<T extends { pinned?: boolean }>(task: T): T {
@@ -149,10 +181,12 @@ function redactBotAuthored<T extends Omit<Message, "id" | "at"> & { at?: number 
   if (message.role !== "bot") return message;
   const out = { ...message };
   if (typeof out.text === "string") out.text = redactSecretsInText(out.text);
+  if (typeof out.thinking === "string") out.thinking = redactSecretsInText(out.thinking);
   if (out.compaction) out.compaction = { ...out.compaction, summary: redactSecretsInText(out.compaction.summary) };
   if (out.tool?.name) {
     out.tool = { ...out.tool, name: redactSecretsInText(out.tool.name) };
     if (out.tool.summary) out.tool.summary = redactSecretsInText(out.tool.summary);
+    if (out.tool.thought) out.tool.thought = redactSecretsInText(out.tool.thought);
   }
   if (out.routineRun) {
     const routineRun = { ...out.routineRun };
@@ -313,6 +347,7 @@ export const ACTIVITY_BUSY: ReadonlySet<BotActivity> = new Set(["working", "wait
 
 export type StoreChange =
   | { type: "sections" }
+  | { type: "bots.order" }
   | { type: "message"; threadId: string; message: Message }
   | { type: "message.patch"; threadId: string; message: Message }
   | { type: "thread"; threadId: string; activeLeafId: string }
@@ -335,9 +370,10 @@ export function threadTitleFrom(title?: string): string {
   return title?.trim().slice(0, TASK_TITLE_MAX) || UNTITLED_THREAD;
 }
 
-/** A task's name, taken from the first thing you asked it to do. */
+/** A task's name, taken from the first thing you asked it to do. A message
+ * that opens with a paste is named from the pasted content, not its wrapper. */
 export function titleFromMessage(text: string): string {
-  const line = text.trim().split("\n")[0]!.trim();
+  const line = pastedTextTitleLine(text) ?? text.trim().split("\n")[0]!.trim();
   return line.length > 48 ? `${line.slice(0, 47)}…` : line || UNTITLED_TASK;
 }
 
@@ -392,8 +428,6 @@ export interface BotRecord extends Omit<WireBot, "avatarUrl" | "tasks"> {
   };
   /** Receipt committed with a confirmed profile, for retrying card settlement. */
   lastProfileRequestId?: string;
-  /** Receipt committed with a confirmed authority tightening, for retrying card settlement. */
-  lastTighteningRequestId?: string;
   /** Receipt committed with a reviewed team batch; prevents replay after a lost response. */
   lastTeamSetupReceipt?: { requestId: string; result: TeamSetupResult };
   /** Organization library only: each part's release and written hashes
@@ -409,7 +443,7 @@ export interface BotRecord extends Omit<WireBot, "avatarUrl" | "tasks"> {
  * WireTask[], avatarUrl is coerced to always-present). The exactness
  * assertion fails to compile when either side drifts, so a new server
  * field forces a decision — wire-visible or private here. */
-export type BotWirePrivateKeys = "resumeCursors" | "tasks" | "avatarUrl" | "approvalGrant" | "lastProfileRequestId" | "lastTighteningRequestId" | "lastTeamSetupReceipt" | "packageBase" | "assignedSkills";
+export type BotWirePrivateKeys = "resumeCursors" | "tasks" | "avatarUrl" | "approvalGrant" | "lastProfileRequestId" | "lastTeamSetupReceipt" | "packageBase" | "assignedSkills";
 export type BotWireProjection = Pick<BotRecord, Exclude<keyof BotRecord, BotWirePrivateKeys>>;
 export type BotWireProjectionIsExact = AssertExact<Omit<WireBot, "avatarUrl" | "tasks">, BotWireProjection> & AssertSameKeys<Omit<WireBot, "avatarUrl" | "tasks">, BotWireProjection>;
 export const botWireProjectionIsExact: BotWireProjectionIsExact = true;
@@ -650,6 +684,7 @@ export class Store {
     // busy never survives a restart — no turn does either. Rooms saved
     // before default responders existed adopt their first member as lead.
     let botsMigrated = false;
+    let revokedGrantOnLoad = false;
     const browserProfileAliases = loadBrowserProfileIdAliases();
     const chiefSectionsSeen = new Set<string>();
     let groupsMigrated = false;
@@ -705,6 +740,7 @@ export class Store {
       // bots.json write. Revoke it before schedulers, listeners, or HTTP can
       // start any new work.
       if (b.approvalGrant !== undefined) {
+        revokedGrantOnLoad = true;
         const threadOnly = b.approvalGrant.threadOnly === true;
         if (threadOnly) {
           // A crash may land between saving the target and clearing its
@@ -799,6 +835,7 @@ export class Store {
       // Bot-to-bot channels keep their pair; they are not edited as rooms.
       if (botsLoaded && !g.dm && g.memberIds.some((id) => !botIds.has(id))) {
         g.memberIds = g.memberIds.filter((id) => botIds.has(id));
+        delete g.fleetRoomGrants;
         groupsMigrated = true;
       }
       const normalized = normalizeGroupDefaultResponder(g.defaultResponder, g.memberIds, Boolean(g.dm));
@@ -911,7 +948,10 @@ export class Store {
       this.mirrorActiveTask(b, active);
       b.unread = b.tasks.some(taskCountsAsBotUnread);
     }
-    if (botsMigrated) this.saveBots();
+    if (botsMigrated) {
+      if (revokedGrantOnLoad) fleetAuditScope.run({ botId: null, threadId: null, reason: "reload", authorize() {} }, () => this.saveBots());
+      else this.saveBots();
+    }
     // Search reads SQLite directly, so migrate every known legacy transcript
     // at startup rather than waiting until the user happens to open it. Only
     // pending JSON files are touched; already-migrated threads stay lazy.
@@ -1025,18 +1065,18 @@ export class Store {
 
   private saveBots(bots: BotRecord[] = this.bots, registerSections = true) {
     if (registerSections) this.rememberSections([...this.bots, ...bots].map((bot) => bot.section));
-    writeFileAtomic(BOTS_FILE, JSON.stringify(bots.map(({ busy: _busy, activity: _activity, ...bot }) => ({
+    auditedWrite(BOTS_FILE, JSON.stringify(bots.map(({ busy: _busy, activity: _activity, ...bot }) => ({
       ...bot,
       tasks: bot.tasks?.map(({ busy: _taskBusy, activity: _taskActivity, turnStartedAt: _taskTurnStarted, ...task }) => persistedPin(task)),
-    })), null, 2), { mode: 0o600 });
+    })), null, 2), "bots");
   }
 
   private saveGroups(groups: GroupRecord[] = this.groups, registerSections = true) {
     if (registerSections) this.rememberSections(groups.map((group) => group.section));
-    writeFileAtomic(GROUPS_FILE, JSON.stringify(groups.map(({ busyBotId: _busyBotId, turnStartedAt: _turnStartedAt, ...g }) => ({
+    auditedWrite(GROUPS_FILE, JSON.stringify(groups.map(({ busyBotId: _busyBotId, turnStartedAt: _turnStartedAt, ...g }) => ({
       ...g,
       ...(g.tasks ? { tasks: g.tasks.map((task) => persistedPin(task)) } : {}),
-    })), null, 2), { mode: 0o600 });
+    })), null, 2), "rooms");
   }
 
   get sections(): string[] { return readSections(); }
@@ -1227,7 +1267,7 @@ export class Store {
     );
   }
 
-  patchGroup(id: string, patch: Partial<Pick<GroupRecord, "name" | "memberIds" | "defaultResponder" | "bulletin" | "unread" | "busyBotId" | "cwd" | "pinnedMessageId" | "section" | "setupCompletedAt" | "setupSkippedAt" | "audienceFloor" | "installedPackage">>): GroupRecord | null {
+  patchGroup(id: string, patch: Partial<Pick<GroupRecord, "name" | "memberIds" | "defaultResponder" | "bulletin" | "unread" | "busyBotId" | "cwd" | "pinnedMessageId" | "section" | "pinned" | "setupCompletedAt" | "setupSkippedAt" | "audienceFloor" | "installedPackage" | "turnTimeoutMinutes">>): GroupRecord | null {
     const group = this.group(id);
     if (!group) return null;
     if (Object.prototype.hasOwnProperty.call(patch, "section")) {
@@ -1235,6 +1275,7 @@ export class Store {
     }
     const previousBusyBotId = group.busyBotId;
     Object.assign(group, patch);
+    if (Object.prototype.hasOwnProperty.call(patch, "memberIds")) delete group.fleetRoomGrants;
     // The group's elapsed readout counts the busy member's turn from the
     // claim time — the group-side twin of a task's turnStartedAt. Derived,
     // never patched directly: stamp it on every transition into a busy
@@ -1243,6 +1284,9 @@ export class Store {
     if (Object.prototype.hasOwnProperty.call(patch, "busyBotId")) {
       if (patch.busyBotId && patch.busyBotId !== previousBusyBotId) group.turnStartedAt = Date.now();
       else if (!patch.busyBotId) delete group.turnStartedAt;
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, "turnTimeoutMinutes") && patch.turnTimeoutMinutes == null) {
+      delete group.turnTimeoutMinutes;
     }
     if (!group.dm && Object.prototype.hasOwnProperty.call(patch, "pinnedMessageId")) {
       const active = this.activeGroupTask(group.id);
@@ -1355,6 +1399,26 @@ export class Store {
     return group.tasks?.find((task) => task.threadId === threadId);
   }
 
+  createFleetRoomTask(issuerBotId: string, groupId: string, title: string): GroupTaskRecord {
+    const issuer = this.bot(issuerBotId), group = this.group(groupId), assignment = masterAssignment();
+    if (!isMasterChief(issuer) || !assignment.revision) throw new Error("Master Chief of Staff authority is required");
+    if (!group || group.dm) throw new Error("No such room");
+    if (!fleetRoomSpacesAllowed(issuerBotId, group.memberIds)) throw new Error("Every room member must have space access to the other members and be reachable from the Master Chief");
+    const members = group.memberIds.map(id => this.bot(id));
+    if (members.some(bot => !bot || bot.hidden || !sameAudience(bot.visibility, issuer!.visibility))) throw new Error("Every room member must be visible to the same people as the Master Chief of Staff");
+    const now = Date.now();
+    const task: GroupTaskRecord = { threadId: newId(), title: title.trim().slice(0, 80) || UNTITLED_TASK, createdAt: now, updatedAt: now };
+    const before = { tasks: group.tasks, fleetRoomGrants: group.fleetRoomGrants, threadId: group.threadId, pinnedCwd: group.pinnedCwd, pinnedMessageId: group.pinnedMessageId };
+    group.tasks = [task, ...(group.tasks ?? [])];
+    group.fleetRoomGrants = { ...group.fleetRoomGrants, [task.threadId]: { issuerBotId, assignmentRevision: assignment.revision, memberIds: [...group.memberIds] } };
+    group.threadId = task.threadId;
+    group.pinnedCwd = undefined;
+    group.pinnedMessageId = undefined;
+    try { this.saveGroups(); } catch (error) { Object.assign(group, before); throw error; }
+    this.emit({ type: "group", groupId });
+    return task;
+  }
+
   createGroupTask(groupId: string, title?: string, activate = true): GroupTaskRecord | null {
     const group = this.group(groupId);
     if (!group || group.dm) return null;
@@ -1393,6 +1457,18 @@ export class Store {
     if (!task) return null;
     if (pinned) task.pinned = true;
     else delete task.pinned;
+    this.saveGroups();
+    this.emit({ type: "group", groupId });
+    return task;
+  }
+
+  /** Null removes the conversation's own ceiling so the next turn uses the
+   * global group limit. A sibling conversation is left alone. */
+  setGroupTaskTurnTimeout(groupId: string, threadId: string, minutes: number | null): GroupTaskRecord | null {
+    const task = this.groupTaskByThread(groupId, threadId);
+    if (!task) return null;
+    if (minutes == null) delete task.turnTimeoutMinutes;
+    else task.turnTimeoutMinutes = minutes;
     this.saveGroups();
     this.emit({ type: "group", groupId });
     return task;
@@ -1811,7 +1887,7 @@ export class Store {
     const chief = this.bot(request.botId);
     if (!chief) throw new Error("The requesting Chief no longer exists");
     if (chief.lastTeamSetupReceipt?.requestId === request.requestId) return chief.lastTeamSetupReceipt.result;
-    const managedSections = [...new Set([...(chief.managedSections ?? []), ...request.newTeams])];
+    const managedSections = isMasterChief(chief) ? [] : [...new Set([...(chief.managedSections ?? []), ...request.newTeams])];
     if (managedSections.length > 100 || managedSections.some((name) => name.trim() !== name || name.length > 60) ||
         request.newTeams.some((name) => !name) || (request.newTeams.length && !chief.chiefOfStaff)) throw new Error("Invalid reviewed Chief team scope");
     const nextBots = [...this.bots];
@@ -1841,6 +1917,7 @@ export class Store {
       } else {
         if (at < 0) throw new Error("A setup target no longer exists");
         const previous = nextBots[at];
+        protectMasterChief(previous, operation.fields);
         next = { ...previous, ...operation.fields };
         if (operation.fields.modelSelection) next.tasks = previous.tasks?.map((task) => ({
           ...task,
@@ -1864,7 +1941,7 @@ export class Store {
     const nextChief = { ...nextBots[chiefAt], lastTeamSetupReceipt: { requestId: request.requestId, result } };
     // Only the newly-created teams explicitly named in the human review may
     // extend this Chief's reach. Existing teams require owner settings.
-    if (request.newTeams.length && nextChief.chiefOfStaff) {
+    if (request.newTeams.length && nextChief.chiefOfStaff && !isMasterChief(chief)) {
       nextChief.managedSections = managedSections;
     }
     nextBots[chiefAt] = nextChief;
@@ -1905,6 +1982,7 @@ export class Store {
   deleteBot(id: string, setupRequest?: TeamSetupRequest): boolean {
     const bot = this.bot(id);
     if (!bot) return false;
+    if (isMasterChief(bot)) throw new Error("Transfer or revoke Master Chief of Staff authority before deleting this bot");
     let nextBots = this.bots.filter((b) => b.id !== id);
     if (setupRequest) {
       const chief = this.bot(setupRequest.botId);
@@ -1924,6 +2002,7 @@ export class Store {
     const rooms = this.groups.filter((g) => !g.dm && g.memberIds.includes(id));
     for (const g of rooms) {
       g.memberIds = g.memberIds.filter((member) => member !== id);
+      delete g.fleetRoomGrants;
       if (g.busyBotId === id) { g.busyBotId = null; delete g.turnStartedAt; }
       g.defaultResponder = normalizeGroupDefaultResponder(g.defaultResponder, g.memberIds, false);
     }
@@ -1959,6 +2038,7 @@ export class Store {
   patchBot(id: string, patch: Partial<BotRecord>): BotRecord | null {
     const bot = this.bot(id);
     if (!bot) return null;
+    protectMasterChief(bot, patch);
     // Grants are the one field whose shape every writer must share, so the
     // store normalizes them itself: API patches arrive pre-validated, import
     // paths pass {}, and an internal caller that skips the parser still
@@ -1981,6 +2061,7 @@ export class Store {
     }
     // Runtime revocations must become effective in memory even when disk is
     // unavailable. Profile edits use the separate atomic path below.
+    const permissions = permissionChange(bot, patch);
     Object.assign(bot, patch);
     const task = this.activeTask(id);
     if (task) {
@@ -1994,9 +2075,9 @@ export class Store {
     if (wideningToolScope) {
       // New authority becomes live only after its durable save succeeds.
       // Other runtime revocations above still take effect on a failed write.
-      this.saveBots(this.bots.map((candidate) => candidate === bot ? { ...bot, toolScope: nextToolScope } : candidate));
+      permissions.save(bot, id, () => this.saveBots(this.bots.map((candidate) => candidate === bot ? { ...bot, toolScope: nextToolScope } : candidate)));
       bot.toolScope = nextToolScope;
-    } else this.saveBots();
+    } else permissions.save(bot, id, () => this.saveBots());
     this.emit({ type: "bot", botId: id });
     return bot;
   }
@@ -2172,6 +2253,9 @@ export class Store {
     const selected = id ? this.bot(id) : null;
     if (id && !selected) return null;
     const targetSection = sectionKey(selected?.section ?? section);
+    if (this.bots.some(bot => isMasterChief(bot) && bot.id !== id && sectionKey(bot.section) === targetSection)) {
+      throw new Error("Transfer or revoke Master Chief of Staff authority before replacing this Chief");
+    }
     const changed: BotRecord[] = [];
     for (const bot of this.bots) {
       if (sectionKey(bot.section) !== targetSection) continue;
@@ -2415,6 +2499,18 @@ export class Store {
     return project;
   }
 
+  /** Persist first, then publish the same roster order to every device. */
+  reorderBots(botIds: string[]): boolean {
+    if (botIds.length !== this.bots.length || new Set(botIds).size !== this.bots.length) return false;
+    const byId = new Map(this.bots.map(bot => [bot.id, bot]));
+    if (botIds.some(id => !byId.has(id))) return false;
+    const next = botIds.map(id => byId.get(id)!);
+    this.saveBots(next);
+    this.bots = next;
+    this.emit({ type: "bots.order" });
+    return true;
+  }
+
   /** The stored array is the sidebar order; only a full owned permutation is valid. */
   reorderProjects(botId: string, projectIds: string[]): BotProjectRecord[] | null {
     const bot = this.bot(botId);
@@ -2497,6 +2593,7 @@ export class Store {
     const task = this.taskByThread(botId, threadId);
     if (!bot || !task) return null;
     if (patch.projectId !== undefined && !this.project(botId, patch.projectId)) return null;
+    const permissions = permissionChange(task, patch);
     for (const key of TASK_PATCH_FIELDS) {
       if (Object.prototype.hasOwnProperty.call(patch, key)) {
         Object.assign(task, { [key]: structuredClone(patch[key]) });
@@ -2514,7 +2611,7 @@ export class Store {
     if (task.routineRunId) task.unread = false;
     if (bot.threadId === threadId) this.mirrorActiveTask(bot, task);
     bot.unread = bot.tasks!.some(taskCountsAsBotUnread);
-    this.saveBots();
+    permissions.save(task, botId, () => this.saveBots(), threadId);
     this.emit({ type: "bot", botId });
     return task;
   }

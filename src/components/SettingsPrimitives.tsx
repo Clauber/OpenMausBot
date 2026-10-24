@@ -1,6 +1,8 @@
 import { useEffect, useId, useRef, useState, type ComponentProps } from "react";
-import { Check, Copy } from "lucide-react";
+import { Check, CircleAlert, Copy } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { copyText } from "@/lib/clipboard";
+import { t } from "@/lib/i18n";
 
 export function Switch({
   checked,
@@ -76,7 +78,7 @@ export function SettingRow({
 
 /** A command the user is meant to run, with one-click copy. */
 export function CommandLine({ command, copyLabel = "Copy command" }: { command: string; copyLabel?: string }) {
-  const [copied, setCopied] = useState(false);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const resetTimer = useRef<number | null>(null);
 
   useEffect(
@@ -87,14 +89,10 @@ export function CommandLine({ command, copyLabel = "Copy command" }: { command: 
   );
 
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(command);
-      setCopied(true);
-      if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
-      resetTimer.current = window.setTimeout(() => setCopied(false), 1200);
-    } catch {
-      /* clipboard permission can be denied; leave the button unchanged */
-    }
+    const ok = await copyText(command);
+    setCopyState(ok ? "copied" : "failed");
+    if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+    resetTimer.current = window.setTimeout(() => setCopyState("idle"), ok ? 1200 : 3000);
   };
 
   return (
@@ -105,11 +103,14 @@ export function CommandLine({ command, copyLabel = "Copy command" }: { command: 
       <button
         type="button"
         onClick={() => void copy()}
-        aria-label={copyLabel}
+        aria-label={copyState === "failed" ? t("clipboard.copyFailedHint") : copyLabel}
+        title={copyState === "failed" ? t("clipboard.copyFailedHint") : undefined}
+        data-copy-state={copyState}
         className="ui-icon-button shrink-0"
       >
-        {copied ? <Check size={13} className="text-success" /> : <Copy size={13} />}
+        {copyState === "copied" ? <Check size={13} className="text-success" /> : copyState === "failed" ? <CircleAlert size={13} className="text-danger" /> : <Copy size={13} />}
       </button>
+      {copyState === "failed" && <span role="status" className="sr-only">{t("clipboard.copyFailed")}</span>}
     </div>
   );
 }

@@ -16,8 +16,8 @@ import { WorkingDots } from "./WorkingIndicator";
 export function ToolActivity({ tool, place = null }: { tool: NonNullable<Message["tool"]>; place?: Place | null }) {
   const [expanded, setExpanded] = useState(false);
   const failed = tool.ok === false;
-  const status = tool.ok === undefined ? t("toolDetail.running") : failed ? t("toolDetail.failed") : t("toolDetail.completed");
-  return (
+  const status = toolStatus(tool);
+  const chip = (
     <details onToggle={(event) => setExpanded(event.currentTarget.open)} className="group/tool w-fit max-w-full rounded-xl border border-hairline/40 bg-panel text-[13px] open:w-[min(38rem,100%)]" data-testid="tool-activity">
       <summary
         role="button"
@@ -31,18 +31,54 @@ export function ToolActivity({ tool, place = null }: { tool: NonNullable<Message
         {tool.summary && tool.summary !== tool.name && !nameIsCommand(tool.name) && <span className="min-w-0 flex-1 truncate font-mono" title={tool.summary}>{tool.summary}</span>}
         <ChevronRight size={13} className="ml-auto shrink-0 group-open/tool:rotate-90" aria-hidden="true" />
       </summary>
-      <div className="space-y-3 border-t border-hairline/40 p-3 text-ink-secondary">
-        <div className={cn("text-[11px] font-medium", failed && "text-danger")}>{status}</div>
-        <div>
-          <div className="mb-1 text-[11px] font-medium">{t("toolDetail.input")}</div>
-          <pre dir="ltr" className="max-h-52 overflow-auto rounded-lg bg-inset p-2.5 font-mono text-xs whitespace-pre-wrap break-words text-ink">{tool.input ?? tool.summary ?? tool.name}</pre>
-        </div>
-        <div>
-          <div className="mb-1 text-[11px] font-medium">{t("toolDetail.output")}</div>
-          {tool.output ? <pre dir="ltr" className="max-h-64 overflow-auto rounded-lg bg-inset p-2.5 font-mono text-xs whitespace-pre-wrap break-words text-ink">{tool.output}</pre> : <p className="text-xs">{tool.ok === undefined ? t("toolDetail.waiting") : t("toolDetail.noOutput")}</p>}
-        </div>
-        <p className="text-[11px] text-ink-secondary">{t("toolDetail.previewHint")}</p>
-      </div>
+      <ToolDetailBody tool={tool} label={tool.name} />
     </details>
+  );
+  if (!tool.thought) return chip;
+  // What the model was thinking right before this step, readable without
+  // opening anything: long tool-heavy turns otherwise read as bare names.
+  return (
+    <div className="flex max-w-full flex-col items-start gap-1.5">
+      <ThoughtText text={tool.thought} />
+      {chip}
+    </div>
+  );
+}
+
+function toolStatus(tool: NonNullable<Message["tool"]>): string {
+  return tool.ok === undefined ? t("toolDetail.running") : tool.ok === false ? t("toolDetail.failed") : t("toolDetail.completed");
+}
+
+export function ToolDetailBody({ tool, label }: { tool: NonNullable<Message["tool"]>; label: string }) {
+  const failed = tool.ok === false;
+  return (
+    <div className="space-y-3 border-t border-hairline/40 p-3 text-ink-secondary">
+      <div className={cn("text-[11px] font-medium", failed && "text-danger")}>{toolStatus(tool)}</div>
+      {label !== tool.name && <p dir="ltr" className="break-words font-mono text-xs text-ink" data-testid="tool-name">{tool.name}</p>}
+      <div>
+        <div className="mb-1 text-[11px] font-medium">{t("toolDetail.input")}</div>
+        <pre dir="ltr" className="max-h-52 overflow-auto rounded-lg bg-inset p-2.5 font-mono text-xs whitespace-pre-wrap break-words text-ink">{tool.input ?? tool.summary ?? tool.name}</pre>
+      </div>
+      <div>
+        <div className="mb-1 text-[11px] font-medium">{t("toolDetail.output")}</div>
+        {tool.output ? <pre dir="ltr" className="max-h-64 overflow-auto rounded-lg bg-inset p-2.5 font-mono text-xs whitespace-pre-wrap break-words text-ink">{tool.output}</pre> : <p className="text-xs">{tool.ok === undefined ? t("toolDetail.waiting") : t("toolDetail.noOutput")}</p>}
+      </div>
+      <p className="text-[11px] text-ink-secondary">{t("toolDetail.previewHint")}</p>
+    </div>
+  );
+}
+
+function ThoughtText({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => setOpen((value) => !value)}
+      aria-expanded={open}
+      className={cn("max-w-[42rem] text-left text-[13px] leading-relaxed whitespace-pre-wrap break-words text-ink-tertiary hover:text-ink-secondary", !open && "line-clamp-3")}
+      data-testid="tool-thought"
+    >
+      {text}
+    </button>
   );
 }

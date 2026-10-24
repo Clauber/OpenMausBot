@@ -2,14 +2,14 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { initialState, StoreProvider, type Bot } from "@/state/store";
+import { initialState, type Bot } from "@/state/store";
 import type { BotAvatarCrop } from "../../shared/bot-avatar";
 
 vi.mock("./DesktopCapabilities", () => ({
   useDesktopCapabilities: () => ({}),
 }));
 
-import { PinnedBotCircle, PinnedCircleThreadSection } from "./Sidebar";
+import { botRowProps, PinnedBotCircle, PinnedCircleThreadSection } from "./Sidebar";
 
 const bot = (overrides: Partial<Bot> = {}): Bot => ({
   id: "atlas",
@@ -32,38 +32,20 @@ const frame = (markup: string) => {
   return match![0];
 };
 
+const row = (candidate: Bot, selectedId = initialState.selectedId) =>
+  botRowProps({ ...initialState, selectedId, activeView: "chat" }, vi.fn(), candidate, { density: "comfortable", quiet: false, query: "", onMenu: vi.fn() });
+
 function renderCircle(candidate: Bot, selected = false) {
-  const saved = { selectedId: initialState.selectedId, activeView: initialState.activeView };
-  if (selected) {
-    initialState.selectedId = candidate.id;
-    initialState.activeView = "chat";
-  }
-  try {
-    return renderToStaticMarkup(createElement(
-      StoreProvider,
-      null,
-      createElement(PinnedBotCircle, { bot: candidate, onMenu: vi.fn() }),
-    ));
-  } finally {
-    initialState.selectedId = saved.selectedId;
-    initialState.activeView = saved.activeView;
-  }
+  return renderToStaticMarkup(createElement(PinnedBotCircle, row(candidate, selected ? candidate.id : initialState.selectedId)));
 }
 
 function renderThreads(collapsed: boolean, bots: Bot[]) {
-  return renderToStaticMarkup(createElement(
-    StoreProvider,
-    null,
-    createElement(PinnedCircleThreadSection, {
-      bots,
-      density: "comfortable",
-      quiet: false,
-      query: "",
-      collapsed,
-      onToggle: () => {},
-      onMenu: vi.fn(),
-    }),
-  ));
+  return renderToStaticMarkup(createElement(PinnedCircleThreadSection, {
+    bots,
+    collapsed,
+    onToggle: () => {},
+    row: (candidate) => row(candidate),
+  }));
 }
 
 describe("pinned circle frame", () => {
@@ -93,6 +75,38 @@ describe("pinned circle frame", () => {
     expect(clipped).toContain("ring-accent");
     expect(clipped).toContain("border-radius:22%");
     expect(clipped).not.toContain("rounded-full");
+  });
+});
+
+describe("pinned activity indicators", () => {
+  it.each([
+    ["working", { busy: true, activity: "working" }],
+    ["waiting", { busy: true, activity: "waiting-on-you" }],
+    ["idle", { busy: false, activity: "idle" }],
+  ] as const)("shows the shared %s state on both the avatar tile and pinned row", (state, activity) => {
+    const candidate = bot(activity);
+    for (const markup of [renderCircle(candidate), renderThreads(false, [candidate])]) {
+      if (state === "idle") {
+        expect(markup).not.toContain("data-sidebar-activity=");
+      } else {
+        expect(markup).toContain(`data-sidebar-activity="${state}"`);
+        if (state === "working") expect(markup).toContain("animate-status-pulse");
+        else {
+          expect(markup).toContain("lucide-circle-alert");
+          expect(markup).toContain("text-warning");
+          expect(markup).not.toContain("animate-status-pulse");
+        }
+      }
+    }
+  });
+
+  it("uses the Bots-row status source when a sibling thread needs the person", () => {
+    const candidate = bot({ busy: true, tasks: [
+      { threadId: "thread-atlas", title: "Current", createdAt: 2, busy: true, activity: "working" },
+      { threadId: "thread-earlier", title: "Earlier", createdAt: 1, activity: "waiting-on-you" },
+    ] });
+    expect(renderCircle(candidate)).toContain('data-sidebar-activity="waiting"');
+    expect(renderThreads(false, [candidate])).toContain('data-sidebar-activity="waiting"');
   });
 });
 

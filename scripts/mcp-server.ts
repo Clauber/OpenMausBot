@@ -666,6 +666,7 @@ function projectMessage(message: Record<string, any>) {
     role: message.role,
     kind: message.kind,
     text: message.text,
+    ...(typeof message.thinking === "string" ? { thinking: message.thinking.slice(-2_000) } : {}),
     from: message.from,
     replyToId: message.replyToId,
     reactions: message.reactions,

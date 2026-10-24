@@ -104,7 +104,7 @@ describe("Settings rail groups", () => {
     expect(SETTINGS_GROUPS.map((group) => group.id)).toEqual(["you", "ai", "computers", "account"]);
     const ids = SECTIONS.map((entry) => entry.id);
     expect(new Set(ids).size).toBe(ids.length);
-    expect(ids).toHaveLength(17); // 16 + the shared Skills library (AI group)
+    expect(ids).toHaveLength(19); // 16 + the shared Skills library (AI group)
     for (const entry of SECTIONS) expect(SETTINGS_GROUPS.map((group) => group.id)).toContain(entry.group);
   });
 
@@ -114,9 +114,9 @@ describe("Settings rail groups", () => {
     for (const label of ["You", "AI", "Computers", "Account"]) expect(html).toContain(`>${label}</div>`);
     expect(html).toContain("glass-surface");
     expect(rail(html)).toEqual({
-      you: ["general", "appearance", "companion"],
-      ai: ["engines", "connections", "decisionModel"],
-      computers: ["desktopWorkspaces", "computer"],
+      you: ["general", "keyboardShortcuts", "appearance", "companion"],
+      ai: ["engines", "apps", "connections", "decisionModel"],
+      computers: ["servers", "computer"],
       account: ["cloudAccount", "organization", "usage", "backups", "experimental"],
     });
     // the narrow-window picker carries the same groups
@@ -134,7 +134,7 @@ describe("Settings rail groups", () => {
 
   it("shows a paired remote client only Appearance, Remote access and Servers", () => {
     vi.stubGlobal("window", { ogb: { remoteClient: { active: true }, environments: {}, organization: {}, cloudAccount: {} } });
-    expect(rail(render())).toEqual({ you: ["appearance", "companion"], computers: ["desktopWorkspaces"] });
+    expect(rail(render())).toEqual({ you: ["keyboardShortcuts", "appearance", "companion"], ai: ["apps"], computers: ["servers"] });
   });
 
   it("keeps the old deep links landing on the same page", () => {

@@ -20,6 +20,7 @@ import { writeFileAtomic } from "../atomic.ts";
 import { augmentedPath } from "../env-path.ts";
 import { brokerSocketPath, describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
 import { classifyResumeFailure, mayReplay, recoveryPromptFor } from "../resume-recovery.ts";
+import { announcesAction, CONTINUATION_NUDGE } from "./announced-action.ts";
 import { ClaudeLoginController } from "./claude-login-auth.ts";
 
 import type {
@@ -1243,9 +1244,19 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         retryAbort: AbortController;
         settled: boolean;
         sawStreamDelta: boolean;
+        /** written to a process kept warm from an earlier turn, which has
+         * not announced this turn with its `init` yet. A process that ends
+         * before that never took the prompt (see the close handler). */
+        awaitingInit?: boolean;
         authFailed?: boolean;
         updateRequired?: boolean;
         stopRequested?: boolean;
+        /** The latest assistant message of this turn — what the announced-
+         * action nudge reads at `result`. Subagent narration never sets it. */
+        lastReply?: string | null;
+        /** One announced-action continuation per turn: a nudge already sent
+         * must never send another, whatever the continuation announces. */
+        nudged?: boolean;
         /** Steered messages, by the uuid this driver sent them with, that no
          * model call has taken in yet as far as the driver can tell. With
          * --replay-user-messages the CLI echoes each one as a call takes it
@@ -1276,6 +1287,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       costTotal: number | null | undefined;
       /** Root close can precede a failed group stop; retry its finalization. */
       finishClose?: () => Promise<void>;
+      /** resolves once the process's close has been handled: a turn it was
+       * running has settled and left `active` (unless its tree could not be
+       * confirmed stopped) */
+      closed: Promise<void>;
     }
     const sessions = new Map<string, Session>();
     const { idleMs: SESSION_IDLE_MS } = sessionIdlePolicy("CLAUDE");
@@ -1347,6 +1362,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     const retryState = new Map<string, { attempt: number; cancelled: boolean; rebuilt?: boolean }>();
 
     const sendTurn = async (turn: SendTurnInput, logicalTurnId?: string) => {
+      const restricted = turn.restrictedThread === true;
+      if (restricted && (turn.approvalMode !== "ask" || !turn.sessionReset || turn.resumeCursor || turn.mcpFromUserConfig ||
+          Object.keys(turn.integrations ?? {}).some(key => key !== "custom") ||
+          Object.keys(turn.integrations?.custom ?? {}).join(",") !== "thread_binding"))
+        throw new Error("Restricted thread launch unavailable");
       turn = { ...turn, toolScope: assertToolScopeSupported(DRIVER_KIND, turn.toolScope) };
       if (config.managedModels && (!turn.model || !config.managedModels.includes(turn.model))) throw new Error("This model is not assigned to this workspace.");
       if (config.requireApiKey && !input.environment.ANTHROPIC_API_KEY) throw new Error(NO_ANTHROPIC_KEY);
@@ -1359,7 +1379,18 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // logical turn's stop handle in `active` while it sets up, so Stop is
       // never a silent no-op between two CLI processes of the same turn.
       const relaunch = logicalTurnId !== undefined;
-      if (active.has(threadId) && !relaunch) throw new Error("a turn is already running on this thread");
+      if (!relaunch) {
+        // Stop is acknowledged at once and the process tree reaped after it
+        // (taskkill is asynchronous on Windows); the stopped turn leaves
+        // `active` only when its close is handled. A Stop that lands while
+        // a turn is still starting lets the harness send the next message
+        // before then. That turn waits for the stopped process to be gone,
+        // never overlapping its helpers, instead of being refused.
+        const stopped = sessions.get(threadId);
+        if (stopped?.turn?.stopRequested && active.get(threadId)?.turnId === stopped.turn.turnId &&
+            await killCliTree(stopped.child)) await stopped.closed;
+        if (active.has(threadId)) throw new Error("a turn is already running on this thread");
+      }
       // A bot-level mode is authoritative for this turn. In particular, an
       // old provider instance may still be configured with
       // `bypassPermissions`; Ask/Auto must restore Claude's interactive
@@ -1411,7 +1442,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       if (turn.guestConfined && permissionMode !== "default") {
         throw new Error("A guest's turn on this Cloud runs only in Ask.");
       }
-      if (turn.guestConfined) args.push("--restricted", "--tools", GUEST_CLAUDE_TOOLS.join(","));
+      if (restricted) args.push("--tools", "", "--disable-slash-commands", "--max-turns", "4", "--max-budget-usd", "0.50");
+      else if (turn.guestConfined) args.push("--restricted", "--tools", GUEST_CLAUDE_TOOLS.join(","));
       else if (config.tools !== undefined) args.push("--tools", config.tools.join(","));
       if (config.disallowedTools?.length) {
         args.push("--disallowedTools", config.disallowedTools.join(","));
@@ -1431,7 +1463,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // tells a folded steer from one that runs next (CLAUDE_REPLAY_FLOOR).
       const replaysUserMessages = cliVersion === null || versionAtLeast(cliVersion, CLAUDE_REPLAY_FLOOR);
       if (replaysUserMessages) args.push("--replay-user-messages");
-      const isolated = !inheritsUserConfig(turnEnvironment);
+      if (restricted && (cliVersion === null || !versionAtLeast(cliVersion, [2, 1, 292])))
+        throw new Error("Restricted threads require verified Claude Code 2.1.292 or newer");
+      const isolated = restricted || !inheritsUserConfig(turnEnvironment);
       if (turn.toolScope !== undefined && (!isolated || turn.mcpFromUserConfig || cliVersion === null || !claudeCliSupports(cliVersion, "--strict-mcp-config"))) {
         throw new Error("Claude cannot confirm a restricted MCP configuration for this account. Disable inherited Claude MCP servers and use a current, identifiable Claude CLI before using tool selection.");
       }
@@ -1451,7 +1485,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         // Codex reads its own config.toml — while skills, hooks and the
         // personal CLAUDE.md stay out.
         if (!turn.mcpFromUserConfig && claudeCliSupports(cliVersion, "--strict-mcp-config")) args.push("--strict-mcp-config");
-        if (claudeCliSupports(cliVersion, "--setting-sources")) args.push("--setting-sources", "project");
+        if (claudeCliSupports(cliVersion, "--setting-sources")) args.push("--setting-sources", restricted ? "" : "project");
       }
       const compactWindow = autoCompactWindow(turnEnvironment);
       if (compactWindow && cliHasAutocompact === true) {
@@ -1468,7 +1502,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const turnModel = config.managed ? turn.model : await resolveClaudeTurnModel(turn.model, turnEnvironment);
       const injected = config.managed ? { model: turnModel ?? null, injected: false } : applyClaudeInject({ ...turnEnvironment }, turnModel);
       if (injected.model) args.push("--model", injected.model);
-      if (turn.effort) args.push("--effort", turn.effort);
+      if (restricted || turn.effort) args.push("--effort", restricted ? "low" : turn.effort!);
 
       // A room prompt can contain section context, skills, memory, playbooks,
       // and browser/agent instructions. Passing that text directly on argv
@@ -1549,7 +1583,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // can add servers but never shadow a harness-owned mount.
       // Never for a guest's turn: its folder is its own to write, and a
       // server declared there would run a command.
-      if (isolated && turn.cwd && !turn.guestConfined) {
+      if (isolated && turn.cwd && !turn.guestConfined && !restricted) {
         for (const [name, server] of Object.entries(projectMcpServers(turn.cwd))) {
           if (Object.hasOwn(mcpServers, name)) continue;
           mcpServers[name] = server;
@@ -1573,13 +1607,17 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // Keep ask_user available even in Full access. Native bypass skips
       // permission prompts, not questions requiring a person's answer.
       let broker: Awaited<ReturnType<typeof createPermissionBroker>> | undefined;
-      const socketPath = permissionSocketPath(threadId, botId);
-      if (permissionMode !== "bypassPermissions") {
+      const socketPath = restricted ? undefined : permissionSocketPath(threadId, botId);
+      if (!restricted && permissionMode !== "bypassPermissions") {
         args.push("--permission-prompt-tool", "mcp__ogb__approve");
       }
       const permissionEnv = { ...NODE_ENV_FLAG, ...(turn.toolScope !== undefined ? { OMB_PERMISSION_TOOL_SCOPE: JSON.stringify(turn.toolScope) } : {}) };
-      mcpServers.ogb = { command: process.execPath, args: [PERM_PROXY_PATH, socketPath], env: permissionEnv, alwaysLoad: true };
-      allowed.push("mcp__ogb");
+      if (restricted) {
+        allowed.push("mcp__thread_binding");
+      } else {
+        mcpServers.ogb = { command: process.execPath, args: [PERM_PROXY_PATH, socketPath], env: permissionEnv, alwaysLoad: true };
+        allowed.push("mcp__ogb");
+      }
       // A guest's turn pre-allows only the harness's own tools: anything
       // else (the browser can open a file: address) asks the owner first.
       if (turn.guestConfined) allowed.splice(0, allowed.length, ...allowed.filter((name) => name === "mcp__ogb" || name === "mcp__agents"));
@@ -1626,7 +1664,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // boundary. Native background workers cannot outlive that boundary;
       // parallel bot work must use the harness's durable delegate_bot path.
       env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = "1";
-      const cwd = turn.cwd ?? homedir();
+      if (restricted) {
+        env.OMB_CLAUDE_INHERIT_USER_CONFIG = "0";
+        env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
+        env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = "1024";
+      }
+      // A fresh empty folder lives under the existing private launch dir;
+      // all existing failure/settle cleanup paths remove it with the config.
+      const cwd = restricted ? join(dirname(mcpConfigPath!), "workspace") : turn.cwd ?? homedir();
+      if (restricted) mkdirSync(cwd, { mode: 0o700 });
       const commandCwd = permissionLaunchCwd(cwd);
       // Everything that shapes the process, minus session/turn-specific temp
       // paths. Their contents are represented directly in the key instead.
@@ -1657,7 +1703,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const live = sessions.get(threadId);
       if (!turn.sessionReset && live && !live.turn && !live.closing && live.child.exitCode === null && live.argsKey === argsKey && (!sessionId || sessionId === live.sessionId)) {
         if (live.idleTimer) clearTimeout(live.idleTimer);
-        live.turn = { turnId, input: turn, retryAbort, settled: false, sawStreamDelta: false, pendingSteers: new Set(), deferred: null, continuationGrace: null, continuationSilence: null };
+        live.turn = { turnId, input: turn, retryAbort, settled: false, sawStreamDelta: false, awaitingInit: true, pendingSteers: new Set(), deferred: null, continuationGrace: null, continuationSilence: null };
         active.set(threadId, { stop: () => {
           if (live.turn) live.turn.stopRequested = true;
           closeSession(threadId, "interrupted");
@@ -1672,19 +1718,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           : claudeUserMessage(withVolatileNote(turn.text, volatile), turn.images);
         live.volatile = volatile;
         const running = live.turn;
-        const written = await writeUser(live, threadId, message);
-        if (!written && !running?.stopRequested) {
-          active.delete(threadId);
-          live.turn = null;
-          closeSession(threadId, "stdin write failed");
-          retryState.delete(threadId);
-          if (mcpConfigPath) {
-            try {
-              rmSync(dirname(mcpConfigPath), { recursive: true, force: true });
-            } catch {}
-          }
-          throw new Error("claude session stdin is not writable");
-        }
+        // A warm process can end between turns just as the next one is
+        // written: this driver learns of an exit only when the event loop
+        // gets to it (later still on Windows), so the check above can find it
+        // live and the write then fail. Nothing was submitted; its close
+        // resumes this same turn on a fresh process (see `awaitingInit`).
+        if (!(await writeUser(live, threadId, message)) && !running?.stopRequested) closeSession(threadId, "stdin write failed");
         // the MCP config was for the first spawn; nothing to clean here
         if (mcpConfigPath) {
           try {
@@ -1827,7 +1866,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         cleanupUnownedLaunch();
         throw error;
       }
+      let markClosed!: () => void;
       const session: Session = {
+        closed: new Promise<void>((resolve) => { markClosed = resolve; }),
         child,
         broker,
         mcpConfigPath,
@@ -1943,6 +1984,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
                 break;
               }
               session.sawInit = true;
+              if (session.turn) session.turn.awaitingInit = false;
               session.nativePermissionMode = typeof o.permissionMode === "string" ? o.permissionMode : null;
               if (typeof o.session_id === "string") session.sessionId = o.session_id;
               // The turn the CLI starts for a steered message it could not
@@ -2010,6 +2052,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               // The CLI's own report of any other API error is still shown,
               // but marked: the model never produced it.
               const synthetic = o.is_api_error_message === true || typeof o.error === "string" ? { synthetic: true } : {};
+              // subagent narration is dropped from the transcript, so it must
+              // not stand in as the turn's own last reply either
+              if (session.turn && !o.parent_tool_use_id) session.turn.lastReply = text;
               // fallback delta for CLIs/paths that never streamed the block
               if (!session.turn?.sawStreamDelta) {
                 emit({ ...base(threadId, currentTurnId()), ...synthetic, type: "content.delta", streamKind: "assistant_text", delta: text });
@@ -2151,6 +2196,41 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               appendNative(threadId, { dir: "out", source: "claude.session", msg: { hold: `result: a steered message is still queued (queued_turn_count ${o.queued_turn_count ?? "absent"})` } });
               break;
             }
+            // The announced-action nudge: a turn that ends on "Now let me run
+            // the build." gets one continuation message in the same turn —
+            // the nudge the person would otherwise have to type. This round's
+            // result is held as `deferred`; the continuation's own `result`
+            // settles the turn with both summed, so only one completion ever
+            // reaches the transcript.
+            if (t && native.ok && !t.settled && !t.stopRequested && !session.closing && !t.nudged &&
+                !t.authFailed && !t.updateRequired &&
+                typeof t.lastReply === "string" && announcesAction(t.lastReply)) {
+              t.nudged = true;
+              t.deferred = sumNativeTurnResults(t.deferred, native);
+              void writeUser(session, threadId, claudeUserMessage(CONTINUATION_NUDGE, undefined)).then((wrote) => {
+                // The nudge never reached the CLI: the round that ran stands.
+                if (!wrote) {
+                  const held = t.deferred;
+                  if (session.turn === t && !t.settled && held) settleResult(held);
+                  return;
+                }
+                if (session.turn !== t || t.settled) return;
+                // Bounded like a steered continuation: the CLI announces the
+                // next call with `init` within milliseconds or never — and
+                // handleLine clears this timer on the continuation's first
+                // frame, so the held result cannot stand on a speaking turn.
+                t.continuationSilence = setTimeout(() => {
+                  const held = t.deferred;
+                  if (session.turn !== t || t.settled || !held) return;
+                  if (t.stopRequested || session.closing) return;
+                  t.continuationSilence = null;
+                  emit({ ...base(threadId, t.turnId), type: "runtime.error", message: "Claude went silent after the continuation nudge; the turn was closed." });
+                  settleResult(held);
+                }, STEERED_CONTINUATION_SILENCE_MS * steerSilenceScale());
+                t.continuationSilence.unref?.();
+              });
+              break;
+            }
             settleResult(sumNativeTurnResults(t?.deferred ?? null, native));
             break;
           }
@@ -2223,12 +2303,21 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           const retry = retryState.get(threadId) ?? { attempt: 0, cancelled: false };
           const message = `claude exited ${code} before result${session.stderr ? `: ${session.stderr.trim().slice(-300)}` : ""}`;
           const verdict = classifyError({ exitCode: code, stderr: message });
+          // A process kept warm from an earlier turn ended before it
+          // announced this one: it never took the prompt. That is a session
+          // ending between turns, not a failed turn, so the same turn
+          // resumes the session on a fresh process at once — no retry row,
+          // no retry budget spent. (A fresh process is never retained, so
+          // this happens at most once per turn.)
+          const endedBeforeTurn = session.turn.awaitingInit === true;
           if (
-            !retry.cancelled &&
-            code !== 0 &&
-            verdict.transient &&
-            !session.turn.sawStreamDelta &&
-            retry.attempt < RETRY_MAX_ATTEMPTS - 1
+            !restricted && !retry.cancelled &&
+            (endedBeforeTurn || (
+              code !== 0 &&
+              verdict.transient &&
+              !session.turn.sawStreamDelta &&
+              retry.attempt < RETRY_MAX_ATTEMPTS - 1
+            ))
           ) {
             // the CLI is gone but the TURN continues: keep the thread busy,
             // emit no terminal event, and relaunch after the backoff. The
@@ -2250,15 +2339,18 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             }
             sessions.delete(threadId);
             session.turn = null;
-            retry.attempt++;
-            const delayMs = computeBackoff(retry.attempt - 1);
-            emit({
-              ...base(threadId, turnId),
-              type: "turn.retrying",
-              attempt: retry.attempt,
-              delayMs,
-              reason: verdict.reason,
-            });
+            let delayMs = 0;
+            if (!endedBeforeTurn) {
+              retry.attempt++;
+              delayMs = computeBackoff(retry.attempt - 1);
+              emit({
+                ...base(threadId, turnId),
+                type: "turn.retrying",
+                attempt: retry.attempt,
+                delayMs,
+                reason: verdict.reason,
+              });
+            }
             void (async () => {
               const wait = interruptibleDelay(delayMs * retryScale, retryAbort.signal);
               await wait.promise;
@@ -2320,7 +2412,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             promptSubmitted: session.sawInit,
             producedOutput: session.turn.sawStreamDelta,
           });
-          if (mayReplay(resumeFailure) && !retry.cancelled) {
+          if (!restricted && mayReplay(resumeFailure) && !retry.cancelled) {
             const recovery = recoveryPromptFor({
               recoveryText: turn.recoveryText,
               currentText: turn.text,
@@ -2390,7 +2482,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       };
       child.on("close", (code) => {
         session.finishClose = () => finalizeClose(code);
-        void session.finishClose();
+        void session.finishClose().finally(markClosed);
       });
 
       const stop = () => {

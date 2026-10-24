@@ -16,8 +16,10 @@ import { ChatToolSessionError, mountChatTools, type ChatToolDefinition, type Cha
 import { assertImageTransport, chatImageBudget, chatToolImages, chatUserContent, type ChatContentPart } from "./chat-images.ts";
 import { promptHalves, volatileContextNote, withContextNote } from "./prompt-split.ts";
 import { createChatToolApproval } from "./chat-tool-approval.ts";
-import { ChatProtocolError, ChatReasoningDetails, ChatToolCalls, MAX_CHAT_TOOL_CALLS, object, type ChatToolCall } from "./openai-chat-protocol.ts";
+import { ChatProtocolError, ChatReasoningDetails, ChatToolCalls, object, type ChatToolCall } from "./openai-chat-protocol.ts";
 import { appendNative } from "./native.ts";
+import { NUDGE_ANNOUNCED_ACTION, announcesAction } from "./announced-action.ts";
+export { announcesAction } from "./announced-action.ts";
 import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS } from "./retry.ts";
 
 export interface OpenAIChatMessage {
@@ -125,15 +127,16 @@ const asError = (value: unknown): Error =>
 
 class UnsupportedChatToolsError extends Error {}
 
-const NUDGE_ANNOUNCED_ACTION = "You said what you would do next but called no tool. Do it now with your tools, or reply with your final answer if nothing is left to do.";
-
-/** A short reply that only announces a next step, with nothing to answer. */
-export function announcesAction(text: string): boolean {
-  const reply = text.trim();
-  if (!reply || reply.length > 400 || reply.includes("?")) return false;
-  return /(?:[:\u2014\u2013]|\.\.\.|\u2026)$/.test(reply) ||
-    /^(?:checking|let me|i'll|i will|i'm going to|i am going to|opening|pulling|looking|searching|navigating|reading|fetching|loading|now (?:i'll|let me|opening|checking|pulling|reading))\b/i.test(reply);
-}
+/** One turn's safety stops: model steps, and tool calls across all of them.
+ * Tool-heavy models (a memory server, a browser) take dozens of steps, and
+ * a stopped turn cannot simply be continued — the next turn is rebuilt from
+ * the text transcript, which holds none of these tool results. The calls
+ * that ran have taken effect, so the stop asks only for what is left: a
+ * retry of the whole task would repeat them. */
+const MAX_CHAT_ROUNDS = 64;
+const MAX_TURN_TOOL_CALLS = 200;
+const stoppedAfter = (count: string) =>
+  `Stopped after ${count} without a final answer. The steps so far already ran, so ask only for what's left.`;
 
 const TEXT_ONLY_ATTACHMENT_NOTE = "[The person attached image(s), but this model cannot see images. Say so if the request depends on them.]";
 const TEXT_ONLY_SCREENSHOT_NOTE = "[Screenshot not shown: this model cannot see images. Read the page with a snapshot or a text tool instead.]";
@@ -486,6 +489,18 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         const scope = parsed.scope;
         tools = await mountChatTools(options.tools === false ? undefined : turn.integrations, abort.signal, options.computerUse, scope);
         const questionAllowed = options.tools !== false && allowsTool(scope, { kind: "native", name: ASK_USER_TOOL });
+        // The decision model may trim a long list of connected-app and MCP
+        // tools to the ones this message might need. Only those tools are
+        // offered to it; any failure keeps them all.
+        const pickTools = turn.pickTools;
+        if (pickTools && tools.trimmable.size) {
+          const session = tools;
+          const offered = session.definitions.filter((definition) => session.trimmable.has(definition.function.name))
+            .map((definition) => ({ name: definition.function.name, description: definition.function.description }));
+          const keep = await Promise.resolve().then(() => pickTools(offered, abort.signal)).catch(() => null);
+          abort.signal.throwIfAborted();
+          if (keep) session.withhold(offered.map((tool) => tool.name).filter((name) => !keep.has(name)));
+        }
         let optionalQuestionOnly = questionAllowed && tools.definitions.length === 0;
         // The runtime's one built-in tool rides the same list: ask_user is
         // how a chat-completions engine reaches a person. An MCP server that
@@ -495,7 +510,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         if (questionAllowed && !tools.definitions.some((definition) => definition.function.name === ASK_USER_TOOL)) {
           tools.definitions.push(ASK_USER_TOOL_DEFINITION);
         }
-        for (let round = 0; round < 16; round++) {
+        for (let round = 0; round < MAX_CHAT_ROUNDS; round++) {
           abort.signal.throwIfAborted();
           // Drain parked mid-turn input here, before the next completion
           // request: the previous round's tool results are complete, so a
@@ -598,7 +613,8 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
             if (seenCalls.has(call.id)) throw new ChatProtocolError("provider reused a tool-call ID; refusing to repeat an operation");
             seenCalls.add(call.id);
           }
-          if (seenCalls.size > MAX_CHAT_TOOL_CALLS) throw new ChatProtocolError("tool-call limit reached");
+          // The whole batch is refused before any of it runs.
+          if (seenCalls.size > MAX_TURN_TOOL_CALLS) throw new ChatProtocolError(stoppedAfter(`${MAX_TURN_TOOL_CALLS} tool calls`));
           messages.push({ role: "assistant", content: completion.text || null, tool_calls: completion.toolCalls,
             ...(completion.protocolReasoning && !reasoningReplayRejected.has(model) ? { [options.reasoningReplayField ?? "reasoning_content"]: completion.protocolReasoning } : {}),
             ...(completion.protocolReasoningDetails.length ? { reasoning_details: completion.protocolReasoningDetails } : {}),
@@ -693,7 +709,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
           }
           if (screenshotParts.length) messages.push({ role: "user", content: screenshotParts });
         }
-        if (!ok) throw new ChatProtocolError("model-call limit reached before a final response");
+        if (!ok) throw new ChatProtocolError(stoppedAfter(`${MAX_CHAT_ROUNDS} steps`));
       } catch (value) {
         stopReason = abort.signal.aborted ? "interrupted" : stopReason ?? "error";
         failure = safeText(asError(value).message).slice(0, 2_000);

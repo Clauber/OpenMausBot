@@ -128,6 +128,7 @@ describe("the owner's routines", () => {
     // Retimed, or moved to another computer, by anyone: no longer what the owner wrote.
     expect(authors.authored("r1", { ...routine, schedule: { type: "interval", everyMinutes: 1, anchorAt: 0 } })).toBe(false);
     expect(authors.authored("r1", { ...routine, runOn: "boat" })).toBe(false);
+    expect(authors.authored("r1", { ...routine, preCheck: { command: "/tmp/new-executable" } })).toBe(false);
     expect(authors.authored("r2", routine)).toBe(false);
     expect(createCloudRoutineAuthors(join(dir, "lending-routines.json")).authored("r1", routine)).toBe(true);
     authors.forget("r1");

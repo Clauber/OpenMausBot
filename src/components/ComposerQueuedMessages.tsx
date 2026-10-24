@@ -18,6 +18,19 @@ export function composerCanSteerQueuedMessages(
   return busy && !locked && !approvalPending && pendingCount > 0;
 }
 
+/** A settled 1:1 thread holding words only because the bot is in a room
+ * turn: there is no running turn to steer into, so the head control starts
+ * them now, beside the room. */
+export function composerCanSendQueuedNow(
+  direct: boolean,
+  busy: boolean,
+  locked: boolean,
+  approvalPending: boolean,
+  items: ReadonlyArray<{ reason?: SteerQueueReason }>,
+): boolean {
+  return direct && !busy && !locked && !approvalPending && items.some((item) => item.reason === "group-turn");
+}
+
 /** How long a just-queued chip accepts a second Enter as "steer it now". */
 export const DOUBLE_ENTER_STEER_WINDOW_MS = 1_500;
 
@@ -64,6 +77,7 @@ export function QueuedComposerMessages({
   steerMode = "all",
   steering = false,
   steerInterrupts = false,
+  sendsNow = false,
   onCancel,
   onEdit,
 }: {
@@ -74,6 +88,9 @@ export function QueuedComposerMessages({
   /** True when Steer is backed by an interrupt (engine without live steer):
    * the hint must say what the click really does. */
   steerInterrupts?: boolean;
+  /** The thread is idle behind the bot's room turn: the head control starts
+   * the queued words now instead of steering a running turn. */
+  sendsNow?: boolean;
   onCancel: (queueId: string) => void;
   /** Pull this queued message back into the composer to tweak or extend it. */
   onEdit?: (queueId: string) => void;
@@ -83,22 +100,26 @@ export function QueuedComposerMessages({
   const multiple = items.length > 1;
   const steerLabel = steering
     ? t("composer.queued.steering")
-    : multiple
-      ? steerMode === "all"
-        ? t("composer.queued.steerAll")
-        : t("composer.queued.steerNext")
-      : t("composer.queued.steer");
-  const steerDescription = steerInterrupts
-    ? multiple
-      ? steerMode === "all"
-        ? t("composer.queued.steerAllInterruptHint", { count: items.length })
-        : t("composer.queued.steerNextInterruptHint")
-      : t("composer.queued.steerInterruptHint")
-    : multiple
-      ? steerMode === "all"
-        ? t("composer.queued.steerAllHint", { count: items.length })
-        : t("composer.queued.steerNextHint")
-      : t("composer.queued.steerHint");
+    : sendsNow
+      ? t("composer.queued.sendNow")
+      : multiple
+        ? steerMode === "all"
+          ? t("composer.queued.steerAll")
+          : t("composer.queued.steerNext")
+        : t("composer.queued.steer");
+  const steerDescription = sendsNow
+    ? t("composer.queued.sendNowHint")
+    : steerInterrupts
+      ? multiple
+        ? steerMode === "all"
+          ? t("composer.queued.steerAllInterruptHint", { count: items.length })
+          : t("composer.queued.steerNextInterruptHint")
+        : t("composer.queued.steerInterruptHint")
+      : multiple
+        ? steerMode === "all"
+          ? t("composer.queued.steerAllHint", { count: items.length })
+          : t("composer.queued.steerNextHint")
+        : t("composer.queued.steerHint");
 
   return (
     <div

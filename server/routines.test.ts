@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GroupGoalRunStatus } from "../shared/group-goal-run.ts";
 import { ensureDirs } from "./config.ts";
 import { BoatAgentDriver } from "./drivers/boatagent.ts";
+import { ROUTINE_DEFAULT_RESULTS_THREAD, ROUTINE_OWN_RESULTS_THREAD } from "../shared/routines.ts";
 import {
   nextOccurrence,
   RoutineManager,
@@ -499,6 +500,24 @@ describe("persistent routine results destinations", () => {
     expect(updated.resultsThreadId).toBe("results-1");
     expect(h.manager.listRuns().find((run) => run.id === first.id)?.resultsThreadId).toBe("chosen");
     expect(h.manager.update(routine.id, { botId: "maus-2" })?.resultsThreadId).toBeUndefined();
+  });
+
+  it("gives a routine a conversation of its own, and keeps it when asked again", () => {
+    const h = resultsHarness();
+    let opened = 0;
+    h.options.ownResultsThread = (routine, current) => {
+      if (current?.startsWith("own-")) return { threadId: current, created: false };
+      const threadId = `own-${++opened}`;
+      h.visible.set(threadId, routine.botId);
+      return { threadId, created: true };
+    };
+    const routine = h.manager.create({ ...input(), resultsThreadId: ROUTINE_OWN_RESULTS_THREAD });
+    expect(routine.resultsThreadId).toBe("own-1");
+    expect(h.manager.update(routine.id, { resultsThreadId: ROUTINE_OWN_RESULTS_THREAD })?.resultsThreadId).toBe("own-1");
+    expect(h.manager.runNow(routine.id)?.resultsThreadId).toBe("own-1");
+    expect(opened).toBe(1);
+    expect(h.manager.update(routine.id, { resultsThreadId: ROUTINE_DEFAULT_RESULTS_THREAD })?.resultsThreadId).toBeUndefined();
+    expect(h.manager.update(routine.id, { resultsThreadId: ROUTINE_OWN_RESULTS_THREAD })?.resultsThreadId).toBe("own-2");
   });
 
   it.each(["create", "update"])("discards only a newly allocated empty destination when %s cannot commit", (action) => {
@@ -2570,7 +2589,7 @@ describe("RoutineManager", () => {
         ...base,
         eventId: "runtime-error",
         type: "runtime.error",
-        message: "model-call limit reached before a final response",
+        message: "Stopped after 64 steps without a final answer. The steps so far already ran, so ask only for what's left.",
       });
       h.manager.handleRuntimeEvent({
         ...base,
@@ -2582,7 +2601,7 @@ describe("RoutineManager", () => {
 
       expect(h.manager.listRuns()[0]).toMatchObject({
         status: "failed",
-        error: "model-call limit reached before a final response",
+        error: "Stopped after 64 steps without a final answer. The steps so far already ran, so ask only for what's left.",
       });
     },
   );

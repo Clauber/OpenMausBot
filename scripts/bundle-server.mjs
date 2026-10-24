@@ -88,6 +88,11 @@ await build({
   allowOverwrite: true,
   logLevel: "info",
   plugins: [yamlEsmPlugin],
+  // Process-spawning browser packages and native terminal addons stay beside the bundle.
+  banner: {
+    js: 'import { createRequire as __ombCreateRequire } from "node:module";\nconst require = __ombCreateRequire(import.meta.url);',
+  },
+  external: ["patchright", "fingerprint-generator", "fingerprint-injector", "node-pty", "bufferutil", "utf-8-validate"],
 });
 
 // External MCP clients launch this as an independent stdio process. Keep its
