@@ -9698,6 +9698,8 @@ function startScreenPoller(
     }),
     onFrame: (frame) => broadcast({ kind: "screen", botId, threadId, ...frame }),
     minGapMs: SCREEN_MIN_GAP_MS,
+    // Nobody sees a browser preview without an open panel; the final frame uses capture(true).
+    watching: (surface) => surface !== "browser" || browserLive.watching(browserSession),
   }), {
     timer: null as ReturnType<typeof setInterval> | null,
     botId,
