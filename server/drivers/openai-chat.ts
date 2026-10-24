@@ -436,8 +436,9 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       for (const secret of secrets) if (secret) safe = safe.split(secret).join("[redacted]");
       return redactSecretsInText(safe);
     };
-    const preview = (value: unknown) => toolDetailPreview(JSON.parse(JSON.stringify(value, (_key, part) =>
-      typeof part === "string" ? safeText(part) : part)));
+    const safeValue = (value: unknown): unknown => value === undefined ? undefined : JSON.parse(JSON.stringify(value, (_key, part) =>
+      typeof part === "string" ? safeText(part) : part));
+    const preview = (value: unknown) => toolDetailPreview(safeValue(value));
     const native = (dir: "out" | "in", msg: unknown) => appendNative(turn.threadId, {
       dir, source: options.nativeLog.source,
       msg: JSON.parse(JSON.stringify(msg, (_key, part) => typeof part === "string" ? safeText(part) : part)),
@@ -446,7 +447,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       signal: abort.signal,
       open: (ask) => emit({
         ...base(turn.threadId, turnId), type: "request.opened", requestType: "permission",
-        requestId: ask.id, tool: ask.tool, summary: ask.summary, input: ask.input, allowSession: false,
+        requestId: ask.id, tool: ask.tool, summary: ask.summary, input: safeValue(ask.input), allowSession: false,
       }),
       resolved: (ask, allowed, source) => emit({
         ...base(turn.threadId, turnId), type: "request.resolved", requestId: ask.id,
