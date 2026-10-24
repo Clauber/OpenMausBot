@@ -9,8 +9,9 @@ More specific `AGENTS.md` files override this note within their directories.
 ## Shipping
 
 Verified work goes to `main` as soon as it is done; do not leave it on a local
-branch. Branch with a conventional prefix (`feat/`, `fix/`, `docs/`), push to
-`fork`, open a PR against `fork/main`, and merge it once checks pass. Then
+branch. `gsdtechsolutions/Legion` is the source of truth. Branch with a
+conventional prefix (`feat/`, `fix/`, `docs/`), push to it, open a PR against
+its `main`, and merge it once checks pass. Then
 deploy to the live instance: build from the commit that is currently live so
 nothing already deployed is dropped, keep a backup of the install, and verify
 the service and the public URL afterwards. Check that no bot is mid-run before
