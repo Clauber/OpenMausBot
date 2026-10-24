@@ -141,7 +141,7 @@ it("Clive reviews multi-provider teams once, continues after each decision, and 
     expect(engineer).toMatchObject({ title: "Implementation and verification engineer", section: "Engineering", chiefOfStaff: true, modelSelection: selection(codex), approvalMode: "ask", autoApprove: false, composio: false });
     expect(engineer.managedSections).toBeUndefined();
     expect(saved.find((bot: any) => bot.id === chief.id).managedSections).toEqual(expect.arrayContaining(plan.newTeams));
-    await api("POST", `/api/threads/${chief.threadId}/respond`, { requestId: proposed.requestId, behavior: "allow" });
+    expect(await api("POST", `/api/threads/${chief.threadId}/respond`, { requestId: proposed.requestId, behavior: "allow" })).toMatchObject({ alreadySettled: true });
     expect((await setupBots()).filter((bot: any) => bot.name === "Patch")).toHaveLength(1);
     expect(JSON.parse(readFileSync(fixture.fixtureDumpPath, "utf8")).pid).toBe(previousPid);
 
@@ -176,7 +176,7 @@ it("Clive reviews multi-provider teams once, continues after each decision, and 
     expect((await state()).some((bot: any) => bot.id === engineer.id)).toBe(false);
     expect((await state()).filter((bot: any) => initialBotIds.has(bot.id)).map((bot: any) => bot.id).sort())
       .toEqual([...initialBotIds].sort());
-    await api("POST", `/api/threads/${chief.threadId}/respond`, { requestId: deletion.requestId, behavior: "allow" });
+    expect(await api("POST", `/api/threads/${chief.threadId}/respond`, { requestId: deletion.requestId, behavior: "allow" }, 409)).toMatchObject({ code: "effect_replayed" });
     const room = (await control("new-channel", "--name", "Chief review", "--members", chief.id)).channel;
     unlinkSync(gate);
     await control("send-channel", "--channel", room.id, "--task", room.activeTaskId, "--text", "@Clive Review another setup, then wait.");
