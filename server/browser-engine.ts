@@ -18,6 +18,7 @@ import { writeFileAtomic } from "./atomic.ts";
 import { DATA_DIR } from "./config.ts";
 import { browserBundlePaths } from "./browser-bundle-release.ts";
 import { browserRuntimeEnv } from "./browser-runtime.ts";
+import { browserProcessTree, stopBrowserProcesses } from "./browser-processes.ts";
 import { SIGN_IN_PROMPT } from "./system-prompt.ts";
 import {
   AGENT_BROWSER_VERSION,
@@ -61,7 +62,19 @@ function ensureManagedBrowserConfig(env: NodeJS.ProcessEnv): string {
   return path;
 }
 
-/** Close exactly one daemon without the CLI's implicit launch envelope. */
+/** Where agent-browser keeps a session daemon's files: AGENT_BROWSER_SOCKET_DIR, else `$XDG_RUNTIME_DIR/agent-browser` or
+ * `~/.agent-browser`, plus `namespaces/<name>/run`. */
+function browserDaemonFile(env: NodeJS.ProcessEnv, suffix: ".pid"): string {
+  const session = env.AGENT_BROWSER_SESSION ?? "";
+  if (env.AGENT_BROWSER_SOCKET_DIR) return join(env.AGENT_BROWSER_SOCKET_DIR, `${session}${suffix}`);
+  const home = (process.platform === "win32" ? env.USERPROFILE : env.HOME) || homedir();
+  const base = env.XDG_RUNTIME_DIR ? join(env.XDG_RUNTIME_DIR, "agent-browser") : join(home, ".agent-browser");
+  const namespace = env.AGENT_BROWSER_NAMESPACE;
+  return join(namespace ? join(base, "namespaces", namespace, "run") : base, `${session}${suffix}`);
+}
+
+/** Close exactly one daemon without the CLI's implicit launch envelope. A daemon held by a page that stopped answering
+ * never finishes `close` (agent-browser 0.37), so past the deadline its own process tree is stopped. */
 export async function closeBrowserSession(binaryPath: string, env: NodeJS.ProcessEnv, timeoutMs = 15_000): Promise<boolean> {
   if (!env.AGENT_BROWSER_SESSION || !/^[A-Za-z0-9_.-]{1,96}$/.test(env.AGENT_BROWSER_SESSION)) return false;
   // Native CLI prepends a launch even to `close` when launch flags are set.
@@ -98,7 +111,12 @@ export async function closeBrowserSession(binaryPath: string, env: NodeJS.Proces
     // exit can precede the last piped stdout chunk; close follows stdio.
     child.on("close", (code) => { exited = true; clearTimeout(timer); clearTimeout(killTimer); finish(code === 0); });
   });
-  if (!(await run(["close"])).ok) return false;
+  let daemon = NaN;
+  try { daemon = Number(readFileSync(browserDaemonFile(env, ".pid"), "utf8").trim()); } catch {}
+  // Read first: once the daemon exits, its Chrome is re-parented and can no longer be found under it.
+  const tree = await browserProcessTree(binaryPath, daemon, env.AGENT_BROWSER_SESSION).catch(() => null);
+  const lastResort = () => tree ? stopBrowserProcesses(tree) : Promise.resolve(false);
+  if (!(await run(["close"])).ok) return lastResort();
   // Native close acknowledges before the daemon exits. Observe its actual
   // removal through the launch-free inventory command before reconnecting.
   while (Date.now() < deadline) {
@@ -112,7 +130,7 @@ export async function closeBrowserSession(binaryPath: string, env: NodeJS.Proces
     } catch { return false; }
     await new Promise((resolve) => setTimeout(resolve, Math.min(25, Math.max(1, deadline - Date.now()))));
   }
-  return false;
+  return lastResort();
 }
 
 const preparedBrowserSessions = new Map<string, Promise<void>>();

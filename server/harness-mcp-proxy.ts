@@ -7,6 +7,8 @@ import { pathToFileURL } from "node:url";
 const MAX_INPUT_BYTES = 1_048_576;
 const MAX_OUTPUT_BYTES = 16_777_216;
 const MAX_PENDING = 16;
+/** How long this proxy waits for the harness to answer one tools/list or tools/call. */
+export const HARNESS_PROXY_TIMEOUT_MS = 130_000;
 type RpcId = string | number | null;
 export type HarnessMcpKind = "browser" | "computer";
 
@@ -45,6 +47,19 @@ async function boundedJson(response: Response, name: string): Promise<unknown> {
   } finally { await reader.cancel().catch(() => {}); }
 }
 
+/** ZCode 0.16 abandons an MCP call after 30 s unless the tool's `_meta.timeoutMs` says otherwise; an abandoned
+ * call keeps the browser busy, so the next one queues behind it and fails too. */
+function withCallTimeout(result: unknown): unknown {
+  const tools = (result as { tools?: unknown } | null)?.tools;
+  if (!Array.isArray(tools)) return result;
+  return {
+    ...result as object,
+    tools: tools.map((tool) => tool && typeof tool === "object" && !Array.isArray(tool)
+      ? { ...tool, _meta: { ...(tool as { _meta?: object })._meta, timeoutMs: HARNESS_PROXY_TIMEOUT_MS } }
+      : tool),
+  };
+}
+
 export async function harnessMcpRequest(
   frame: unknown,
   connection: { url: string; token: string; kind: HarnessMcpKind },
@@ -71,13 +86,13 @@ export async function harnessMcpRequest(
     const response = await fetch(new URL(`/api/internal/${connection.kind}/mcp`, url), {
       method: "POST", redirect: "error",
       headers: { "content-type": "application/json", authorization: `Bearer ${connection.token}` },
-      body, signal: AbortSignal.timeout(130_000),
+      body, signal: AbortSignal.timeout(HARNESS_PROXY_TIMEOUT_MS),
     });
     const payload = await boundedJson(response, name) as { result?: unknown; error?: unknown };
     if (!response.ok || !payload || typeof payload !== "object" || !Object.hasOwn(payload, "result")) {
       throw new Error(typeof payload?.error === "string" ? payload.error.slice(0, 2_000) : `${name} server is unavailable. Start a new bot turn or try again.`);
     }
-    return { jsonrpc: "2.0", id, result: payload.result };
+    return { jsonrpc: "2.0", id, result: message.method === "tools/list" ? withCallTimeout(payload.result) : payload.result };
   } catch (error) {
     const detail = error instanceof Error && !/fetch failed|abort|timeout/i.test(error.message)
       ? error.message : `${name} connection was interrupted. Do not repeat the action until its state is checked.`;

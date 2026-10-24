@@ -3068,6 +3068,12 @@ function cancelDirectTurnDispatch(botId: string, expectedThreadId?: string): Dir
   return claim;
 }
 
+async function closeBotBrowser(session: string, spec: { command: string; env?: NodeJS.ProcessEnv }): Promise<boolean> {
+  const closed = await closeBrowserSession(spec.command, browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session }));
+  if (closed && browserStealthEnabled(cfg)) await closeStealthSession(session, cfg);
+  return closed;
+}
+
 /** The bot's browser for this turn: agent-browser, one isolated session per
  * browser profile or per bot (docs/plans/browser-engine.md). Null, with the
  * reason logged once, when the engine is not on this machine. */
@@ -3077,13 +3083,13 @@ const browserRuntime = new BrowserRuntime({
   // The bot's restart_browser tool. An open Browser panel watched the old
   // browser; drop its stream the way the panel's own Restart button does.
   closeBrowser: async (session, spec) => {
-    const closed = await closeBrowserSession(spec.command, browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session }));
+    const closed = await closeBotBrowser(session, spec);
     if (closed) browserLive.closeForSession(session);
     return closed;
   },
   clickByDescription: { decider, ready: () => deciderReady(cfg, "browserClick") },
 });
-const browserLive = new BrowserLive({ runtime: browserRuntime });
+const browserLive = new BrowserLive({ runtime: browserRuntime, closeBrowser: closeBotBrowser });
 // Temporary profiles last for this server run, but are never saved to disk.
 // The viewer and the agent must address the SAME temporary browser.
 const temporaryBrowserSessions = new Map<string, string>();
@@ -3121,11 +3127,7 @@ setInterval(() => void openedBrowsers.closeIdle(
   // A running turn that used this browser may still come back to it.
   (session) => !turnResources.free(`browser:${session}`) || browserRuntime.heldBy(session) !== null || browserLive.watching(session),
   // agentRestart refuses (throws) while an agent or a person is using the browser.
-  (session, spec) => browserRuntime.agentRestart(session, async () => {
-    const closed = await closeBrowserSession(spec.command, browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session }));
-    if (closed && browserStealthEnabled(cfg)) await closeStealthSession(session, cfg);
-    return closed;
-  }),
+  (session, spec) => browserRuntime.agentRestart(session, () => closeBotBrowser(session, spec)),
 ).then((closed) => { if (closed.length) console.log(`browser: closed idle ${closed.join(", ")}`); }), 60_000).unref();
 async function browserIntegration(botId: string, profile: string | undefined, turn?: { threadId: string; generation: string }) {
   const status = browserEngineStatus();

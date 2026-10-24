@@ -219,7 +219,11 @@ export class BrowserLive {
   private readonly runtime: BrowserRuntime;
   private readonly viewers = new Map<string, Viewer>();
   private readonly sessionResets = new Map<string, Promise<boolean>>();
-  constructor({ runtime }: { runtime: BrowserRuntime }) { this.runtime = runtime; }
+  private readonly closeBrowser: (session: string, spec: Viewer["spec"]) => Promise<boolean>;
+  constructor({ runtime, closeBrowser }: { runtime: BrowserRuntime; closeBrowser?: (session: string, spec: Viewer["spec"]) => Promise<boolean> }) {
+    this.runtime = runtime;
+    this.closeBrowser = closeBrowser ?? ((session, spec) => closeBrowserSession(spec.command, browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session })));
+  }
 
   private current(viewer: Viewer): boolean {
     try { return !viewer.closed && !viewer.res.destroyed && !viewer.res.writableEnded && viewer.isCurrent(); } catch { return false; }
@@ -505,8 +509,7 @@ export class BrowserLive {
       try {
         const restarting = this.runtime.restart(viewer.session, viewer.id, async () => {
           if (!this.current(viewer)) throw new Error("stale viewer");
-          const env = browserRuntimeEnv({ ...viewer.spec.env, AGENT_BROWSER_SESSION: viewer.session });
-          if (!await closeBrowserSession(viewer.spec.command, env)) throw new Error("browser close failed");
+          if (!await this.closeBrowser(viewer.session, viewer.spec)) throw new Error("browser close failed");
         });
         this.control(viewer.session);
         await restarting;
