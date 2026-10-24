@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { harnessMcpRequest } from "./harness-mcp-proxy.ts";
+import { HARNESS_PROXY_TIMEOUT_MS, harnessMcpRequest } from "./harness-mcp-proxy.ts";
 
 let server: Server;
 let url = "";
@@ -38,17 +38,29 @@ describe("harness MCP capability proxy", () => {
   it("relays only the RPC result and scoped capability, not a session/engine command", async () => {
     status = 200;
     payload = { result: { tools: [{ name: "agent_browser_snapshot" }] } };
-    await expect(harnessMcpRequest(frame("tools/list"), connection())).resolves.toEqual({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "agent_browser_snapshot" }] } });
+    await expect(harnessMcpRequest(frame("tools/list"), connection())).resolves.toEqual({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "agent_browser_snapshot", _meta: { timeoutMs: HARNESS_PROXY_TIMEOUT_MS } }] } });
     expect(requests.at(-1)).toEqual({ path: "/api/internal/browser/mcp", auth: "Bearer scoped-capability", body: { method: "tools/list", params: {} } });
     payload = { result: { content: [{ type: "image", data: "jpeg", mimeType: "image/jpeg" }] } };
     await expect(harnessMcpRequest(frame("tools/call", { name: "agent_browser_snapshot" }), connection())).resolves.toMatchObject({ result: { content: [{ type: "image", data: "jpeg" }] } });
+  });
+
+  it("tells the engine to wait for each tool as long as the proxy waits for the harness", async () => {
+    status = 200;
+    payload = { result: { tools: [{ name: "agent_browser_eval", _meta: { "openmausbot/kind": "page" } }, { name: "agent_browser_open", _meta: { timeoutMs: 5_000 } }] } };
+    const listed = await harnessMcpRequest(frame("tools/list"), connection()) as { result: { tools: Array<{ name: string; _meta: Record<string, unknown> }> } };
+    expect(listed.result.tools).toEqual([
+      { name: "agent_browser_eval", _meta: { "openmausbot/kind": "page", timeoutMs: HARNESS_PROXY_TIMEOUT_MS } },
+      { name: "agent_browser_open", _meta: { timeoutMs: HARNESS_PROXY_TIMEOUT_MS } },
+    ]);
+    payload = { result: { content: [{ type: "text", text: "ok" }] } };
+    await expect(harnessMcpRequest(frame("tools/call", { name: "agent_browser_eval" }), connection())).resolves.toEqual({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: "ok" }] } });
   });
 
   it("sends the cloud computer's calls to its own harness route", async () => {
     status = 200;
     payload = { result: { tools: [{ name: "screenshot" }] } };
     await expect(harnessMcpRequest(frame("initialize"), connection("computer"))).resolves.toMatchObject({ result: { serverInfo: { name: "openmausbot-computer" } } });
-    await expect(harnessMcpRequest(frame("tools/list"), connection("computer"))).resolves.toEqual({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "screenshot" }] } });
+    await expect(harnessMcpRequest(frame("tools/list"), connection("computer"))).resolves.toEqual({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "screenshot", _meta: { timeoutMs: HARNESS_PROXY_TIMEOUT_MS } }] } });
     expect(requests.at(-1)).toEqual({ path: "/api/internal/computer/mcp", auth: "Bearer scoped-capability", body: { method: "tools/list", params: {} } });
     status = 401;
     payload = { error: "the internal turn capability has expired" };

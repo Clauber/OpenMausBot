@@ -601,6 +601,17 @@ describe("authenticated browser viewer relay", () => {
     expect(a.res.writableEnded).toBe(true); expect(b.res.writableEnded).toBe(true);
     await expect(runtime.withAgentAction("profile-a", async () => true)).resolves.toBe(true);
   });
+  it("restarts through the server's own browser close, which also stops a stealth Chrome", async () => {
+    const closeBrowser = vi.fn(async () => true);
+    runtime = new BrowserRuntime(); live = new BrowserLive({ runtime, closeBrowser });
+    const a = await open();
+    await a.action({ type: "restart" });
+    expect(closeBrowser).toHaveBeenCalledWith("profile-a", expect.objectContaining({ command: "/trusted/agent-browser" }));
+    expect(nativeClose).not.toHaveBeenCalled();
+    closeBrowser.mockResolvedValueOnce(false);
+    const b = await open();
+    await expect(b.action({ type: "restart" })).rejects.toThrow("could not restart");
+  });
   it("does not clear uncertain input or other owners when native restart fails", async () => {
     runtime = new BrowserRuntime(); live = new BrowserLive({ runtime });
     const a = await open(); const b = await open({ botId: "bot-b" });
