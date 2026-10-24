@@ -1,9 +1,14 @@
+import { join } from "node:path";
+
 import type { WireBot, WireGroup } from "../../shared/wire.ts";
 import {
   ATTACHMENTS_DIR, extensionForMime, FILE_MAX_BYTES, IMAGE_MAX_BYTES, parseAudioRange, readAttachment, saveFile, saveImageUpload,
   validateAttachmentUploadId, type SavedAttachment,
 } from "../attachments.ts";
 import { deliveredCopy } from "../bot-attachment.ts";
+import { botFolderBrowser } from "../bot-files.ts";
+import { DATA_DIR } from "../config.ts";
+import { TASK_WORKSPACES_DIR, workspaceDir } from "../workspace.ts";
 import { memberBot, memberGroup, type Viewer, type VisibleSet } from "../bot-visibility.ts";
 import type { ComputerControl } from "../computer-control.ts";
 import { speakerOf, type PersonName } from "../replies.ts";
@@ -12,7 +17,7 @@ import type { WorkspaceAccess } from "../enterprise.ts";
 import type { GroupUsageReader } from "../group-thread-usage.ts";
 import { searchMessagesAsync } from "../message-db.ts";
 import {
-  browseFolder, listMessageFolder, openBrowsedFile, messageAttachmentName, messageFileDisposition, messageFileDownloadName, messageFolderEntryName,
+  listMessageFolder, messageAttachmentName, messageFileDisposition, messageFileDownloadName, messageFolderEntryName,
   messageImageTargetAt, messageReferencesFile, openMessageFile, openMessageFolderEntry, referencedFileName,
 } from "../message-file.ts";
 import { resolveRequestAuth, type RequestAuth, type ResolveOptions } from "../request-auth.ts";
@@ -52,6 +57,8 @@ export interface ThreadRouteDeps {
   messageFileRootsForThread(senderId: string, threadId: string): string[];
   /** Roots of the threads this thread links to, so a file a linked thread shared opens here too. */
   linkedThreadFileRoots(threadId: string): string[];
+  /** Where the folder browser may climb to; null on Cloud and hosted servers. */
+  folderHome(): string | null;
   viewerFor(auth: RequestAuth): Viewer;
   visibleTo(viewer: Viewer): VisibleSet;
   /** A Team Cloud: gives a member their own Legion once, before their first list of bots. */
@@ -155,15 +162,16 @@ export function createThreadRoutes(deps: ThreadRouteDeps): RouteHandler {
       const threadId = url.searchParams.get("threadId") || bot.threadId;
       if (threadId !== bot.threadId && !store.taskByThread(bot.id, threadId)) return json(res, 404, { error: "no such conversation" });
       const roots = messageFileRootsForThread(bot.id, threadId).filter((root) => root !== ATTACHMENTS_DIR);
-      const rootIndex = Number(url.searchParams.get("root") ?? "0");
-      const root = Number.isInteger(rootIndex) ? roots[rootIndex] : undefined;
-      if (!root) return json(res, 404, { error: "no such folder" });
-      const relativePath = url.searchParams.get("path") ?? "";
+      const request = { root: Number(url.searchParams.get("root") ?? "0"), up: Number(url.searchParams.get("up") ?? "0"), path: url.searchParams.get("path") ?? "" };
+      if (!Number.isInteger(request.root) || !Number.isInteger(request.up) || request.up < 0 || request.up > 64) {
+        return json(res, 400, { error: "root and up must be small whole numbers" });
+      }
+      const browser = botFolderBrowser({ roots, ownFolders: [workspaceDir(bot.id), join(TASK_WORKSPACES_DIR, bot.id)], dataDir: DATA_DIR, home: deps.folderHome() });
       if (!m[2]) {
         res.setHeader("cache-control", "private, no-store");
-        return json(res, 200, { roots, root: rootIndex, path: relativePath, ...(await browseFolder(relativePath, root)) });
+        return json(res, 200, { roots, ...request, ...(await browser.list(request)) });
       }
-      const file = await openBrowsedFile(relativePath, root);
+      const file = await browser.open(request);
       const headers = {
         "content-type": file.mime,
         "content-disposition": url.searchParams.get("download") === "1" ? messageFileDisposition(file.name) : "inline",

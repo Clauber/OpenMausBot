@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -35,7 +35,7 @@ afterEach(async () => {
 });
 afterAll(() => rmSync(suite, { recursive: true, force: true }));
 
-async function serve(store: Store, viewer: Viewer = { kind: "all" }): Promise<string> {
+async function serve(store: Store, viewer: Viewer = { kind: "all" }, home: string | null = suite): Promise<string> {
   const deps = {
     store,
     userName: () => "Milind",
@@ -46,6 +46,7 @@ async function serve(store: Store, viewer: Viewer = { kind: "all" }): Promise<st
     companionMutationToken: () => undefined,
     cliOwnerToken: () => undefined,
     messageFileRootsForThread: () => [cwd, shared, ATTACHMENTS_DIR],
+    folderHome: () => home,
   } as unknown as ThreadRouteDeps;
   const routes = [createThreadRoutes(deps)];
   const server = createServer(async (req, res) => {
@@ -71,9 +72,11 @@ describe("GET /api/bots/:id/files", () => {
 
     const top = await (await fetch(`${base}/api/bots/${bot.id}/files`)).json();
     expect(top).toEqual({
-      roots: [cwd, shared], root: 0, path: "",
+      roots: [cwd, shared], root: 0, up: 0, path: "", base: realpathSync(cwd), canGoUp: true,
       folders: ["renders"], entries: [{ name: "notes.md", bytes: 7, mime: "text/markdown; charset=utf-8" }], truncated: false,
     });
+    const above = await (await fetch(`${base}/api/bots/${bot.id}/files?up=1`)).json();
+    expect(above).toMatchObject({ base: realpathSync(suite), canGoUp: false, folders: ["project", "shared"], entries: [{ name: "secret.txt" }] });
     const renders = await (await fetch(`${base}/api/bots/${bot.id}/files?path=renders`)).json() as { entries: unknown[] };
     expect(renders.entries).toEqual([{ name: "clip.mp4", bytes: 10, mime: "video/mp4" }]);
 
@@ -98,6 +101,11 @@ describe("GET /api/bots/:id/files", () => {
     const base = await serve(store);
 
     expect((await fetch(`${base}/api/bots/${bot.id}/files/raw?path=../secret.txt`)).status).toBe(400);
+    expect((await fetch(`${base}/api/bots/${bot.id}/files?up=-1`)).status).toBe(400);
+    expect((await fetch(`${base}/api/bots/${bot.id}/files?up=2`)).status).toBe(403);
+    const cloudBase = await serve(store, { kind: "all" }, null);
+    expect(await (await fetch(`${cloudBase}/api/bots/${bot.id}/files`)).json()).toMatchObject({ canGoUp: false });
+    expect((await fetch(`${cloudBase}/api/bots/${bot.id}/files?up=1`)).status).toBe(403);
     expect((await fetch(`${base}/api/bots/${bot.id}/files?root=2`)).status).toBe(404);
     expect((await fetch(`${base}/api/bots/${bot.id}/files?threadId=someone-else`)).status).toBe(404);
     expect((await fetch(`${base}/api/bots/nobody/files`)).status).toBe(404);

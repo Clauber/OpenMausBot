@@ -32,7 +32,7 @@ export function messageFileRoots(options: {
   ])];
 }
 
-function statusError(status: number, message: string, code?: string): Error & { status: number; code?: string } {
+export function statusError(status: number, message: string, code?: string): Error & { status: number; code?: string } {
   return Object.assign(new Error(message), { status, ...(code ? { code } : {}) });
 }
 
@@ -302,7 +302,7 @@ export function messageAttachmentName(text: string, requested: string): string |
   return found;
 }
 
-function containedBy(root: string, candidate: string): boolean {
+export function containedBy(root: string, candidate: string): boolean {
   const suffix = relative(root, candidate);
   return suffix === "" || (suffix !== ".." && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix));
 }
@@ -347,7 +347,13 @@ export function mimeFor(path: string): string {
 }
 
 /** Canonicalised before and after opening, and the handle compared with the post-open path, to reject symlink escapes and directory swaps. */
-export async function openMessageFile(href: string, roots: readonly string[], maxBytes = MESSAGE_FILE_MAX_BYTES): Promise<OpenedMessageFile> {
+/** `hidden` names canonical paths inside a root that stay unreadable, such as the app's own data folder. */
+export interface FolderLimits {
+  maxBytes?: number;
+  hidden?: (canonicalPath: string) => boolean;
+}
+
+export async function openMessageFile(href: string, roots: readonly string[], { maxBytes = MESSAGE_FILE_MAX_BYTES, hidden }: FolderLimits = {}): Promise<OpenedMessageFile> {
   const requested = referencedPath(href);
   const canonicalRoots = (await Promise.all(roots.map(async (root) => {
     try {
@@ -372,7 +378,7 @@ export async function openMessageFile(href: string, roots: readonly string[], ma
       continue;
     }
     const root = canonicalRoots.find((allowed) => containedBy(allowed, canonicalBefore));
-    if (!root) {
+    if (!root || hidden?.(canonicalBefore)) {
       sawOutsideRoot = true;
       continue;
     }
@@ -389,7 +395,7 @@ export async function openMessageFile(href: string, roots: readonly string[], ma
       }
 
       const canonicalAfter = await realpath(candidate);
-      if (!containedBy(root, canonicalAfter)) throw outsideWorkspace();
+      if (!containedBy(root, canonicalAfter) || hidden?.(canonicalAfter)) throw outsideWorkspace();
       const after = await stat(canonicalAfter);
       if (opened.dev !== after.dev || opened.ino !== after.ino) {
         throw statusError(409, "the linked file changed while it was being opened");
@@ -474,13 +480,13 @@ function browsedHref(relativePath: string, root: string): string {
   return pathToFileURL(join(root, ...segments)).href;
 }
 
-export async function browseFolder(relativePath: string, root: string): Promise<{ folders: string[]; entries: MessageFolderEntry[]; truncated: boolean }> {
-  const { folders, entries, truncated } = await readMessageFolder(browsedHref(relativePath, root), [root]);
+export async function browseFolder(relativePath: string, root: string, hidden?: FolderLimits["hidden"]): Promise<{ folders: string[]; entries: MessageFolderEntry[]; truncated: boolean }> {
+  const { folders, entries, truncated } = await readMessageFolder(browsedHref(relativePath, root), [root], hidden);
   return { folders, entries, truncated };
 }
 
-export async function openBrowsedFile(relativePath: string, root: string): Promise<OpenedMessageFile> {
-  return openMessageFile(browsedHref(relativePath, root), [root], Number.POSITIVE_INFINITY);
+export async function openBrowsedFile(relativePath: string, root: string, hidden?: FolderLimits["hidden"]): Promise<OpenedMessageFile> {
+  return openMessageFile(browsedHref(relativePath, root), [root], { maxBytes: Number.POSITIVE_INFINITY, hidden });
 }
 
 export async function openMessageFolderEntry(
@@ -498,6 +504,7 @@ export async function openMessageFolderEntry(
 async function readMessageFolder(
   href: string,
   roots: readonly string[],
+  hidden?: FolderLimits["hidden"],
 ): Promise<MessageFolderListing & { path: string; folders: string[] }> {
   const requested = referencedPath(href);
   const canonicalRoots = (await Promise.all(roots.map(async (root) => {
@@ -522,7 +529,7 @@ async function readMessageFolder(
       continue;
     }
     const root = canonicalRoots.find((allowed) => containedBy(allowed, folder));
-    if (!root) {
+    if (!root || hidden?.(folder)) {
       sawOutsideRoot = true;
       continue;
     }
@@ -538,7 +545,7 @@ async function readMessageFolder(
         const own = await lstat(child);
         if (!own.isFile() && !own.isDirectory() && !own.isSymbolicLink()) continue;
         const target = await realpath(child);
-        if (!containedBy(root, target)) continue;
+        if (!containedBy(root, target) || hidden?.(target)) continue;
         const info = await stat(target);
         if (!info.isFile() && !info.isDirectory()) continue;
         const list = info.isDirectory() ? folders : entries;

@@ -1,4 +1,4 @@
-# Saving recent changed files
+# The Files tab's folder explorer
 
 Launch the isolated server and real Files component:
 
@@ -6,54 +6,52 @@ Launch the isolated server and real Files component:
 node --experimental-strip-types scripts/verify-computer-files.ts
 ```
 
-Open the printed `previewUrl`. The fixture creates four synthetic files and
-the fake engine's persisted reply links to three by absolute file URL. The
-temporary project is the conversation's pinned working folder. The sealed
-launcher has no Git, so the fixture supplies changed-file digest rows to the
-renderer; all file requests still reach the real, unchanged server using the
-persisted reply. No real engine, account, or application data is used. Ctrl-C
-closes both fixture servers and removes only their temporary data.
+Open the printed `previewUrl`. The fixture creates synthetic files in a
+temporary project that is the conversation's pinned working folder, and
+supplies changed-file digest rows to the renderer because the sealed launcher
+has no Git. Every listing and file read reaches the real, unchanged server. No
+real engine, account, or application data is used. Ctrl-C closes both fixture
+servers and removes only their temporary data.
 
-Check the following in the browser:
+Add a PNG, a short MP4 and a subfolder to the printed project folder, then
+check the following in the browser:
 
-1. `report #1.md` and `metrics.csv` have **Save a copy** buttons. Opening
-   the Files tab must not download either file.
-2. Save `report #1.md`. The button reports **Downloaded**, and the saved
-   text contains the synthetic review. Its encoded file URL is sent with the
-   stored reply's message ID through the existing file endpoint.
-3. **Preview table: metrics.csv** opens the existing table preview, with
-   Alpha / 12 and Beta / 7. Escape returns to the Files panel.
-4. `missing.txt` is intentionally absent. Saving it shows the server's
-   error rather than pretending it was downloaded.
-5. `unshared.txt` says **Not shared**, explains that the bot must share a
-   link in chat, and offers no download or preview. A digest is not a grant.
-6. **Browse files** lists the conversation folder and the bot's shared
-   folder. Drop a PNG, an MP4 and a subfolder into the printed project
-   folder and press Refresh: folders open, the image shows, the video plays
-   and seeks (the raw route answers `Range` with 206), and Markdown shows as
-   text. The breadcrumb returns to any folder. `path=..` is refused with 400.
-7. Repeat at a narrow viewport and with `?skin=atelier` for the light theme.
+1. The tree fills the tab: the working folder expanded, **Shared folder**
+   collapsed below it, folders before files, one icon per file type.
+2. Clicking a folder expands it in place. Arrow keys move, expand and
+   collapse; Enter opens a file; the tree is one Tab stop.
+3. Opening the MP4 shows it beside the tree when the panel is at least 36rem
+   wide and below it when narrower. It plays and seeks (the raw route answers
+   `Range` with 206). The PNG shows as an image and Markdown as text. The
+   divider drags and moves with the arrow keys. **Close file** returns the
+   whole pane to the tree.
+4. Files the digest rows name as added or changed carry **A** or **M**, and
+   their folders a dot.
+5. **Up one folder** re-roots the tree at the parent, keeping what was
+   expanded and open. It stops at the home folder, and the app's data folder
+   (`~/.openmausbot`) never appears apart from the bot's own folders.
+6. While the bot is working, a file written into an expanded folder appears
+   within a few seconds without pressing Refresh.
+7. Reloading the page restores the same root, expanded folders and open file.
+8. Repeat at a narrow viewport and with `?skin=atelier` for the light theme.
    Long file names must not push the panel wider.
 
 Focused checks:
 
 ```sh
-pnpm exec vitest run src/components/BotFolderBrowser.test.ts server/routes/bot-files.test.ts src/components/ComputerFilesPane.test.ts src/components/ComputerPanel.simple.test.ts src/components/AttachmentGallery.test.ts src/components/AttachmentPreview.test.ts server/message-file.test.ts scripts/testing/verification-docs.test.ts
+pnpm exec vitest run src/components/BotFolderBrowser.test.ts src/lib/file-tree.test.ts server/bot-files.test.ts server/routes/bot-files.test.ts src/components/ComputerPanel.simple.test.ts server/message-file.test.ts scripts/testing/verification-docs.test.ts
 pnpm typecheck
 pnpm lint
 pnpm i18n:check
 pnpm build
 ```
 
-The component tests cover the visible branch, exact thread/message scope,
-encoded file URLs, Windows paths, explicit null pins, changed bot defaults,
-deleted-file filtering, workspace refusal, and state reset on thread changes.
-Authorization and containment remain the server's responsibility on every
-click. "Changed in this chat" uses only existing Markdown file links and
-stored file attachments, and never guesses by basename. The folder browser
-reads through `GET /api/bots/:id/files` and `/files/raw`, rooted at the
-conversation folder and the bot's shared folder only (never the global
-attachments folder), with the same realpath, no-follow and inode checks as
-message links; a Team Cloud member gets 404. `server/routes/bot-files.test.ts`
-covers listing, ranges, traversal and the member refusal. This is not a
-checkpoint test, or a packaged desktop/phone verification.
+The explorer reads through `GET /api/bots/:id/files` and `/files/raw`. Their
+roots are the conversation's working folder and the bot's shared folder,
+never the global attachments folder, with the same realpath, no-follow and
+inode checks as message links. Climbing above the working folder stops at the
+home folder and is refused on Cloud and hosted servers. Inside the data
+folder only the bot's own workspace and task folders are readable. A Team
+Cloud member gets 404. `server/bot-files.test.ts` and
+`server/routes/bot-files.test.ts` cover each limit. This is not a packaged
+desktop or phone verification.
