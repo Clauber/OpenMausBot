@@ -12,7 +12,7 @@ import * as procs from "./procs.ts";
 // CommonJS on purpose: an extensionless shebang script parses as CJS, which
 // skips the ESM-detection reparse and lets the stubborn-mode trap below arm
 // itself before anything slower (requires, log writes) can delay boot.
-const FAKE_NPM = `#!/usr/bin/env node
+const FAKE_NPM = `#!${process.execPath}
 if (process.env.FAKE_NPM_MODE === 'stubborn') process.on('SIGTERM', () => {});
 const { appendFileSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
