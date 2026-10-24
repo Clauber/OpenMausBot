@@ -135,11 +135,14 @@ const shadowPages = new WeakSet<Page>();
  * shadow page closes, and the bot's page reloads into the cleared site. */
 const MAX_RELOADS = 2;
 const reloadCounts = new WeakMap<Page, number>();
+/** Pages that already have a watcher: the runtime re-arms every open page
+ * whenever any page attaches, and each extra watcher would run its own loop. */
+const watchedPages = new WeakSet<Page>();
 
 export function armCloudflareSolver(page: Page, options: ChallengeSolverOptions = {}): void {
-  if (shadowPages.has(page)) return;
+  if (shadowPages.has(page) || watchedPages.has(page)) return;
+  watchedPages.add(page);
   let running = false;
-  let armed = false;
   const budgetMs = options.budgetMs ?? BUDGET_MS;
 
   const solveOn = async (target: Page, deadline: number): Promise<boolean> => {
@@ -207,15 +210,10 @@ export function armCloudflareSolver(page: Page, options: ChallengeSolverOptions 
     void run();
   };
 
-  // Arm once per page; re-arm the pass on every main-frame navigation so a
-  // later challenge on the same page gets its own budget.
-  const rearm = (): void => {
-    maybeRun();
-    if (armed) return;
-    armed = true;
-    page.on("framenavigated", (frame) => {
-      if (frame === page.mainFrame()) maybeRun();
-    });
-  };
-  rearm();
+  // Run a pass now and on every main-frame navigation, so a later challenge
+  // on the same page gets its own budget.
+  page.on("framenavigated", (frame) => {
+    if (frame === page.mainFrame()) maybeRun();
+  });
+  maybeRun();
 }
