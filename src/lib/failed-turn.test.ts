@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Bot, InstanceInfo } from "@/state/store";
 
-vi.hoisted(() => vi.stubGlobal("window", {}));
+vi.hoisted(() => vi.stubGlobal("window", { location: { hash: "" } }));
 const { activityPreview, botEngine, failedTurnCause, signedOutEngine } = await import("./failed-turn");
 
 const engine = (patch: Partial<InstanceInfo> = {}, snapshot: Partial<InstanceInfo["snapshot"]> = {}): InstanceInfo => ({

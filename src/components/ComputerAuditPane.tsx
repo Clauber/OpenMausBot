@@ -53,7 +53,7 @@ export function ComputerAuditPane({ bot }: { bot: Bot }) {
 
   const actions = [...new Set(rows.map((row) => row.action))].sort();
   const shown = actor ? rows.filter((row) => row.actor === actor) : rows;
-  const select = "rounded-md border border-line bg-surface px-2 py-1 text-[12px] text-ink";
+  const select = "rounded-md border border-hairline bg-inset px-2 py-1 text-[12px] text-ink";
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2 px-4 pb-4" data-testid="computer-audit">
@@ -91,7 +91,7 @@ export function ComputerAuditPane({ bot }: { bot: Bot }) {
             </thead>
             <tbody>
               {shown.map((row, index) => (
-                <tr key={`${row.ts}-${index}`} className="border-t border-line align-top" data-testid="computer-audit-row">
+                <tr key={`${row.ts}-${index}`} className="border-t border-hairline align-top" data-testid="computer-audit-row">
                   <td className="py-1 pr-2 tabular-nums">{new Date(row.ts).toLocaleTimeString()}</td>
                   <td className="pr-2">{row.actor}</td>
                   <td className="pr-2 font-mono">{row.action}</td>
