@@ -42,9 +42,7 @@ const hostedSource = existsSync(hostedFile) ? readFileSync(hostedFile, "utf8") :
 const hostedConstants = new Map([...hostedSource.matchAll(/const ([A-Z_]+) = "(\/api\/[^"\n]+)";/g)].map(match => [match[1]!, match[2]!]));
 const hostedPublicRoutes = new Set((hostedSource.match(/!\[([^\]]+)\]\.includes\(path\)/)?.[1] ?? "")
   .split(",").map(name => hostedConstants.get(name.trim())).filter((path): path is string => path !== undefined));
-// server/index.ts matches routes two ways: `path === "/api/x"` and
-// `path.match(/^\/api\/x\/(a|b)$/)`. Collect the regex form too.
-const routePatterns = [...serverSource.matchAll(/\/(\^\\\/api\\\/(?:\[(?:[^\]\\]|\\.)*\]|[^/\\\n[]|\\.)*)\/[a-z]*/g)].map((match) => new RegExp(match[1]!));
+const routePatterns = [...`${serverSource}\n${hooksSource}`.matchAll(/\/(\^\\\/(?:api|hooks)\\\/(?:\[(?:[^\]\\]|\\.)*\]|[^/\\\n[]|\\.)*)\/[a-z]*/g)].map((match) => new RegExp(match[1]!));
 const PLACEHOLDER = /^(ID|:[\w-]+|<[^>]+>|\{[^}]+\})$/;
 
 const slug = (heading: string) => heading.trim().toLowerCase().replace(/[^\w\- ]/g, "").replace(/\s+/g, "-");

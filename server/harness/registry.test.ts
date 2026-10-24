@@ -212,7 +212,7 @@ describe("ProviderRegistry", () => {
 describe.skipIf(process.platform === "win32")("installing an npm engine from Settings", () => {
   // A stand-in npm on PATH: records its arguments and drops the expected
   // executable into the prefix it was given. No registry, no network.
-  const FAKE_NPM = `#!/usr/bin/env node
+  const FAKE_NPM = `#!${process.execPath}
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 const args = process.argv.slice(2);
