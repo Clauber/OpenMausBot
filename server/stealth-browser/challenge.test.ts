@@ -1,6 +1,25 @@
+import type { Page } from "patchright";
 import { describe, expect, it } from "vitest";
 
-import { CHECKBOX_JITTER_X, CHECKBOX_OFFSET_X, isChallengeFrameUrl } from "./challenge.ts";
+import { armCloudflareSolver, CHECKBOX_JITTER_X, CHECKBOX_OFFSET_X, isChallengeFrameUrl } from "./challenge.ts";
+
+/** A page with no challenge on it that counts how often the solver looks. */
+function cleanPage(): { page: Page; navigate: () => void; checks: () => number } {
+  let titleReads = 0;
+  const listeners: Array<(frame: unknown) => void> = [];
+  const mainFrame = {};
+  const page = {
+    isClosed: () => false,
+    title: async () => { titleReads++; return "Doug Herrell Plumbing"; },
+    frames: () => [],
+    locator: () => ({ first: () => ({ isVisible: async () => false }) }),
+    mainFrame: () => mainFrame,
+    on: (event: string, listener: (frame: unknown) => void) => { if (event === "framenavigated") listeners.push(listener); },
+  } as unknown as Page;
+  return { page, navigate: () => { for (const listener of listeners) listener(mainFrame); }, checks: () => titleReads };
+}
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 
 describe("cloudflare challenge solver", () => {
   it("recognizes the Turnstile frame by its origin, and nothing else", () => {
@@ -9,6 +28,18 @@ describe("cloudflare challenge solver", () => {
     expect(isChallengeFrameUrl("https://example.com/")).toBe(false);
     expect(isChallengeFrameUrl("about:blank")).toBe(false);
     expect(isChallengeFrameUrl("")).toBe(false);
+  });
+
+  it("watches a page once however often the runtime re-arms it", async () => {
+    // The runtime re-arms every open page each time any new page attaches
+    // (the solver's own shadow page included), so arming must be idempotent.
+    const { page, navigate, checks } = cleanPage();
+    for (let i = 0; i < 5; i++) armCloudflareSolver(page);
+    await settle();
+    expect(checks()).toBe(1);
+    navigate();
+    await settle();
+    expect(checks()).toBe(2);
   });
 
   it("clicks where the checkbox actually is in the standard widget", () => {
