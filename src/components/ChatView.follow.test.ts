@@ -7,7 +7,7 @@ import { afterAll, expect, it, vi } from "vitest";
 import type { Bot, InstanceInfo, Message } from "@/state/store";
 
 const fixture = vi.hoisted(() => {
-  vi.stubGlobal("window", {});
+  vi.stubGlobal("window", { location: { hash: "" } });
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
   return { refs: [] as { current: unknown }[], ref: 0, effects: [] as { effect: EffectCallback; deps?: DependencyList }[] };
 });

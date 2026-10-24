@@ -6,7 +6,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import type { Bot, InstanceInfo, Message } from "@/state/store";
 
 vi.hoisted(() => {
-  vi.stubGlobal("window", {});
+  vi.stubGlobal("window", { location: { hash: "" } });
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
 });
 vi.mock("@/state/store", async (importOriginal) => {

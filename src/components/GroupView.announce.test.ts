@@ -4,7 +4,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import type { Group } from "@/state/store";
 
 vi.hoisted(() => {
-  vi.stubGlobal("window", {});
+  vi.stubGlobal("window", { location: { hash: "" } });
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
 });
 vi.mock("./DesktopCapabilities", async (importOriginal) => ({

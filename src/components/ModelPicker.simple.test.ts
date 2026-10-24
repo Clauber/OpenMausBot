@@ -9,7 +9,7 @@ import type { EffortLevel } from "../../shared/wire";
 // picker's own state survives between renders, effects never run, and
 // handlers are read off the returned element tree.
 const fixture = vi.hoisted(() => {
-  vi.stubGlobal("window", {});
+  vi.stubGlobal("window", { location: { hash: "" } });
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
   return {
     advanced: false,

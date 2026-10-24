@@ -5,7 +5,7 @@ import type { Bot, InstanceInfo, Message } from "@/state/store";
 import type { ApprovalModeSelector } from "./ApprovalModeSelector";
 
 const fixture = vi.hoisted(() => {
-  vi.stubGlobal("window", {});
+  vi.stubGlobal("window", { location: { hash: "" } });
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
   return { dispatch: vi.fn() };
 });

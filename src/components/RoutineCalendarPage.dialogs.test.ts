@@ -10,7 +10,7 @@ import type { Bot } from "@/state/store";
 import type { Routine } from "../../shared/routines";
 
 const fixture = vi.hoisted(() => {
-  vi.stubGlobal("window", {});
+  vi.stubGlobal("window", { location: { hash: "" } });
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
   return { calls: [] as { ref: RefObject<unknown>; onClose: () => void }[] };
 });

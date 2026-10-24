@@ -5,7 +5,7 @@ import type { FeatureFlagConfig } from "@/lib/feature-flags";
 import type { Bot, InstanceInfo } from "@/state/store";
 
 const fixture = vi.hoisted(() => {
-  vi.stubGlobal("window", {});
+  vi.stubGlobal("window", { location: { hash: "" } });
   vi.stubGlobal("document", { visibilityState: "visible" });
   vi.stubGlobal("localStorage", { getItem: () => "browser" });
   return { config: {} as FeatureFlagConfig, browserMcp: true, dispatch: vi.fn() };

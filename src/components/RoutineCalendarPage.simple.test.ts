@@ -8,7 +8,7 @@ import type { Routine, RoutineRun } from "@/lib/routines";
 // own state survives between captures, so a click followed by a fresh capture
 // shows what the page renders next. Effects never run.
 const fixture = vi.hoisted(() => {
-  vi.stubGlobal("window", {});
+  vi.stubGlobal("window", { location: { hash: "" } });
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
   return {
     advanced: false,

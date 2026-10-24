@@ -10,7 +10,7 @@ import type { QuestionRequestCardData } from "../../shared/ask-question";
 // ModelPicker.test.ts, which renders a store-backed component under the
 // "node" environment.
 const fixture = vi.hoisted(() => {
-  vi.stubGlobal("window", {});
+  vi.stubGlobal("window", { location: { hash: "" } });
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
   return { dispatch: vi.fn() };
 });

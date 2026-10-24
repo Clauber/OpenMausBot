@@ -10,7 +10,7 @@ import type { EffortLevel } from "../../shared/wire";
 // ComputerPanel.browser.test.ts uses to render a store-backed component
 // under vitest's "node" environment.
 const fixture = vi.hoisted(() => {
-  vi.stubGlobal("window", {});
+  vi.stubGlobal("window", { location: { hash: "" } });
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
   return { instances: [] as InstanceInfo[], modelVariantSessions: {} as AppState["modelVariantSessions"], dispatch: vi.fn() };
 });

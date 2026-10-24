@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import type { Bot, InstanceInfo } from "@/state/store";
 
-vi.stubGlobal("window", {});
+vi.stubGlobal("window", { location: { hash: "" } });
 const fixture = vi.hoisted(() => ({ config: null as unknown, menuOpen: false }));
 // Static markup never runs the click that opens the menu; this renders it open.
 vi.mock("./MenuMotion", async (importOriginal) => ({

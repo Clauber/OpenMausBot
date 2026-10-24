@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Bot, InstanceInfo, Message } from "@/state/store";
 
 const fixture = vi.hoisted(() => {
-  vi.stubGlobal("window", {});
+  vi.stubGlobal("window", { location: { hash: "" } });
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
   return { instances: [] as InstanceInfo[], bots: [] as Bot[] };
 });

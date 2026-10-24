@@ -199,19 +199,19 @@ describe("Computer panel tabs", () => {
     }
   });
 
-  it("shows Computer, Browser and Files in Simple mode", () => {
+  it("shows Computer, Browser, Audit and Files in Simple mode", () => {
     fixture.android = true;
-    expect(tabs(render(makeBot()))).toEqual(["Computer", "Browser", "Files"]);
+    expect(tabs(render(makeBot()))).toEqual(["Computer", "Browser", "Audit", "Files"]);
   });
 
-  it("keeps the Advanced tabs unchanged", () => {
+  it("includes Audit with the Advanced tabs", () => {
     fixture.advanced = true;
     fixture.android = true;
-    expect(tabs(render(makeBot()))).toEqual(["Computer", "Routines", "Android", "Browser"]);
+    expect(tabs(render(makeBot()))).toEqual(["Computer", "Routines", "Android", "Browser", "Audit"]);
     fixture.config = {};
     fixture.android = false;
     // The Browser tab now stays in Advanced too, with its own switch.
-    expect(tabs(render(makeBot()))).toEqual(["Computer", "Routines", "Browser"]);
+    expect(tabs(render(makeBot()))).toEqual(["Computer", "Routines", "Browser", "Audit"]);
   });
 
   it("reads a Routines view stored by Advanced as the Computer tab in Simple", () => {

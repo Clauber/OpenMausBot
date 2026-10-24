@@ -10,7 +10,7 @@ import type { Bot, InstanceInfo } from "@/state/store";
 // The headless renderer check in docs/verification/bot-continuity.md covers
 // the same flows in a browser.
 const fixture = vi.hoisted(() => {
-  vi.stubGlobal("window", {});
+  vi.stubGlobal("window", { location: { hash: "" } });
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
   return {
     values: [] as unknown[],

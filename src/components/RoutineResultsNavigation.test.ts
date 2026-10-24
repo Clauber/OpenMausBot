@@ -5,7 +5,7 @@ import type { AppState, Bot, Group } from "@/state/store";
 import type { Routine, RoutineRun } from "@/lib/routines";
 
 const fixture = vi.hoisted(() => {
-  vi.stubGlobal("window", {});
+  vi.stubGlobal("window", { location: { hash: "" } });
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
   return { state: undefined as AppState | undefined, dispatch: vi.fn() };
 });

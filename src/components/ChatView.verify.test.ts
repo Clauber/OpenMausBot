@@ -9,7 +9,7 @@ import type { VerifyCard } from "./VerifyCard";
 import { citationAttachment, createCitationTextSelector, serializeCitation } from "@/lib/citations";
 
 const fixture = vi.hoisted(() => {
-  vi.stubGlobal("window", {});
+  vi.stubGlobal("window", { location: { hash: "" } });
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
   return {
     dispatch: vi.fn(),
