@@ -8,8 +8,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { Audience } from "../audience.ts";
 import type { AppConfig } from "../config.ts";
 import { browserEngineAttachCdpUrl, browserEngineStealthUrl, browserProfilePartitionId, browserProfilePartitionTarget, builtInBrowserEnabled, DATA_DIR } from "../config.ts";
-import { BrowserRuntime, TransportError, attachesToChrome, browserRuntimeEnv, formatBrowserTiming, type BrowserClickByDescription } from "../browser-runtime.ts";
-import { browserStealthEnabled, closeStealthSession, dropStealthSession, stealthCdpTarget } from "../browser-stealth.ts";
+import { BrowserRuntime, STEALTH_ENGINE, TransportError, attachesToChrome, browserRuntimeEnv, formatBrowserTiming, runsOnStealth, type BrowserClickByDescription } from "../browser-runtime.ts";
+import { browserStealthEnabled, closeStealthSession, dropStealthSession, stealthCdpTarget, stealthContext, stealthPrepare, stealthScreenshotDir } from "../browser-stealth.ts";
+import type { StealthBrowserEngine } from "../stealth-browser/engine.ts";
 import { StealthAttachments } from "../stealth-browser.ts";
 import { execCli } from "../procs.ts";
 import { RelayTimeout, relay, relayCommand, relayInput } from "../browser-relay.ts";
@@ -91,6 +92,28 @@ function lentDevice(device: NonNullable<EgressSetup["device"]>, holder: (session
 
 type Spec = { command: string; args?: readonly string[]; env: Record<string, string> };
 const BOT_SESSION = /^bot-[A-Za-z0-9_.-]+$/;
+const stealthSpec = (): { command: string; args: string[]; env: Record<string, string> } => ({ command: STEALTH_ENGINE, args: [], env: {} });
+
+/** fill_login's reads and typing on a stealth session: bounded calls on its engine, typing into the engine's active tab. */
+function stealthLoginInput(engine: () => Promise<StealthBrowserEngine>): Pick<FillLoginDeps, "engine" | "insertText" | "press" | "click"> {
+  const run = async (name: string, args: Record<string, unknown>): Promise<string> => {
+    const result = await (await engine()).call(name, args);
+    const text = result.content[0]?.text ?? "";
+    if (result.isError) throw new Error(text);
+    return text;
+  };
+  return {
+    engine: async (args) => {
+      if (args[0] === "get" && args[1] === "url") return { url: await run("agent_browser_get_url", {}) };
+      if (args[0] !== "eval" || typeof args[1] !== "string") return null;
+      const text = await run("agent_browser_eval", { script: args[1] });
+      return { result: text === "undefined" ? undefined : JSON.parse(text) as unknown };
+    },
+    insertText: async (text) => { await (await (await engine()).livePage()).keyboard.insertText(text); },
+    press: async (key) => { await run("agent_browser_press", { key }); },
+    click: async (selector) => { await run("agent_browser_click", { selector }); },
+  };
+}
 
 export function createBrowserHost(deps: BrowserHostDeps) {
   const { cfg, turnResources, activeInternalGenerationByThread, mintInternalCapability, DESKTOP_MANAGED, CLOUD_HOME, PORT } = deps;
@@ -100,6 +123,8 @@ export function createBrowserHost(deps: BrowserHostDeps) {
   // One close for every path (restart_browser, the panel's Restart, the unresponsive-page restart): it stops the
   // daemon's process tree, and when the session mounted through the stealth browser it stops that Chrome too.
   const closeBotBrowser = async (session: string, spec: { command: string; args?: readonly string[]; env?: NodeJS.ProcessEnv }): Promise<boolean> => {
+    // A stealth session runs no agent-browser daemon: closing its Chrome closes it, and a Chrome already gone is closed.
+    if (runsOnStealth(spec)) { await closeStealthSession(session, cfg).catch(() => false); return true; }
     const closed = await closeBrowserSession(spec.command, browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session }));
     if (closed && browserStealthEnabled(cfg)) await closeStealthSession(session, cfg).catch(() => false);
     return closed;
@@ -112,6 +137,7 @@ export function createBrowserHost(deps: BrowserHostDeps) {
       throw error instanceof RelayTimeout ? new TransportError(error.message) : error;
     }),
     steps: browserSteps,
+    stealth: { context: (session) => stealthContext(session, cfg), prepare: (session, page) => stealthPrepare(session, page, cfg), screenshotDir: stealthScreenshotDir, log: (line) => console.log(line) },
     onTiming: process.env.OMB_BROWSER_TIMING === "1" ? (timing) => console.info(formatBrowserTiming(timing)) : undefined,
     ...(deps.clickByDescription ? { clickByDescription: deps.clickByDescription } : {}),
   });
@@ -207,6 +233,10 @@ export function createBrowserHost(deps: BrowserHostDeps) {
     usedBrowserSessions.delete(session);
     warmedStealth.delete(session);
     if (browserStealthEnabled(cfg)) await dropStealthSession(session, cfg).catch(() => false);
+    if (runsOnStealth(spec)) {
+      await browserRuntime.close(session);
+      return;
+    }
     if (chromeTarget(session, spec)) {
       await chromeEngine.service.close(session);
       return;
@@ -249,6 +279,10 @@ export function createBrowserHost(deps: BrowserHostDeps) {
     const target = profile && profile !== "guest" ? browserProfilePartitionTarget(cfg, profile) : null;
     return { session, spec: chromeEngine.spec(session, profileKey(botId + suffix, session, { guest: profile === "guest", partitionId: target ? target.partitionId + suffix : null })) };
   }
+  /** The built-in stealth runtime runs a bot's browser when it is on, except on the new engine and in the person's own Chrome. */
+  function onStealth(profile: string | undefined): boolean {
+    return browserStealthEnabled(cfg) && !onChrome(profile) && !usesMyChrome(browserProfileIdOf(profile));
+  }
   /** Chrome for the new engine, the installed agent-browser otherwise. */
   function browserReady(profile: string | undefined): boolean {
     return onChrome(profile) ? chromeEngine.summary().kind === "engine" : browserEngineStatus().kind === "ready";
@@ -277,6 +311,14 @@ export function createBrowserHost(deps: BrowserHostDeps) {
       return null;
     }
     const session = currentBrowserSession(botId, profile, audience);
+    if (onStealth(profile)) {
+      // Its tools run in-process on the stealth runtime's own context: no agent-browser daemon, saved state or egress port.
+      // A call outside a turn needs its stealth Chrome running, never a silent fallback to a plain one.
+      if (!turn && await stealthTarget(session, profile) === false) return null;
+      const spec = stealthSpec();
+      usedBrowserSessions.set(session, spec);
+      return { profile: partitionId, session, spec, integration: turn ? turnIntegration(botId, session, turn) : spec };
+    }
     const stealthCdp = turn || usesMyChrome(browserProfileId) ? null : await stealthTarget(session, profile);
     if (stealthCdp === false) return null;
     const spec = browserSessionSpec(status.binaryPath, session, browserProfileId, usesMyChrome(browserProfileId) || stealthCdp ? undefined : await browserEgress.open(session));
@@ -336,6 +378,7 @@ export function createBrowserHost(deps: BrowserHostDeps) {
     const engine = browserEngineStatus();
     if (engine.kind !== "ready") return null;
     const session = currentBrowserSession(botId, profile, audience);
+    if (onStealth(profile)) return { session, spec: stealthSpec() };
     return { session, spec: usedBrowserSessions.get(session) ?? browserSessionSpec(engine.binaryPath, session, browserProfileIdOf(profile), await browserEgress.open(session)) };
   }
   /** fill_login's reads and typing, on whichever engine runs the session. */
@@ -344,6 +387,7 @@ export function createBrowserHost(deps: BrowserHostDeps) {
       const deps = chromeEngine.loginDeps(session);
       if (deps) return deps;
     }
+    if (runsOnStealth(spec)) return stealthLoginInput(() => agentBrowserRuntime.stealthEngine(session, { command: spec.command, args: [...spec.args ?? []], env: spec.env }));
     return { engine: (args) => inRunningBrowser(spec.command, env, args), ...relayInput(spec, session) };
   }
   function browserSystemPrompt(profile: string | undefined): string {
@@ -463,7 +507,7 @@ export function createBrowserHost(deps: BrowserHostDeps) {
   }
   /** Where a page's file input finds the files a turn uploads: a boxed Chrome sees only its own profile's folder. */
   function uploadPaths(files: ReadonlyArray<{ file: string; name: string | null }>, session: string, spec: Spec): string[] {
-    if (!boxed || chromeTarget(session, spec)) return namedUploadPaths(files, join(DATA_DIR, "browser-uploads"));
+    if (!boxed || chromeTarget(session, spec) || runsOnStealth(spec)) return namedUploadPaths(files, join(DATA_DIR, "browser-uploads"));
     return namedUploadPaths(files, join(browserProfileDirectory(session), "omb-uploads"), Date.now(), { everyFile: true });
   }
   /** The saved sign-ins of a bot's or a shared profile's browser, for one audience. */
