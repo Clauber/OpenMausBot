@@ -300,6 +300,23 @@ describe("ZcodeDriver turns (fake app-server)", () => {
     expect(recorder.events).toContainEqual(expect.objectContaining({ type: "item.completed", itemType: "assistant_text", text: "Hello" }));
   });
 
+  it("seals each assistant segment where it ends, so interim text reaches the thread mid-turn", async () => {
+    newDump();
+    await create({ mode: "narrate" });
+    const { turnId } = await instance.adapter.sendTurn({ threadId: "narrate", text: "Fixture", cwd: scratch });
+    await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
+    const events = recorder.events;
+    const sealed = events.flatMap((event, index) => event.type === "item.completed" && event.itemType === "assistant_text" ? [{ index, text: event.text }] : []);
+    // Three messages, three items, none repeated at turn.completed.
+    expect(sealed.map((item) => item.text)).toEqual(["Checking the files.", "Found two.", "Done."]);
+    const at = (predicate: (event: RuntimeEvent) => boolean) => events.findIndex(predicate);
+    // The announcement is sealed when the command's block starts, before the command finishes.
+    expect(sealed[0]!.index).toBeLessThan(at((event) => event.type === "item.completed" && event.itemType === "tool"));
+    // A new assistant message seals the previous one.
+    expect(sealed[1]!.index).toBeLessThan(at((event) => event.type === "content.delta" && event.delta === " Done."));
+    expect(sealed[2]!.index).toBeLessThan(at((event) => event.type === "turn.completed"));
+  });
+
   it.each([undefined, { allow: ["native:*", "mcp:notes:read", "mcp:agents:*", "mcp:browser:*"] }])("mounts custom integrations through private discovery while preserving builtins and scope %j", async toolScope => {
     const dump = newDump();
     await create();

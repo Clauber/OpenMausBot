@@ -4,6 +4,7 @@
 //
 //   say ok     stream "ok" slowly (text arrives while the turn is still running)
 //   write file ask the agent to Write a file (a permission ask in Ask mode), then answer "done"
+//   narrate    say something, read a file, then say the result (interim text before the last)
 //   run sleep  call Bash `sleep N`, then answer; "saw steer" if a STEER-MARKER message reached the model
 //   hold on    stream forever until the client goes away
 //   drop N     cut the first N streams after reasoning starts, then answer "ok"
@@ -31,7 +32,7 @@ const textOf = (content: unknown): string =>
 
 const frame = (res: ServerResponse, event: string, data: unknown) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 
-export async function startFakeAnthropicProvider(options: { drops?: number; textDelayMs?: number } = {}): Promise<FakeAnthropicProvider> {
+export async function startFakeAnthropicProvider(options: { drops?: number; textDelayMs?: number; finalDelayMs?: number } = {}): Promise<FakeAnthropicProvider> {
   const requests: ProviderRequest[] = [];
   const finishedAt = new Map<number, number>();
   let dropped = 0;
@@ -82,12 +83,18 @@ export async function startFakeAnthropicProvider(options: { drops?: number; text
       return;
     }
     start(res, id);
-    const scenario = userText.includes("hold on") ? "hold" : userText.includes("run sleep") ? "sleep" : userText.includes("write file") ? "write" : "ok";
+    const scenario = userText.includes("hold on") ? "hold" : userText.includes("narrate") ? "narrate" : userText.includes("run sleep") ? "sleep" : userText.includes("write file") ? "write" : "ok";
     if (scenario === "hold") {
       frame(res, "content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
       const timer = setInterval(() => { if (!res.destroyed) frame(res, "content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "." } }); }, 200);
       res.on("close", () => clearInterval(timer));
       return;
+    }
+    if (scenario === "narrate" && !hasToolResult) {
+      await text(res, 0, ["Checking ", "the files first."], 150);
+      // Reading inside the working directory needs no approval, so the turn runs unattended in Ask mode.
+      tool(res, 1, "Read", { file_path: `${/Primary working directory:\s*(\S+)/.exec(textOf(body.system))?.[1] ?? "/tmp"}/notes.txt` });
+      return finish(res, "tool_use");
     }
     if (scenario === "sleep" && !hasToolResult) {
       tool(res, 0, "Bash", { command: "sleep 4", description: "wait" });
@@ -97,7 +104,9 @@ export async function startFakeAnthropicProvider(options: { drops?: number; text
       tool(res, 0, "Write", { file_path: `${/Primary working directory:\s*(\S+)/.exec(textOf(body.system))?.[1] ?? "/tmp"}/fixture-note.txt`, content: "hi" });
       return finish(res, "tool_use");
     }
-    const reply = scenario === "sleep" ? (userText.includes("STEER-MARKER") ? ["saw ", "steer"] : ["no ", "steer"]) : scenario === "write" ? ["done"] : ["o", "k", ".", " ", "all", " ", "good"];
+    // A pause before the closing answer leaves a window in which the turn is still running.
+    if (scenario === "narrate") await new Promise((resolve) => setTimeout(resolve, options.finalDelayMs ?? 0));
+    const reply = scenario === "narrate" ? ["All ", "done."] : scenario === "sleep" ? (userText.includes("STEER-MARKER") ? ["saw ", "steer"] : ["no ", "steer"]) : scenario === "write" ? ["done"] : ["o", "k", ".", " ", "all", " ", "good"];
     await text(res, 0, reply, scenario === "ok" ? textDelayMs : 20);
     finishedAt.set(id, Date.now());
     finish(res, "end_turn");

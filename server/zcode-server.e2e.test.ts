@@ -135,6 +135,21 @@ describe.skipIf(ROOT === undefined)("ZCode server mode against the real server (
     expect(deltas.length).toBeGreaterThan(3);
   }, 120_000);
 
+  it("seals the assistant's interim text as soon as it ends, before the tool and the final answer", async () => {
+    const a = await bot("bot-a");
+    a.recorder.events.length = 0;
+    const { done } = await turn(a, "narrate", "narrate");
+    const completed = await done();
+    expect(completed).toMatchObject({ ok: true });
+    const events = a.recorder.events;
+    const sealed = events.flatMap((event, index) => event.type === "item.completed" && event.itemType === "assistant_text" ? [{ index, text: event.text }] : []);
+    expect(sealed.map((item) => item.text)).toEqual(["Checking the files first.", "All done."]);
+    const at = (predicate: (event: RuntimeEvent) => boolean) => events.findIndex(predicate);
+    // The interim sentence is sealed before the command it announced finishes, and well before the turn does.
+    expect(sealed[0]!.index).toBeLessThan(at((event) => event.type === "item.completed" && event.itemType === "tool"));
+    expect(sealed[1]!.index).toBeLessThan(at((event) => event.type === "turn.completed"));
+  }, 180_000);
+
   it("gives each bot its own instructions, skills and hooks, never the person's or another bot's, with two bots at once", async () => {
     const a = await bot("bot-a");
     const b = await bot("bot-b");

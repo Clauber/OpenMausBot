@@ -9,7 +9,8 @@
 //   FAKE_ZCODE_MODE  happy (default) | approval | approval-no-allow |
 //                    question | resume-refused | exit-mid-turn |
 //                    network-flaky (first send fails on a dropped provider
-//                    stream) | network-always | refused-401
+//                    stream) | network-always | refused-401 |
+//                    narrate (text, a command, more text in a second message)
 //   FAKE_ZCODE_DUMP  path to write {pid, calls, answers, env} as JSON
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
@@ -94,6 +95,22 @@ const failedTurn = (attribution: Record<string, unknown>) =>
   event("turn.failed", {
     error: { type: "model_request_failed", message: "model request failed", code: "model_request_failed", attribution },
   });
+
+// Interim commentary: the model says what it will do, runs it, then answers in a new message.
+const narratedTurn = () => {
+  event("model.streaming", { kind: "text_delta", delta: "Checking ", done: false, assistantMessageId: "m1" });
+  event("model.streaming", { kind: "text_delta", delta: "the files.", done: false, assistantMessageId: "m1" });
+  event("model.streaming", { kind: "tool_input_start", toolCallId: "call_1", toolName: "Bash", assistantMessageId: "m1" });
+  event("model.streaming", { kind: "tool_call", toolCallId: "call_1", toolName: "Bash", input: { command: "ls" }, assistantMessageId: "m1" });
+  event("tool.updated", { kind: "scheduled", toolCallId: "call_1", toolName: "Bash", inputOmitted: true });
+  setTimeout(() => {
+    event("tool.updated", { kind: "result", toolCallId: "call_1", toolName: "Bash", result: { success: true, content: "files" } });
+    event("model.streaming", { kind: "text_delta", delta: "Found ", done: false, assistantMessageId: "m2" });
+    event("model.streaming", { kind: "text_delta", delta: "two.", done: false, assistantMessageId: "m2" });
+    event("model.streaming", { kind: "text_delta", delta: " Done.", done: false, assistantMessageId: "m3" });
+    event("turn.completed", { response: " Done.", resultType: "success", usage: { inputTokens: 1, outputTokens: 1 } });
+  }, 20);
+};
 
 const scriptedTurn = () => {
   event("model.streaming", { kind: "reasoning_delta", delta: "thinking ", done: false, assistantMessageId: "m1" });
@@ -282,6 +299,8 @@ process.stdin.on("data", (chunk) => {
           setTimeout(() => permissionRequest(`srv-${nextRequestId++}`), 20);
         } else if (mode === "approval-no-allow") {
           setTimeout(() => denyOnlyPermissionRequest(`srv-${nextRequestId++}`), 20);
+        } else if (mode === "narrate") {
+          setTimeout(narratedTurn, 20);
         } else if (mode === "question") {
           setTimeout(() => userInputRequest(`srv-${nextRequestId++}`), 20);
         } else {

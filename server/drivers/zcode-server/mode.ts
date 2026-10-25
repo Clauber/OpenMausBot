@@ -7,7 +7,7 @@
 // whose wrapper (agent-wrapper.ts) maps it to the same bot home the CLI path uses.
 // The Z.ai login lives in the server's data folder, shared by all of them.
 import { copyFile, mkdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 
 import { DATA_DIR } from "../../config.ts";
 import { stripWorkspaceCredentialEnv } from "../../credential-env.ts";
@@ -28,8 +28,11 @@ const SERVER_DATA_DIR = join(PROVIDERS_DIR, "server");
 /** An operator override for where the official server bundle lives (a folder with bin/zcode). */
 const configuredServerPath = () => process.env.OMB_ZCODE_SERVER_PATH?.trim() || undefined;
 
+// The server's own launcher is a shell script that calls `dirname`, so a stripped PATH must still reach the system tools.
+const withSystemPath = (path: string) => [path, ...["/usr/bin", "/bin"].filter((dir) => !path.split(delimiter).includes(dir))].join(delimiter);
+
 const serverEnv = (): NodeJS.ProcessEnv => {
-  const env: NodeJS.ProcessEnv = { ...process.env, PATH: augmentedPath() };
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: withSystemPath(augmentedPath()) };
   stripWorkspaceCredentialEnv(env);
   return env;
 };

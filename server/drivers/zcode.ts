@@ -824,6 +824,10 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
         settled: false,
         lastText: "",
         sawStreamDelta: false,
+        // The assistant text streaming right now, and the last segment sealed as its own item.
+        textBuffer: "",
+        textMessageId: null as string | null,
+        lastSealed: "",
         nudged: false,
         stopRequested: false,
         promptSent: false,
@@ -980,6 +984,19 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
         }, Math.max(1, Math.round(nominalMs * retryScale)));
       };
 
+      // The reply streams as text deltas, and zcode's own final `response` carries only the
+      // last message. Each segment is sealed as its own item where it ends (a tool block starts,
+      // a new assistant message begins, the turn completes) so interim commentary reaches the
+      // thread and its channels while the turn runs, as Codex's does.
+      const sealText = () => {
+        const text = state.textBuffer.trim();
+        state.textBuffer = "";
+        state.textMessageId = null;
+        if (!text) return;
+        state.lastSealed = text;
+        emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text });
+      };
+
       // A session/event's discriminator is `params.type`; the member data is
       // `params.payload` (verified on the wire: {"type": "turn.completed",
       // "payload": {"response": ...}}). Switching on payload.type — the
@@ -997,6 +1014,8 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
             break;
           }
           case "model.streaming": {
+            // Anything but more text ends the text segment being streamed.
+            if (payload.kind !== "text_delta") sealText();
             // The CLI strips a call's input from its `scheduled` update
             // (inputOmitted, inputRef "model_stream") once the model stream
             // has carried it here, so this is the only copy of the command.
@@ -1007,6 +1026,10 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
             const delta = typeof payload.delta === "string" ? payload.delta : "";
             if (!delta) break;
             if (payload.kind === "text_delta") {
+              const messageId = typeof payload.assistantMessageId === "string" ? payload.assistantMessageId : null;
+              if (messageId !== null && state.textMessageId !== null && messageId !== state.textMessageId) sealText();
+              state.textMessageId = messageId ?? state.textMessageId;
+              state.textBuffer += delta;
               state.sawStreamDelta = true;
               emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta });
             } else if (payload.kind === "reasoning_delta") {
@@ -1015,6 +1038,7 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
             break;
           }
           case "tool.updated": {
+            sealText();
             const toolCallId = typeof payload.toolCallId === "string" ? payload.toolCallId : undefined;
             const title = typeof payload.toolName === "string" && payload.toolName ? payload.toolName : "tool";
             if (!toolCallId) break;
@@ -1051,14 +1075,19 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
           }
           case "turn.completed": {
             const response = typeof payload.response === "string" ? payload.response : "";
+            sealText();
             if (response.trim()) {
               state.lastText = response;
-              if (!state.sawStreamDelta) {
-                emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta: response });
+              // The final message was usually just sealed from the stream; its text is not repeated.
+              if (response.trim() !== state.lastSealed) {
+                if (!state.sawStreamDelta) {
+                  emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta: response });
+                }
+                emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text: response });
               }
               state.sawStreamDelta = false;
-              emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text: response });
             }
+            state.lastSealed = "";
             const usage = payload.usage && typeof payload.usage === "object" ? payload.usage as Record<string, unknown> : null;
             if (usage) {
               const input = typeof usage.inputTokens === "number" ? usage.inputTokens : 0;
@@ -1088,6 +1117,7 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
           }
           case "turn.failed": {
             const error = payload.error && typeof payload.error === "object" ? payload.error as Record<string, unknown> : null;
+            sealText();
             if (sessionId && !state.stopRequested && state.resumes < ZCODE_MAX_TURN_RESUMES && isTransientZcodeFailure(error)) {
               beginResume(zcodeFailureReason(error) ?? "provider error");
               break;

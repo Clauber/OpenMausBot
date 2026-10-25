@@ -71,6 +71,12 @@ Without `OMB_ZCODE_SERVER_E2E_ROOT` the test is skipped; a skip verifies nothing
 6. A provider that keeps dropping the stream: the same session resumes and finishes, on the
    server path and (with the CLI variables) on the app-server path.
 
+A second test, `server/zcode-interim-text.e2e.test.ts`, runs a whole bot turn through a fixture Legion
+server (same variable): the model says "Checking the files first.", reads a file, then answers six
+seconds later. The sentence must appear in the bot's thread while the bot is still busy, once, before the
+answer. ZCode's own final `response` carries only the last message, so each text segment is sealed as its
+own item where it ends (a tool block starts, a new assistant message begins, the turn completes).
+
 The focused driver tests (`server/drivers/zcode*.test.ts`, `server/drivers/zcode-server/*.test.ts`)
 cover the same behaviors against scripted fakes (`server/testing/fake-zcode-server.ts`).
 
