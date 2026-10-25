@@ -175,6 +175,22 @@ describe("propose_profile", () => {
   });
 });
 
+describe("get_own_profile", () => {
+  it("reads the caller's own profile through the capability route and sends no target", async () => {
+    const calls: string[] = [];
+    const profile = { name: "Kiwi", soul: "Be brief.", notifications: true };
+    const result = await callTool("get_own_profile", { for_bot_id: "bot-other" }, context({
+      client: {
+        api: async (path) => { calls.push(path); return { profile }; },
+        apiResponse: async () => ({ ok: true, status: 200, body: {} }),
+      },
+    }));
+    expect(result.isError).toBeFalsy();
+    expect(JSON.parse(result.text)).toEqual(profile);
+    expect(calls).toEqual(["/api/internal/profile?fromBotId=bot-voice&fromThreadId=thread-voice"]);
+  });
+});
+
 describe("memory_update", () => {
   // The harness route, in process: the real updateMemory behind the tool.
   const harness = (botId: string): ToolCallContext["client"] => ({

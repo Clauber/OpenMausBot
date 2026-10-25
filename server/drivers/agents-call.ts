@@ -614,6 +614,11 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
       return { text: `Voice note not sent: ${error instanceof Error ? error.message : String(error)}`, isError: true };
     }
   }
+  if (name === "get_own_profile") {
+    const query = new URLSearchParams({ fromBotId: BOT_ID, fromThreadId: THREAD_ID });
+    const r = await api(`/api/internal/profile?${query.toString()}`);
+    return { text: JSON.stringify(r.profile, null, 2) };
+  }
   if (name === "propose_page") {
     const result = await api("/api/internal/page-proposals", {
       method: "POST", body: JSON.stringify({ fromBotId: BOT_ID, fromThreadId: THREAD_ID,

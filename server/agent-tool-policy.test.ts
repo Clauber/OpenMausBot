@@ -16,6 +16,7 @@ describe("built-in agent tool read policy", () => {
       "tool_result_read",
       "list_triggers",
       "list_trigger_events",
+      "get_own_profile",
       "skills_list",
       "web_search",
       "web_fetch",

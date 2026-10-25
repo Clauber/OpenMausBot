@@ -15365,6 +15365,17 @@ const handleRequestInScope = async (req: IncomingMessage, res: ServerResponse) =
         }
         return json(res, 200, { rooms: rooms.slice(0, 50), unpostable: unpostable.slice(0, 50) });
       }
+      if (method === "GET" && path === "/api/internal/profile") {
+        const from = internalSender;
+        if (!connectorThread(from.id, internalCapability.threadId)) {
+          return json(res, 403, { error: "source conversation does not belong to sender" });
+        }
+        // Re-read the store: a confirmed propose_profile patches the record
+        // in place, so this is the live value rather than the turn's snapshot.
+        const bot = store.bot(from.id);
+        if (!bot) return json(res, 404, { error: "no such bot" });
+        return json(res, 200, { profile: { ...profileSnapshot(bot), modelSelection: bot.modelSelection } });
+      }
       const triggerContext = { from: internalSender, threadId: internalCapability.threadId, ownsThread: (botId: string, threadId: string) => Boolean(connectorThread(botId, threadId)), guestDriven: cloudGuestDriven(internalCapability.threadId), outsideDriven: () => outsideDrivenThread(internalCapability.threadId), canCommit: () => internalCapabilityIsActive(internalCapability) };
       if (await dispatchRoutes([appTriggers.internalRoutes(triggerContext)], { req, res, url, path, method, auth, json, readBody })) return;
       if (method === "POST" && path === "/api/internal/trigger-requests") {

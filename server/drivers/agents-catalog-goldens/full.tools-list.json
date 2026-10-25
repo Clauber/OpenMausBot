@@ -621,6 +621,52 @@
       }
     },
     {
+      "name": "web_fetch",
+      "description": "Fetch a public web page or text file by URL and get back its readable text (tags stripped, at most 30000 characters) and title. Only public http and https addresses work: private, local and internal hosts are refused. Results are cached for ten minutes. Use web_search first when you do not have the URL.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The full http or https URL to read."
+          }
+        },
+        "required": [
+          "url"
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "web_search",
+      "description": "Search the web and get up to 8 results, each with a title, URL and snippet. Read a result with web_fetch.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "What to search for."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
       "name": "post_to_room",
       "description": "Put one message into a shared room you belong to, for example when the user asks you to tell the team something. Get group_id from list_rooms. This posts and returns: no room member's turn starts, nobody replies, and nothing comes back except confirmation — so never use it to ask a question or hand out work (use coordinate_bots for those). Post once, say it in full, and tell the user what you posted. Set attach_voice_note true to attach this turn's voice note. If a post is refused, do not retry it: say what you wanted to post in your reply instead.",
       "inputSchema": {
@@ -2043,6 +2089,62 @@
           "trigger_id",
           "action"
         ]
+      }
+    },
+    {
+      "name": "propose_page",
+      "description": "Propose a markdown page for user review. Saves only after approval. Reuse proposal_id on retries to prevent duplicates; revision must be 0 for a new page.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "proposal_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "revision": {
+            "type": "integer",
+            "const": 0
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 100000
+          },
+          "parent_id": {
+            "type": "string"
+          },
+          "space_id": {
+            "type": "string",
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "proposal_id",
+          "revision",
+          "title",
+          "content"
+        ]
+      }
+    },
+    {
+      "name": "get_own_profile",
+      "description": "Read back your own current profile: name, title, description, standing instructions (SOUL.md), working folder (cwd), notifications, speakReplies and default model. Always the live saved values, so use it after a confirmed propose_profile or propose_model to check what applied; the SOUL.md in your system prompt is fixed at session start. Reads only you, never another bot.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
       }
     },
     {
