@@ -1,10 +1,10 @@
-# Sharing a whole team
+# Sharing a whole department
 
-**Share team…** saves one team as a single file (`<team>-<version>.openmaus.json`).
+The sidebar groups bots into departments. **Share department…** saves one department as a single file (`<team>-<version>.openmaus.json`).
 Someone else adds it in **Templates → Import**, or an organization uploads it
 in Admin → Packages and its desktops add it from **Templates → From
-{Organization}** ([org-library.md](org-library.md)). Open it from the team's menu in the sidebar (right-click
-the team name), or from **Templates → Share**.
+{Organization}** ([org-library.md](org-library.md)). Open it from the department's menu in the sidebar (right-click
+the department name), or from **Templates → Share**.
 
 ## What goes in the file
 
@@ -82,7 +82,8 @@ Import is additive: everything becomes new records in a new team (numbered if
 the name is taken). Nothing in the file can change a bot, group chat or team
 you already have.
 
-- Bots start on **Ask**, with no connected-app access and the installation's
+- Bots start at the default approval level, **Full access** (Ask on a hosted
+  company workspace), with no connected-app access and the installation's
   default model. A suggested approval level in the file is recorded, never
   applied.
 - Skills arrive **switched off**; routines arrive **paused**.
@@ -109,6 +110,10 @@ A shared Grok Bot link (`https://x.ai/bot/<id>`) or marketplace URL
 (`https://x.ai/bot/marketplace/bots/<slug>`) can become a LEGION bot from
 **Templates → Import → From Grok Bot**. Pasting the link into the GitHub box,
 or opening `openmausbot://install?url=https://x.ai/bot/<id>`, does the same.
+The same Grok Bot import is on **Settings → Import** (next to Backups, with
+**From your AI apps**: the welcome tour's skills and MCP tools import from
+Claude Code, Codex, Cursor, Claude Desktop and Gemini) and as an optional
+"Have a Grok Bot? Paste its link" row in the welcome tour's import step.
 
 1. Paste the link. Maus reads the public page and shows a card with the
    bot's name, creator and description. That is all the public page holds:
@@ -134,7 +139,7 @@ and description alone, credited "Based on x.ai/bot/<id>".
 
 **Sign in with Cursor to import everything** (optional) skips the copy and
 paste. Grok Bot templates live on Cursor's servers, and their full setup needs
-a signed-in Cursor account with Grok Bot access. The button opens Cursor's
+a signed-in Cursor account; a free one is enough. The button opens Cursor's
 own sign-in page in your browser (the PKCE flow Cursor's CLI uses). Once you
 approve it there, the card loads the whole bot and the preview opens. Maus
 keeps the sign-in in `cursor-session.json` in the data folder (mode 0600),

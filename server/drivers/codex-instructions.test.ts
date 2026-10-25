@@ -12,7 +12,7 @@ describe("Codex effective developer instructions", () => {
   it("preserves native rules after bot rules, including when bot rules are removed", () => {
     const config = { developer_instructions: "Native rules." };
     expect(codexDeveloperInstructions(config, "Bot rules.")).toBe("Bot rules.\n\nNative rules.");
-    expect(codexDeveloperInstructions(config, "")).toBe("No OpenMausBot bot-specific instructions remain.\n\nNative rules.");
+    expect(codexDeveloperInstructions(config, "")).toBe("No Legion bot-specific instructions remain.\n\nNative rules.");
     expect(codexDeveloperInstructions({}, "Bot rules.")).toBe("Bot rules.");
     expect(codexDeveloperInstructions({ developer_instructions: null }, "")).toBe("");
   });
@@ -37,7 +37,7 @@ describe("Codex instruction receipts", () => {
     await syncCodexInstructions(key, "native", "", "", true, request);
     await syncCodexInstructions(key, "native", "", "", true, request);
     expect(request).toHaveBeenCalledTimes(2);
-    expect(request.mock.calls[1][1].items[0].content[0].text).toContain("No OpenMausBot bot-specific instructions remain.");
+    expect(request.mock.calls[1][1].items[0].content[0].text).toContain("No Legion bot-specific instructions remain.");
   });
 
   it("adopts an existing native session once without replaying user history", async () => {
@@ -61,7 +61,7 @@ describe("Codex instruction receipts", () => {
     expect(accepted).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps native sessions independent even for one OpenMausBot task", async () => {
+  it("keeps native sessions independent even for one Legion task", async () => {
     const key = randomUUID();
     const request = vi.fn().mockResolvedValue({});
     await syncCodexInstructions(key, "first", "rules", "", false, request);
@@ -90,7 +90,6 @@ describe("Codex instruction receipts", () => {
     const key = randomUUID();
     const request = vi.fn().mockResolvedValue({});
     await syncCodexInstructions(key, "native", "rules", "", false, request);
-    // A receipt written before the split carries only the instruction digest.
     const path = receiptPath(key, "native");
     const fingerprint = JSON.parse(readFileSync(path, "utf8")).instructions;
     writeFileSync(path, fingerprint, { mode: 0o600 });
@@ -116,11 +115,9 @@ describe("Codex instruction receipts", () => {
     const request = vi.fn().mockResolvedValue({});
     const first = await syncCodexInstructions(key, "native", "rules", "memory v1", true, request);
     expect(first.deliverVolatile).toBe(true);
-    // the on-disk receipt does not yet claim the volatile half was carried
     const path = receiptPath(key, "native");
     const pending = JSON.parse(readFileSync(path, "utf8"));
     expect(pending).toEqual({ instructions: expect.any(String) });
-    // so a retry before acceptance still redelivers it
     const retry = await syncCodexInstructions(key, "native", "rules", "memory v1", true, request);
     expect(retry.deliverVolatile).toBe(true);
     expect(first.commitVolatile).toBeTypeOf("function");

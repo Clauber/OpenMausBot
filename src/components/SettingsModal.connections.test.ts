@@ -1,6 +1,3 @@
-// Router and API-key setup lives under Settings → Connections: searching for
-// what people call it has to find it, and OpenCode's own sign-in is named
-// there for providers OpenMaus has no field for.
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -31,7 +28,7 @@ describe("Settings → Connections", () => {
   it.each(["router", "OpenRouter", "base URL", "API key", "OpenAI", "Anthropic", "Groq"])("is found by searching for %s", async (typed) => {
     const { SECTIONS, sectionMatches } = await import("./SettingsModal");
     const connections = SECTIONS.find((entry) => entry.id === "connections")!;
-    // the modal lowercases and trims what was typed before matching
+    // The modal lowercases and trims what was typed before matching.
     expect(sectionMatches(connections, typed.trim().toLowerCase())).toBe(true);
   });
 
@@ -61,6 +58,7 @@ describe("Settings → Connections", () => {
       box: { configured: false },
       vps: { configured: false, sshAlias: "" },
       rooms: { turnTimeoutMinutes: 10 },
+      mcp: { callTimeoutMinutes: 10 },
       localVm: { mode: "shared", maxInstances: 1 },
       cloudHome: true,
     });

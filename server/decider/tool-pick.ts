@@ -4,7 +4,7 @@
 //
 // One yes/no per tool (TOOL_PICK in jobs.ts), each described as
 // "name: description", with the person's message. Only the caller's
-// trimmable tools are ever asked about: OpenMausBot's own harness tools
+// trimmable tools are ever asked about: Legion's own harness tools
 // (agents, computer, browser, ask_user) and Composio's gateway tools are
 // never offered, so they are never withheld.
 //

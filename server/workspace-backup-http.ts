@@ -23,16 +23,13 @@ const failure = (message: string, status = 400) => Object.assign(new Error(messa
 type Artifact = { owner: string; kind: "download" | "upload" | "staged"; path?: string; expires: number; summary?: WorkspaceBackupSummary };
 type RestoreResult = { id?: string; restored?: boolean; safetyCopyPath?: string; clientState?: Record<string, string> };
 
-/** Session-only controls remain usable while the workspace is locked. Their
- * excluded session file is not part of the snapshot or replacement. */
 export function isWorkspaceBackupSessionControl(method: string, path: string): boolean {
   return (method === "GET" && path === "/api/auth/sessions") ||
     (method === "POST" && path === "/api/auth/logout") ||
     (method === "DELETE" && /^\/api\/auth\/sessions\/[\w-]+$/.test(path));
 }
 
-/** All routes remain admin-only in request-auth. Passwords and raw credential
- * metadata never appear in URLs, responses, logs, or event broadcasts. */
+/** Admin-only; passwords and raw credential metadata never appear in URLs, responses, logs or broadcasts. */
 export function createWorkspaceBackupRoutes(options: {
   dataDir: string;
   appVersion: string;
@@ -42,7 +39,6 @@ export function createWorkspaceBackupRoutes(options: {
   status: () => { busy: boolean; pendingRestore: boolean };
   restored: RestoreResult;
 }) {
-  // ponytail: one bounded set per server; transfers expire after an hour.
   const artifacts = new Map<string, Artifact>();
   let operating = false;
   const json = (res: ServerResponse, status: number, body: unknown) => {
@@ -55,18 +51,17 @@ export function createWorkspaceBackupRoutes(options: {
   };
   function remove(id: string, artifact: Artifact) {
     if (artifact.path) { try { unlinkSync(artifact.path); } catch {} }
-    if (artifact.kind !== "upload") { try { removeWorkspaceBackupJob(options.dataDir, id); } catch { /* Recovery jobs are deliberately protected. */ } }
+    if (artifact.kind !== "upload") { try { removeWorkspaceBackupJob(options.dataDir, id); } catch {} }
     artifacts.delete(id);
   }
-  // A crashed process has no in-memory transfer map. Reclaim only its old,
-  // app-named jobs; never safety copies or pending/committed recovery state.
+  // Reclaim only old app-named jobs, never safety copies or pending/committed recovery state.
   function reclaimAbandoned() {
     const root = join(options.dataDir, ".backups");
     if (!existsSync(root) || lstatSync(root).isSymbolicLink()) return;
     for (const entry of readdirSync(root, { withFileTypes: true })) {
       if (!entry.isDirectory() || !/^[a-f0-9-]{36}$/.test(entry.name)) continue;
       if (statSync(join(root, entry.name)).mtimeMs + EXPIRES_MS > Date.now()) continue;
-      try { removeWorkspaceBackupJob(options.dataDir, entry.name); } catch { /* May belong to a recoverable restore. */ }
+      try { removeWorkspaceBackupJob(options.dataDir, entry.name); } catch {}
     }
     const uploads = join(root, "uploads");
     if (!existsSync(uploads) || lstatSync(uploads).isSymbolicLink()) return;
@@ -76,7 +71,7 @@ export function createWorkspaceBackupRoutes(options: {
       if (statSync(file).mtimeMs + EXPIRES_MS <= Date.now()) { try { unlinkSync(file); } catch {} }
     }
   }
-  try { reclaimAbandoned(); } catch { /* Temporary-file cleanup must not prevent normal server startup. */ }
+  try { reclaimAbandoned(); } catch {}
   function expire() {
     for (const [id, artifact] of artifacts) {
       if (artifact.expires > Date.now()) continue;
@@ -117,12 +112,11 @@ export function createWorkspaceBackupRoutes(options: {
       if (method === "POST" && path === `${PREFIX}/client-state`) {
         const body = z.object({ restoreId: z.string().uuid() }).parse(await options.readBody(req));
         check(req, auth);
-        if (!options.restored.restored || body.restoreId !== options.restored.id) throw failure("This restore has not completed. Restart OpenMausBot first.", 409);
+        if (!options.restored.restored || body.restoreId !== options.restored.id) throw failure("This restore has not completed. Restart Legion first.", 409);
         json(res, 200, { clientState: options.restored.clientState ?? {} });
         return true;
       }
       if (method === "POST" && path === `${PREFIX}/export`) {
-        // Allow the full preference budget plus the JSON envelope/password.
         const body = z.object({ password: passwordSchema, clientState: z.record(z.string(), z.string()).default({}) }).parse(await options.readBody(req, MAX_CLIENT_STATE_BYTES + 8 * 1024));
         if (Buffer.byteLength(JSON.stringify(body.clientState)) > MAX_CLIENT_STATE_BYTES) throw failure("Saved drafts exceed the 2 MB backup preference limit.", 413);
         const clientState = Object.fromEntries(Object.entries(body.clientState).filter(([key]) => WORKSPACE_BACKUP_CLIENT_KEYS.includes(key as typeof WORKSPACE_BACKUP_CLIENT_KEYS[number])));
@@ -134,7 +128,7 @@ export function createWorkspaceBackupRoutes(options: {
         }));
         try { check(req, auth); } catch (error) { removeWorkspaceBackupJob(options.dataDir, result.id); throw error; }
         artifacts.set(result.id, { owner: owner(auth), kind: "download", path: result.path, summary: result.summary, expires: Date.now() + EXPIRES_MS });
-        json(res, 200, { id: result.id, filename: `OpenMausBot-${result.summary.createdAt.slice(0, 10)}.ombbackup`, bytes: statSync(result.path).size, summary: result.summary });
+        json(res, 200, { id: result.id, filename: `Legion-${result.summary.createdAt.slice(0, 10)}.ombbackup`, bytes: statSync(result.path).size, summary: result.summary });
         return true;
       }
       const download = /^\/api\/workspace-backup\/download\/([\w-]+)$/.exec(path);
@@ -144,7 +138,7 @@ export function createWorkspaceBackupRoutes(options: {
         res.writeHead(200, {
           "content-type": "application/octet-stream",
           "content-length": statSync(file).size,
-          "content-disposition": `attachment; filename="OpenMausBot-${artifact.summary!.createdAt.slice(0, 10)}.ombbackup"`,
+          "content-disposition": `attachment; filename="Legion-${artifact.summary!.createdAt.slice(0, 10)}.ombbackup"`,
           "x-content-type-options": "nosniff",
         });
         await pipeline(createReadStream(file), res);

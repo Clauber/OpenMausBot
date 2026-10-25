@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { verificationServerEnvironment } from "../../scripts/control-omb.ts";
+import { verificationServerArgs, verificationServerEnvironment } from "../../scripts/control-omb.ts";
 import { removeTempDir, waitForExit } from "./cleanup.ts";
 import { freePortBlock } from "./ports.ts";
 
@@ -48,7 +48,7 @@ export async function launchRestartableServer(options: { scripted?: boolean; dat
   const start = async () => {
     const env = verificationServerEnvironment(process.env, dataDir, port);
     const log = openSync(logPath, "a", 0o600);
-    child = spawn(process.execPath, ["--experimental-strip-types", join(ROOT, "server", "index.ts")], { cwd: ROOT, env, stdio: ["ignore", log, log] });
+    child = spawn(process.execPath, verificationServerArgs(env), { cwd: ROOT, env, stdio: ["ignore", log, log] });
     closeSync(log);
     const deadline = Date.now() + 30_000;
     for (;;) {

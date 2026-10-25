@@ -50,7 +50,7 @@ const PROBE_ATTEMPTS = 3;
 const PROBE_RETRY_MS = 30_000;
 
 const DENY_TIMEOUT_NOTE =
-  "OpenMausBot: nobody answered this permission request in time. Skip this action and finish what you can without it.";
+  "Legion: nobody answered this permission request in time. Skip this action and finish what you can without it.";
 
 import type {
   DriverCreateInput,
@@ -810,7 +810,7 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
       const settle = async (ok: boolean, stopReason: string | null) => {
         if (state.settled) return;
         state.settled = true;
-        for (const finish of Array.from(asks.values())) finish("deny", "OpenMausBot: the turn ended", "system");
+        for (const finish of Array.from(asks.values())) finish("deny", "Legion: the turn ended", "system");
         for (const p of rpcPending.values()) p.reject(new Error("turn settled"));
         rpcPending.clear();
         const stopped = await killCliTree(child);

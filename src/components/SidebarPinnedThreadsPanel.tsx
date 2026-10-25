@@ -5,10 +5,6 @@ import { t } from "@/lib/i18n";
 import type { SidebarDensity } from "@/lib/sidebar-preferences";
 import { PinnedThreadRows, type AttentionThread } from "./SidebarBotActivity";
 
-/** A cross-bot, cross-room list of every pinned thread, living between
- * search and the bots list — pinned bots already get this top-level view
- * (the built-in Pinned section); pinned threads did not. Renders nothing
- * when there is no pin, so it never costs space it isn't using. */
 export function SidebarPinnedThreadsPanel({ entries, density, now, onJump, onUnpin, collapsed, onToggle, acceptBotDrop = false, draggingBot = false, onDragOver, onDrop, onThreadDragStart, onDragEnd }: {
   entries: AttentionThread[];
   acceptBotDrop?: boolean;

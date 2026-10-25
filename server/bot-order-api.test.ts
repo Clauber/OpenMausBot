@@ -15,17 +15,28 @@ describe("bot roster order through an isolated server", () => {
     for (const name of ["Atlas", "Scout", "Pepper"]) expect((await api("POST", "/api/bots", { name })).status).toBe(201);
     const before = (await api("GET", "/api/bots")).body.bots;
     const botIds = before.map((bot: any) => bot.id).reverse();
-    const response = await api("PATCH", "/api/bots/order", { botIds });
+    const response = await api("PUT", "/api/bots/order", { botIds });
     expect(response.status).toBe(200);
     expect(response.body.botIds).toEqual(botIds);
     expect(JSON.parse(readFileSync(join(fixture.info.dataDir, "bots.json"), "utf8")).map((bot: any) => bot.id)).toEqual(botIds);
     const after = (await api("GET", "/api/bots")).body.bots;
     expect(after.map((bot: any) => bot.id)).toEqual(botIds);
     for (const bot of after) expect(bot.threadId).toBe(before.find((entry: any) => entry.id === bot.id).threadId);
-    for (const invalid of [botIds.slice(1), [...botIds, botIds[0]], botIds.map(() => "missing")]) {
-      expect((await api("PATCH", "/api/bots/order", { botIds: invalid })).status).toBe(400);
+    for (const invalid of [[], [botIds[0], botIds[0]], ["missing"]]) {
+      expect((await api("PUT", "/api/bots/order", { botIds: invalid })).status).toBe(400);
     }
-    expect((await api("PATCH", "/api/bots/order", { botIds, extra: true })).status).toBe(400);
+    expect((await api("PUT", "/api/bots/order", { botIds, extra: true })).status).toBe(400);
     expect((await api("GET", "/api/bots")).body.bots.map((bot: any) => bot.id)).toEqual(botIds);
+  });
+
+  it("has exactly one reorder handler: PATCH /api/bots/order never reorders", async () => {
+    const order = (await api("GET", "/api/bots")).body.bots.map((bot: any) => bot.id);
+    expect(order.length).toBeGreaterThan(1);
+    const stale = await api("PATCH", "/api/bots/order", { botIds: [...order].reverse() });
+    expect(stale.status).not.toBe(200);
+    expect((await api("GET", "/api/bots")).body.bots.map((bot: any) => bot.id)).toEqual(order);
+    const moved = await api("PUT", "/api/bots/order", { botIds: [order[1], order[0]] });
+    expect(moved.status).toBe(200);
+    expect(moved.body.botIds.slice(0, 2)).toEqual([order[1], order[0]]);
   });
 });

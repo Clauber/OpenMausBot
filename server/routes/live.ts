@@ -1,14 +1,5 @@
-// Live calls (GPT-Live as the voice, the bot as the brain). The call itself
-// runs in LiveCallController; these routes start it, end it, report it and
-// change its non-secret settings. The OpenAI key is never read or written
-// here. All are admin-scoped by default in server/request-auth.ts; the
-// companion allows the first four for the phone apps (companion/src/routes.ts).
-// The fifth, device-revoked, is the companion's own notice that it unpaired a
-// phone; a phone can never send it (companion/src/routes.ts COMPANION_NOTICES).
-//
-// The last two routes carry a codex-engine call's data channel: the browser
-// pipes raw V3 frames up and reads the server's appends down. The server
-// decides everything; the browser is the untrusted pipe (see live-codex.ts).
+// The OpenAI key is never read or written here; without one a start answers 409 `needsKey`. A phone can never send device-revoked.
+// A codex-engine call's data channel runs through the last two routes: the browser is the untrusted pipe (see live-codex.ts).
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import type { LiveSettings } from "../../shared/wire.ts";
@@ -18,7 +9,6 @@ import { PASS, type RouteContext, type RouteHandler } from "./table.ts";
 
 export interface LiveRouteDeps {
   calls: Pick<LiveCallController, "start" | "end" | "current" | "deviceRevoked">;
-  /** The bot and chat a call goes to; no threadId means the bot's current chat. Null when either is unknown. */
   resolveTarget(botId: string, threadId: string | undefined): { botId: string; botName: string; threadId: string } | null;
   settings(): LiveSettings;
   saveSettings(patch: { provider?: "openai" | "codex"; voice?: string; readTypedReplies?: boolean; idleMinutes?: number }): Promise<LiveSettings>;
@@ -39,11 +29,10 @@ const sessionBody = z.object({
   threadId: id.optional(),
   // Not trimmed: the SDP offer goes to OpenAI byte for byte.
   sdp: z.string().min(1).refine((sdp) => Buffer.byteLength(sdp) <= MAX_SDP_BYTES),
-  client: z.enum(["desktop", "ios", "android"]),
+  client: z.enum(["desktop", "web", "ios", "android"]),
 }).strict();
 const endBody = z.object({ callId: z.string().min(1).max(120) }).strict();
-// Strict, so `key` (or anything else) is refused rather than ignored: the key
-// is only ever set on the computer that runs the harness.
+// Strict, so `key` is refused rather than ignored: the key is saved only through the credential store or PUT /api/config.
 const settingsBody = z.object({
   provider: z.enum(["openai", "codex"]).optional(),
   voice: z.string().trim().max(40).regex(/^[a-z]*$/).optional(),
@@ -59,24 +48,18 @@ const relayBody = z.object({
 
 const DEVICE_ID = /^[\w-]{1,128}$/;
 
-/** Who the relay requests must come from: the sign-in that started the call.
- * A call started by a session is relayed only through that session; a call
- * started from this computer (loopback) only through this computer. */
+/** A call started by a session is relayed only through that session; one started from this computer only through it. */
 function relayFingerprint(auth: RouteContext["auth"]): string {
   return auth.kind === "session" ? `session:${auth.session.id}` : auth.kind;
 }
 
-/** The paired phone the companion vouched for, or undefined. The companion
- * sends its own id for the phone that authenticated (never one the phone
- * chose); in the desktop app the harness has already checked the companion's
- * private token before this runs (server/request-auth.ts). */
+/** The companion sends its own id for the phone that authenticated, never one the phone chose. */
 function companionDevice(req: IncomingMessage): string | undefined {
   if (req.headers["x-openmausbot-companion"] !== "1") return undefined;
   const device = req.headers["x-openmausbot-companion-device"];
   return typeof device === "string" && DEVICE_ID.test(device) ? device : undefined;
 }
 
-/** The parsed JSON body, or undefined when it is not JSON (the schema then refuses it). */
 async function bodyOf(req: IncomingMessage, readBody: RouteContext["readBody"]): Promise<unknown> {
   try {
     return await readBody(req);
@@ -95,7 +78,6 @@ export function createLiveRoutes(deps: LiveRouteDeps): RouteHandler {
       const target = deps.resolveTarget(parsed.data.botId, parsed.data.threadId);
       if (!target) return json(res, 404, { error: "That bot or chat does not exist." });
       try {
-        // A phone's call is bound to the phone, so unpairing it ends the call.
         const device = companionDevice(req);
         const { call, sdp } = await deps.calls.start({ auth, ...(device ? { device } : {}), ...target, client: parsed.data.client, sdp: parsed.data.sdp });
         // A codex-engine call's data channel runs through this server: pin
@@ -105,7 +87,6 @@ export function createLiveRoutes(deps: LiveRouteDeps): RouteHandler {
       } catch (error) {
         if (error instanceof LiveCallBusyError) return json(res, 409, { error: error.message, activeCall: error.call });
         if (error instanceof LiveSessionError) {
-          // The one 409 a session refuses with is a missing key.
           return json(res, error.status, error.status === 409 ? { error: error.message, needsKey: true } : { error: error.message });
         }
         throw error;
@@ -121,7 +102,6 @@ export function createLiveRoutes(deps: LiveRouteDeps): RouteHandler {
 
     if (method === "GET" && path === "/api/live/call") return json(res, 200, { call: deps.calls.current() });
 
-    // The companion unpaired a phone: end the call that phone holds, if any.
     if (method === "POST" && path === "/api/live/device-revoked") {
       if (req.headers["x-openmausbot-companion"] !== "1") return json(res, 403, { error: "Only the phone companion can report an unpaired phone." });
       const device = companionDevice(req);
@@ -160,9 +140,8 @@ export function createLiveRoutes(deps: LiveRouteDeps): RouteHandler {
     if (method === "PATCH" && path === "/api/live/settings") {
       const parsed = settingsBody.safeParse(await bodyOf(req, readBody));
       if (!parsed.success) {
-        return json(res, 400, { error: "Those Live settings are not valid. The OpenAI key can only be changed on the computer that runs OpenMausBot." });
+        return json(res, 400, { error: "Those Live settings are not valid." });
       }
-      // as PUT /api/config: an empty patch is not saved (or broadcast)
       if (!Object.keys(parsed.data).length) return json(res, 400, { error: "nothing to save" });
       return json(res, 200, { live: await deps.saveSettings(parsed.data) });
     }

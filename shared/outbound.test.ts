@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { OUTBOUND_DEFAULT_CAP, connectorCallsIn, isOutboundTool, normalizeOutboundPolicy, outboundCallsIn } from "./outbound.ts";
+import { OUTBOUND_DEFAULT_CAP, connectorCallsIn, isOutboundTool, isReadOnlyTool, normalizeOutboundPolicy, outboundCallsIn } from "./outbound.ts";
 
 describe("isOutboundTool", () => {
   it("flags tools that send, reply, post, publish, invite, share, or move money", () => {
@@ -21,6 +21,10 @@ describe("isOutboundTool", () => {
       "mcp__claude_ai_Gmail__reply",
       "mcp__claude_ai_Gmail__forward",
       "mcp__claude_ai_Slack__slack_send_message",
+      // Only the agents server's own X reads are exempt; another server's post still posts.
+      "mcp__x__post",
+      "mcp__other__x_post",
+      "TWITTER_X_POST",
     ]) {
       expect(isOutboundTool(name), name).toBe(true);
     }
@@ -43,12 +47,36 @@ describe("isOutboundTool", () => {
       "mcp__claude_ai_Gmail__search_threads",
       "mcp__claude_ai_Linear__save_issue",
       "mcp__computer__click",
+      "mcp__agents__x_post",
+      "agents__x_post",
+      "agents_x_post",
+      "x_post",
+      "mcp__agents__x_user_posts",
       "Bash",
       "Read",
       "Edit",
     ]) {
       expect(isOutboundTool(name), name).toBe(false);
     }
+  });
+});
+
+describe("isReadOnlyTool", () => {
+  it("recognizes exact MCP reads without treating other non-outbound actions as reads", () => {
+    for (const name of [
+      "mcp__linear__list_issues",
+      "mcp__linear__list_comments",
+      "mcp__linear__get_issue",
+      "GMAIL_SEARCH_MESSAGES",
+    ]) expect(isReadOnlyTool(name), name).toBe(true);
+
+    for (const name of [
+      "mcp__linear__save_issue",
+      "mcp__linear__delete_issue",
+      "mcp__linear__create_comment",
+      "mcp__computer__click",
+      "Bash",
+    ]) expect(isReadOnlyTool(name), name).toBe(false);
   });
 });
 

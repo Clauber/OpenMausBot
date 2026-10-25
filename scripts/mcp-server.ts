@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Model Context Protocol (MCP) Server for OpenMausBot
-// Standard JSON-RPC 2.0 stdio transport for external agent orchestration (Hermes, Claude Desktop, Cursor, etc.).
+// Model Context Protocol (MCP) server for Legion over JSON-RPC 2.0 stdio,
+// for external agents (Hermes, Claude Desktop, Cursor, etc.).
 import readline from "node:readline";
 
 export function validateBaseUrl(url: string): string {
@@ -9,16 +9,16 @@ export function validateBaseUrl(url: string): string {
   try {
     parsed = new URL(trimmed);
   } catch {
-    throw new Error(`Invalid OpenMausBot URL: '${url}'`);
+    throw new Error(`Invalid Legion URL: '${url}'`);
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new Error("OpenMausBot URL must use http:// or https://");
+    throw new Error("Legion URL must use http:// or https://");
   }
   if (parsed.username || parsed.password) {
-    throw new Error("OpenMausBot URL must not contain credentials; use OPENMAUSBOT_TOKEN instead");
+    throw new Error("Legion URL must not contain credentials; use OPENMAUSBOT_TOKEN instead");
   }
   if ((parsed.pathname !== "/" && parsed.pathname !== "") || parsed.search || parsed.hash) {
-    throw new Error("OpenMausBot URL must be an origin without a path, query, or fragment");
+    throw new Error("Legion URL must be an origin without a path, query, or fragment");
   }
   const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
   const isLoopback = hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
@@ -58,28 +58,34 @@ function requestHeaders(options: RequestInit): NonNullable<RequestInit["headers"
   return headers;
 }
 
+/** A refusal from the API, with its HTTP status for callers that branch on it. */
+export class LegionApiError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 async function fetchJson(url: string, options: RequestInit = {}): Promise<any> {
   const timeout = AbortSignal.timeout(requestTimeoutMs());
   const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
-  const response = await fetch(url, {
-    ...options,
-    signal,
-    headers: requestHeaders(options),
-  });
+  const headers = requestHeaders(options);
+  const response = await fetch(url, { ...options, signal, headers });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    if (response.status === 403 && !process.env.OPENMAUSBOT_TOKEN?.trim()) {
-      throw new Error(
-        "OpenMausBot refused this write because the installed desktop app requires a paired session token. " +
+    if (response.status === 403 && !new Headers(headers).has("Authorization")) {
+      throw new LegionApiError(403,
+        "Legion refused this write because the installed desktop app requires a paired session token. " +
         "Set OPENMAUSBOT_TOKEN as described in docs/mcp-server.md.",
       );
     }
-    throw new Error(`OpenMausBot API error (${response.status}): ${text || response.statusText}`);
+    throw new LegionApiError(response.status, `Legion API error (${response.status}): ${text || response.statusText}`);
   }
   try {
     return await response.json();
   } catch {
-    throw new Error(`OpenMausBot API returned a non-JSON response from ${url}`);
+    throw new Error(`Legion API returned a non-JSON response from ${url}`);
   }
 }
 
@@ -92,7 +98,7 @@ export async function probeBaseUrls(candidates: string[]): Promise<string> {
         signal: AbortSignal.timeout(Math.min(requestTimeoutMs(), 2_000)),
       });
       if (health?.app !== "openmausbot") {
-        failures.push(`${candidate} answered, but it was not OpenMausBot`);
+        failures.push(`${candidate} answered, but it was not Legion`);
         continue;
       }
       return candidate;
@@ -100,7 +106,7 @@ export async function probeBaseUrls(candidates: string[]): Promise<string> {
       failures.push(`${candidate}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  throw new Error(`Could not find a running OpenMausBot server. ${failures.join("; ")}`);
+  throw new Error(`Could not find a running Legion server. ${failures.join("; ")}`);
 }
 
 export async function resolveBaseUrl(): Promise<string> {
@@ -135,6 +141,11 @@ export interface McpToolDefinition {
   };
 }
 
+const SEND_ID_SCHEMA = {
+  type: "string",
+  description: "Optional id you make up for this send (16-80 letters, digits, - or _). Sending again with the same id returns the first send's receipt instead of a second message.",
+} as const;
+
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, openWorldHint: false } as const;
 const ADDITIVE = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } as const;
 const MUTATING = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const;
@@ -144,7 +155,7 @@ const AGENT_ACTION = { readOnlyHint: false, destructiveHint: true, idempotentHin
 export const TOOLS: McpToolDefinition[] = [
   {
     name: "get_system_health",
-    description: "Check whether the OpenMausBot server is reachable.",
+    description: "Check whether the Legion server is reachable.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -186,6 +197,7 @@ export const TOOLS: McpToolDefinition[] = [
         bot_id: { type: "string", description: "The ID of the bot to message." },
         task_id: { type: "string", description: "Optional owned task/thread ID. Defaults to the bot's selected task." },
         text: { type: "string", description: "The message content/instruction to send." },
+        send_id: SEND_ID_SCHEMA,
       },
       required: ["bot_id", "text"],
       additionalProperties: false,
@@ -262,6 +274,7 @@ export const TOOLS: McpToolDefinition[] = [
         channel_id: { type: "string", description: "The ID of the channel." },
         task_id: { type: "string", description: "Optional expected active task/thread ID." },
         text: { type: "string", description: "The message content to post." },
+        send_id: SEND_ID_SCHEMA,
       },
       required: ["channel_id", "text"],
       additionalProperties: false,
@@ -378,7 +391,7 @@ export const TOOLS: McpToolDefinition[] = [
   },
   {
     name: "wait_for_conversation",
-    description: "Wait for a bot or channel task to finish, stall, fail, or require user input.",
+    description: "Wait for a bot or channel task, and every teammate it is waiting on, to finish, stall, fail, or require user input. The result carries the job tree.",
     inputSchema: {
       type: "object",
       properties: {
@@ -386,6 +399,9 @@ export const TOOLS: McpToolDefinition[] = [
         target_id: { type: "string" },
         task_id: { type: "string", description: "Optional task/thread ID. Defaults to the active task." },
         timeout_seconds: { type: "integer", minimum: 1, maximum: 120, description: "Maximum wait (default: 30 seconds)." },
+        scope: { type: "string", enum: ["job", "turn"], description: "job (default): the conversation and every teammate it waits on; turn: its own turn only." },
+        since_ms: { type: "integer", minimum: 0, description: "Optional: the job's since from an earlier result, so a repeated wait watches the same job." },
+        after_version: { type: "string", description: "Optional: an earlier result's job version; answer only once the job has changed since." },
       },
       required: ["target_type", "target_id"],
       additionalProperties: false,
@@ -550,7 +566,7 @@ function optionalStringArg(
 
 function idArg(args: Record<string, unknown>, key: string): string {
   const value = stringArg(args, key);
-  if (!/^[\w-]+$/.test(value)) throw new ToolInputError(`${key} is not a valid OpenMausBot ID`);
+  if (!/^[\w-]+$/.test(value)) throw new ToolInputError(`${key} is not a valid Legion ID`);
   return value;
 }
 
@@ -574,10 +590,18 @@ function projectTask(task: Record<string, any>, activeThreadId: unknown) {
     ...(typeof task.busy === "boolean" ? { busy: task.busy } : {}),
     ...(typeof task.waitingForTeammates === "boolean" ? { waitingForTeammates: task.waitingForTeammates } : {}),
     ...(task.activity ? { activity: task.activity } : {}),
+    ...(typeof task.working === "boolean" ? { working: task.working } : {}),
+    ...(task.busyBotId !== undefined ? { busyBotId: task.busyBotId ?? null } : {}),
     ...(task.modelSelection ? { modelSelection: task.modelSelection } : {}),
     ...(typeof activeThreadId === "string" ? { active: task.threadId === activeThreadId } : {}),
     ...(task.usage ? { usage: task.usage } : {}),
   };
+}
+
+/** The channel a bot is speaking in, whichever of its threads that is. */
+function channelBusyWith(groups: unknown, botId: string) {
+  return records(groups).find((channel) =>
+    channel.busyBotId === botId || records(channel.tasks).some((task) => task.busyBotId === botId));
 }
 
 function botTaskState(bot: Record<string, any>, taskId: string) {
@@ -660,6 +684,18 @@ function projectMessage(message: Record<string, any>) {
         resumed: message.secret.resumed,
       }
     : undefined;
+  const signIn = isRecord(message.signIn)
+    ? {
+        site: message.signIn.site,
+        url: message.signIn.url,
+        place: message.signIn.place,
+        reason: message.signIn.reason,
+        done: message.signIn.done,
+        cancelled: message.signIn.cancelled,
+        superseded: message.signIn.superseded,
+        resumed: message.signIn.resumed,
+      }
+    : undefined;
   return {
     id: message.id,
     at: message.at,
@@ -676,6 +712,7 @@ function projectMessage(message: Record<string, any>) {
     ...(card ? { card } : {}),
     ...(connector ? { connector } : {}),
     ...(secret ? { secret } : {}),
+    ...(signIn ? { signIn } : {}), ...(message.widget ? { widget: message.widget } : {}), ...(message.app ? { app: message.app } : {}), ...(message.fromApp ? { fromApp: message.fromApp } : {}),
     ...(message.kind === "screen" ? { hasImage: Boolean(message.hasImage || message.png) } : {}),
   };
 }
@@ -689,13 +726,14 @@ function taskBelongsTo(owner: Record<string, any>, taskId: string): boolean {
 }
 
 function messageNeedsInput(message: Record<string, any>): boolean {
-  const card = isRecord(message.card) && message.card.requestId && !message.card.answered && !message.card.dismissed && !message.card.expired;
+  const card = isRecord(message.card) && message.card.requestId && !message.card.answered && !message.card.dismissed && !message.card.expired && !message.card.quotaSwitch; // a quota-switch offer follows a turn that already failed
   const connector = isRecord(message.connector) &&
     !message.connector.dismissed &&
     !message.connector.resumed &&
     message.connector.status !== "connected";
   const secret = isRecord(message.secret) && !message.secret.provided && !message.secret.dismissed && !message.secret.superseded;
-  return Boolean(card || connector || secret);
+  const signIn = isRecord(message.signIn) && !message.signIn.done && !message.signIn.cancelled && !message.signIn.superseded;
+  return Boolean(card || connector || secret || signIn);
 }
 
 function dispatchFailedAfterLatestUser(messages: Array<Record<string, any>>): boolean {
@@ -769,20 +807,62 @@ function taskRoute(targetType: unknown, targetId: string): string {
   throw new ToolInputError("target_type must be bot or channel");
 }
 
-function sleep(ms: number, signal?: AbortSignal) {
-  return new Promise<void>((resolve, reject) => {
-    if (signal?.aborted) return reject(signal.reason ?? new Error("Request cancelled"));
-    const onAbort = () => {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
-      reject(signal?.reason ?? new Error("Request cancelled"));
-    };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
+/** The optional client send id, checked as the server checks it. */
+function sendIdArg(args: Record<string, unknown>): { sendId?: string } {
+  if (args.send_id === undefined) return {};
+  const value = stringArg(args, "send_id");
+  if (!/^[A-Za-z0-9_-]{16,80}$/.test(value)) throw new ToolInputError("send_id must be 16-80 letters, digits, - or _");
+  return { sendId: value };
+}
+
+/** What the server's 202 receipt says about a send: the message it stored,
+ * or that it waits behind the running turn. */
+function sendReceipt(receipt: unknown) {
+  const body = isRecord(receipt) ? receipt : {};
+  const message = isRecord(body.message) ? body.message : undefined;
+  return {
+    ...(message && typeof message.id === "string" ? { messageId: message.id, at: message.at } : {}),
+    ...(body.queued === true ? { queued: true, queueId: body.queueId } : {}),
+    ...(body.steered === true ? { steered: true } : {}),
+  };
+}
+
+/** Hooks a caller can give a long tool call (the openmausbot CLI streams progress). */
+export interface ToolCallHooks {
+  /** Each new state of the job a wait watches. */
+  onProgress?(job: Record<string, any>): void;
+}
+
+const FINAL_JOB_STATES = new Set(["needs-input", "completed", "failed", "stalled", "idle"]);
+
+/** Wait on a conversation's job as the server computes it (GET
+ * /api/threads/:id/job): each request is held until the job changes, so this
+ * loop asks again only when something happened or a hold ran out. */
+export async function waitForJob(
+  fetcher: (path: string, options?: RequestInit) => Promise<any>,
+  threadId: string,
+  options: { scope: "job" | "turn"; timeoutMs: number; since?: number; after?: string; signal?: AbortSignal; onProgress?: ToolCallHooks["onProgress"] },
+): Promise<{ job: Record<string, any>; timedOut: boolean }> {
+  const deadline = Date.now() + options.timeoutMs;
+  // A held request must end before this client's own request timeout does.
+  const holdMs = Math.max(500, Math.min(20_000, requestTimeoutMs() - 5_000));
+  let since = options.since;
+  let version = options.after;
+  for (;;) {
+    const wait = version === undefined ? 0 : Math.max(0, Math.min(holdMs, deadline - Date.now()));
+    const params = new URLSearchParams({ scope: options.scope, ...(since !== undefined ? { since: String(since) } : {}),
+      ...(wait > 0 ? { wait: String(wait) } : {}), ...(version !== undefined ? { version } : {}) });
+    const job: Record<string, any> = await fetcher(`/api/threads/${encodeURIComponent(threadId)}/job?${params.toString()}`,
+      options.signal ? { signal: options.signal } : {}).catch((error: unknown) => { // a server without the route; a gone conversation is itself
+      throw error instanceof LegionApiError && error.status === 404 && !/no such conversation/.test(error.message)
+        ? new LegionApiError(404, "This Legion server cannot report a conversation's job (GET /api/threads/:id/job); update it, then wait again.") : error;
+    });
+    since = Number(job.since);
+    if (job.version !== version) options.onProgress?.(job);
+    version = String(job.version);
+    if (FINAL_JOB_STATES.has(job.state) && job.version !== options.after) return { job, timedOut: false };
+    if (Date.now() >= deadline) return { job, timedOut: true };
+  }
 }
 
 export async function handleToolCall(
@@ -790,6 +870,7 @@ export async function handleToolCall(
   args: Record<string, unknown>,
   baseFetcher: (path: string, options?: RequestInit) => Promise<any> = request,
   signal?: AbortSignal,
+  hooks: ToolCallHooks = {},
 ): Promise<unknown> {
   const fetcher = signal
     ? (path: string, options: RequestInit = {}) => baseFetcher(path, { ...options, signal: options.signal ?? signal })
@@ -798,7 +879,7 @@ export async function handleToolCall(
   switch (name) {
     case "get_system_health": {
       const res = await fetcher("/api/health");
-      if (res?.app !== "openmausbot") throw new Error("The configured endpoint is not an OpenMausBot server");
+      if (res?.app !== "openmausbot") throw new Error("The configured endpoint is not an Legion server");
       return {
         status: "connected",
         endpoint: discoveredBaseUrl ?? OMB_BASE_URL,
@@ -837,15 +918,15 @@ export async function handleToolCall(
       if (!bot) throw new Error(`Bot not found: ${botId}`);
       const taskId = args.task_id === undefined ? String(bot.threadId) : idArg(args, "task_id");
       if (!taskBelongsTo(bot, taskId)) throw new Error(`Task '${taskId}' does not belong to bot '${botId}'`);
-      const busyChannel = records(state.groups).find((channel) => channel.busyBotId === botId);
+      const busyChannel = channelBusyWith(state.groups, botId);
       if (busyChannel) {
         throw new Error(`Bot '${botId}' is working in channel '${busyChannel.id}'; send to or interrupt that channel instead`);
       }
-      await fetcher(`/api/bots/${encodeURIComponent(botId)}/messages`, {
+      const receipt = await fetcher(`/api/bots/${encodeURIComponent(botId)}/messages`, {
         method: "POST",
-        body: JSON.stringify({ text, threadId: taskId }),
+        body: JSON.stringify({ text, threadId: taskId, ...sendIdArg(args) }),
       });
-      return { success: true, botId, taskId };
+      return { success: true, botId, taskId, ...sendReceipt(receipt) };
     }
 
     case "create_bot": {
@@ -869,7 +950,7 @@ export async function handleToolCall(
         }),
       });
       if (!isRecord(created?.bot) || typeof created.bot.id !== "string") {
-        throw new Error("OpenMausBot did not return the created bot");
+        throw new Error("Legion did not return the created bot");
       }
       return { success: true, bot: projectBot(created.bot) };
     }
@@ -887,7 +968,7 @@ export async function handleToolCall(
         body: JSON.stringify(patch),
       });
       if (!isRecord(result?.bot)) {
-        throw new Error("OpenMausBot did not return the updated bot");
+        throw new Error("Legion did not return the updated bot");
       }
       return { success: true, bot: projectBot(result.bot) };
     }
@@ -924,14 +1005,16 @@ export async function handleToolCall(
       if (!taskBelongsTo(channel, taskId)) {
         throw new Error(`Task '${taskId}' does not belong to channel '${channelId}'`);
       }
-      if (channel.threadId !== taskId) {
+      // A server that reports each thread's own state runs them in parallel
+      // and takes a message for any of them; an older one only the active.
+      if (channel.threadId !== taskId && !records(channel.tasks).some((task) => typeof task.working === "boolean")) {
         throw new Error(`Task '${taskId}' is not active for channel '${channelId}'; switch to it before sending`);
       }
-      await fetcher(`/api/groups/${encodeURIComponent(channelId)}/messages`, {
+      const receipt = await fetcher(`/api/groups/${encodeURIComponent(channelId)}/messages`, {
         method: "POST",
-        body: JSON.stringify({ text, threadId: taskId }),
+        body: JSON.stringify({ text, threadId: taskId, ...sendIdArg(args) }),
       });
-      return { success: true, channelId, taskId };
+      return { success: true, channelId, taskId, ...sendReceipt(receipt) };
     }
 
     case "create_channel": {
@@ -954,7 +1037,7 @@ export async function handleToolCall(
         }),
       });
       if (!isRecord(created?.group) || typeof created.group.id !== "string") {
-        throw new Error("OpenMausBot did not return the created channel");
+        throw new Error("Legion did not return the created channel");
       }
       return { success: true, channel: projectChannel(created.group) };
     }
@@ -978,7 +1061,7 @@ export async function handleToolCall(
         body: JSON.stringify(patch),
       });
       if (!isRecord(result?.group)) {
-        throw new Error("OpenMausBot did not return the updated channel");
+        throw new Error("Legion did not return the updated channel");
       }
       return { success: true, channel: projectChannel(result.group) };
     }
@@ -989,7 +1072,7 @@ export async function handleToolCall(
       const route = taskRoute(args.target_type, targetId);
       const result = await fetcher(route, { method: "POST", body: JSON.stringify(title ? { title } : {}) });
       if (!isRecord(result?.task) || typeof result.task.threadId !== "string") {
-        throw new Error("OpenMausBot did not return the created task");
+        throw new Error("Legion did not return the created task");
       }
       const activeTaskId = result.bot?.threadId ?? result.group?.threadId ?? result.task?.threadId;
       return {
@@ -1027,7 +1110,7 @@ export async function handleToolCall(
         body: JSON.stringify({ title }),
       });
       if (!isRecord(result?.task)) {
-        throw new Error("OpenMausBot did not return the renamed task");
+        throw new Error("Legion did not return the renamed task");
       }
       return {
         success: true,
@@ -1053,89 +1136,37 @@ export async function handleToolCall(
       }
       const targetId = idArg(args, "target_id");
       const timeoutSeconds = parsePositiveLimit(args.timeout_seconds, 30, 120);
-      const deadline = Date.now() + timeoutSeconds * 1_000;
-      const startupGraceDeadline = Math.min(deadline, Date.now() + 750);
-      let state = await fleet(fetcher);
-      const collection = targetType === "bot" ? records(state.bots) : records(state.groups);
-      let target = collection.find((candidate) => candidate.id === targetId);
-      if (!target) throw new Error(`${targetType === "bot" ? "Bot" : "Channel"} not found: ${targetId}`);
+      const label = targetType === "bot" ? "Bot" : "Channel";
+      const find = (state: any) => (targetType === "bot" ? records(state.bots) : records(state.groups)).find((candidate) => candidate.id === targetId);
+      const state = await fleet(fetcher);
+      const target = find(state);
+      if (!target) throw new Error(`${label} not found: ${targetId}`);
       const taskId = args.task_id === undefined ? String(target.threadId) : idArg(args, "task_id");
-      if (!taskBelongsTo(target, taskId)) {
-        throw new Error(`Task '${taskId}' does not belong to ${targetType} '${targetId}'`);
-      }
-      let sawBusy = false;
-      while (true) {
-        const liveCollection = targetType === "bot" ? records(state.bots) : records(state.groups);
-        target = liveCollection.find((candidate) => candidate.id === targetId);
-        if (!target) throw new Error(`${targetType === "bot" ? "Bot" : "Channel"} not found: ${targetId}`);
-        if (!taskBelongsTo(target, taskId)) {
-          throw new Error(`Task '${taskId}' no longer belongs to ${targetType} '${targetId}'`);
-        }
-        const projectedTarget = targetType === "bot" ? projectBot(target) : projectChannel(target);
-        const terminal = async (status: string, existingTail?: Awaited<ReturnType<typeof conversationTail>>) => {
-          const tail = existingTail ?? await conversationTail(fetcher, taskId);
-          const needsInput = tail.raw.some(messageNeedsInput);
-          const terminalStatus = status === "settled" && dispatchFailedAfterLatestUser(tail.raw)
-            ? "failed"
-            : status;
-          return {
-            status: needsInput ? "needs-user" : terminalStatus,
-            targetType,
-            targetId,
-            taskId,
-            target: projectedTarget,
-            messages: tail.messages,
-            hasMore: tail.hasMore,
-          };
-        };
-
-        if (targetType === "bot") {
-          const task = botTaskState(target, taskId);
-          const busyChannel = task === target && records(state.groups).find((channel) => channel.busyBotId === targetId);
-          if (busyChannel) {
-            throw new Error(`Bot '${targetId}' is working in channel '${busyChannel.id}'; wait on that channel instead`);
-          }
-          if (task.activity === "waiting-on-you") return terminal("needs-user");
-          if (task.activity === "dead") return terminal("failed");
-          if (task.activity === "no-signal") return terminal("stalled");
-          if (!task.busy && !task.waitingForTeammates) return terminal("settled");
-          sawBusy = true;
-        } else {
-          if (target.threadId !== taskId) return terminal("settled");
-          const tail = await conversationTail(fetcher, taskId);
-          if (tail.raw.some(messageNeedsInput)) {
-            return terminal("needs-user", tail);
-          }
-          const channelWorking = target.working === true || Boolean(target.busyBotId);
-          if (channelWorking) {
-            sawBusy = true;
-            const busyBotId = target.busyBotId;
-            if (busyBotId) {
-              const speaker = records(state.bots).find((bot) => bot.id === busyBotId);
-              if (!speaker) return terminal("stalled");
-              if (speaker.activity === "waiting-on-you") return terminal("needs-user");
-              if (speaker.activity === "dead") return terminal("failed");
-              if (speaker.activity === "no-signal") return terminal("stalled");
-            }
-          } else {
-            const latest = tail.raw.at(-1);
-            // New servers expose `working` synchronously before returning a
-            // channel send. The short grace remains only for older servers
-            // that have no operation-level field and report a user message
-            // just before their first speaker becomes busy.
-            if (sawBusy || target.working === false || latest?.role !== "user") {
-              return terminal("settled", tail);
-            }
-            if (Date.now() >= startupGraceDeadline) {
-              return terminal("settled", tail);
-            }
-          }
-        }
-
-        if (Date.now() >= deadline) return terminal("timed-out");
-        await sleep(Math.min(500, Math.max(0, deadline - Date.now())), signal);
-        state = await fleet(fetcher);
-      }
+      if (!taskBelongsTo(target, taskId)) throw new Error(`Task '${taskId}' does not belong to ${targetType} '${targetId}'`);
+      // An older server runs a bot's room turns on its selected task.
+      const busyChannel = targetType === "bot" && botTaskState(target, taskId) === target && channelBusyWith(state.groups, targetId);
+      if (busyChannel) throw new Error(`Bot '${targetId}' is working in channel '${busyChannel.id}'; wait on that channel instead`);
+      const { job, timedOut } = await waitForJob(fetcher, taskId, {
+        scope: args.scope === "turn" ? "turn" : "job", timeoutMs: timeoutSeconds * 1_000, signal, onProgress: hooks.onProgress,
+        ...(typeof args.since_ms === "number" ? { since: args.since_ms } : {}),
+        ...(args.after_version !== undefined ? { after: stringArg(args, "after_version") } : {}),
+      });
+      const tail = await conversationTail(fetcher, taskId);
+      const latest = find(await fleet(fetcher)) ?? target;
+      // `status` keeps the words callers branch on: an ended conversation is
+      // settled unless an open card waits on the person, its engine died or
+      // went silent, or its dispatch failed after the last message. `state`
+      // is the job's own reading (a lead whose work failed is failed there).
+      const activity = job.conversation?.activity;
+      const status = job.state === "needs-input" || tail.raw.some(messageNeedsInput) ? "needs-user" : timedOut ? "timed-out"
+        : activity === "dead" ? "failed" : activity === "no-signal" ? "stalled" : dispatchFailedAfterLatestUser(tail.raw) ? "failed" : "settled";
+      const jobState = status === "needs-user" ? "needs-input" : status === "timed-out" ? "timed-out"
+        : status !== "settled" && (job.state === "completed" || job.state === "idle") ? status : job.state;
+      return {
+        status, state: jobState, targetType, targetId, taskId,
+        target: targetType === "bot" ? projectBot(latest) : projectChannel(latest),
+        messages: tail.messages, hasMore: tail.hasMore, job,
+      };
     }
 
     case "set_bot_model": {
@@ -1152,7 +1183,7 @@ export async function handleToolCall(
           method: "PATCH",
           body: JSON.stringify({ modelSelection: selection, requireAvailableModel: true }),
         });
-        if (!isRecord(res?.task)) throw new Error("OpenMausBot did not return the updated task");
+        if (!isRecord(res?.task)) throw new Error("Legion did not return the updated task");
         return { success: true, botId, task: projectTask(res.task, bot.threadId) };
       }
       if (bot.busy) throw new Error("Interrupt the bot or let it finish before changing its model");
@@ -1217,7 +1248,7 @@ export async function handleToolCall(
       const taskId = args.task_id === undefined ? String(target.threadId) : idArg(args, "task_id");
       if (!taskBelongsTo(target, taskId)) throw new Error(`Task '${taskId}' does not belong to ${targetType} '${targetId}'`);
       if (targetType === "bot") {
-        const busyChannel = botTaskState(target, taskId) === target && records(current.groups).find((channel) => channel.busyBotId === targetId);
+        const busyChannel = botTaskState(target, taskId) === target && channelBusyWith(current.groups, targetId);
         if (busyChannel) {
           throw new Error(`Bot '${targetId}' is working in channel '${busyChannel.id}'; interrupt that channel instead`);
         }
@@ -1326,7 +1357,7 @@ export async function processMcpMessage(
           name: "openmausbot-mcp",
           version: "1.1.0",
         },
-        instructions: "Use bounded read tools before mutating the OpenMausBot team. Approval grants, deletion, and computer lifecycle are intentionally unavailable.",
+        instructions: "Use bounded read tools before mutating the Legion team. Approval grants, deletion, and computer lifecycle are intentionally unavailable.",
       });
     }
 
@@ -1410,8 +1441,10 @@ export async function processMcpMessage(
   }
 }
 
-// Start stdio interface when executed directly
-if (process.argv[1] && (process.argv[1].endsWith("mcp-server.ts") || process.argv[1].endsWith("mcp-server.js"))) {
+/** Serve MCP on this process's stdin and stdout until stdin closes (then
+ * resolves): what `pnpm mcp`, dist-server/mcp-server.js and `openmausbot mcp` run. */
+export function runStdio(): Promise<void> {
+  log("Legion MCP server running on stdio");
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -1437,7 +1470,7 @@ if (process.argv[1] && (process.argv[1].endsWith("mcp-server.ts") || process.arg
     });
   });
 
-  rl.on("close", async () => {
+  return new Promise((closed) => rl.on("close", async () => {
     for (const controller of activeMcpControllers) {
       controller.abort(new DOMException("Request cancelled", "AbortError"));
     }
@@ -1448,7 +1481,8 @@ if (process.argv[1] && (process.argv[1].endsWith("mcp-server.ts") || process.arg
     // JSON-RPC frame. With stdin and readline closed, Node exits naturally
     // once that buffered write has drained.
     process.exitCode = 0;
-  });
-
-  log("OpenMausBot MCP server running on stdio");
+    closed();
+  }));
 }
+
+if (process.argv[1] && (process.argv[1].endsWith("mcp-server.ts") || process.argv[1].endsWith("mcp-server.js"))) void runStdio();

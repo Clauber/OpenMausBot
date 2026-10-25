@@ -16,9 +16,8 @@ import { SkillSourcesCard } from "./SkillSourcesCard";
 import { skillBadges } from "@/lib/skill-assign";
 import { GrantBadgeChips } from "./GrantGrid";
 import type { SkillsLibrarySkillWire } from "../../shared/wire";
+import { Select } from "./Select";
 
-/** Pure browse filter: the query matches name, description and source;
- * the tag narrows to rows carrying it. Exported for the component test. */
 export function filterLibrarySkills(
   skills: readonly SkillsLibrarySkillWire[],
   query: string,
@@ -32,8 +31,6 @@ export function filterLibrarySkills(
   });
 }
 
-/** The chip row under a skill: source, version, import date, tags. Kept as a
- * pure exported piece so the test can render it without a store. */
 export function LibrarySkillMeta({ skill }: { skill: SkillsLibrarySkillWire }) {
   return (
     <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-ink-secondary">
@@ -101,8 +98,8 @@ export function SkillsSection() {
     setWorking(label);
     setError("");
     try {
-      // Read the complete current list while mutations are serialized: a
-      // second row (or a failed browse refresh) must not overwrite a prior assignment.
+      // Read the complete current list while mutations are serialized, so a second row never overwrites an earlier
+      // assignment.
       const listing = await fetch("/api/skills-library");
       const listed = (await listing.json()) as { skills?: SkillsLibrarySkillWire[]; error?: string };
       if (!listing.ok) throw new Error(listed.error ?? t("skills.library.loadError"));
@@ -340,18 +337,19 @@ export function SkillsSection() {
                   </div>
                   {bots.length > 0 && (
                     <div className="mt-1.5 flex items-center gap-1.5">
-                      <select
+                      <Select
+                        size="sm"
                         aria-label={t("skills.library.assignLabel")}
                         value={assignBot}
                         disabled={Boolean(working || importing)}
                         onChange={(e) => setAssignBot(e.target.value)}
-                        className="max-w-45 truncate rounded-lg border border-hairline/40 bg-inset px-2 py-1 text-[11.5px] text-ink"
+                        className="max-w-45"
                       >
                         <option value="">{t("skills.library.assignPickBot")}</option>
                         {bots.map((bot) => (
                           <option key={bot.id} value={bot.id}>{bot.name}</option>
                         ))}
-                      </select>
+                      </Select>
                       <button
                         type="button"
                         disabled={!assignBot || Boolean(working || importing)}

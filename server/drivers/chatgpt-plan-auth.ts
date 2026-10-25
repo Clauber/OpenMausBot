@@ -58,10 +58,8 @@ function readJson(path: string): unknown | null {
   }
 }
 
-// A file lock protects rotating refresh tokens across processes as well as instances.
-// Fail closed on an abandoned lock: never risk reusing a refresh token while its
-// previous owner might still be exchanging it. The safe recovery is reauthorization
-// after an administrator confirms the old process has stopped and removes the lock.
+// A file lock guards rotating refresh tokens across processes. An abandoned lock fails closed: never risk
+// reusing a refresh token its previous owner may still be exchanging.
 async function locked<T>(directory: string, operation: () => Promise<T>): Promise<T> {
   const path = join(directory, ".credentials.lock");
   const deadline = Date.now() + 30_000;
@@ -227,16 +225,16 @@ export class ChatGptPlanAuthController {
         callback = new URL(request.url, flow.redirectUri);
         if (callback.origin !== new URL(flow.redirectUri).origin) throw new Error("Unexpected callback origin.");
       } catch {
-        response.writeHead(400).end("Invalid sign-in callback. Return to OpenMausBot and try again."); return;
+        response.writeHead(400).end("Invalid sign-in callback. Return to Legion and try again."); return;
       }
       const actual = callback.searchParams.get("state") ?? "";
       if (request.method !== "GET" || callback.pathname !== "/auth/callback" || !flow || flow.server !== server || flow.consumed || flow.status.phase !== "waiting"
         || Buffer.byteLength(actual) !== Buffer.byteLength(flow.state) || !timingSafeEqual(Buffer.from(actual), Buffer.from(flow.state))
         || [...callback.searchParams.keys()].some((key) => callback.searchParams.getAll(key).length !== 1)) {
-        response.writeHead(400).end("Invalid or expired sign-in. Return to OpenMausBot and try again."); return;
+        response.writeHead(400).end("Invalid or expired sign-in. Return to Legion and try again."); return;
       }
       flow.consumed = true;
-      response.end("Finishing sign-in. You can return to OpenMausBot.");
+      response.end("Finishing sign-in. You can return to Legion.");
       server.close();
       void this.complete(flow, callback.searchParams);
     });
@@ -278,8 +276,7 @@ export class ChatGptPlanAuthController {
       const { response, body } = await this.exchange(new URLSearchParams({ grant_type: "authorization_code", client_id: clientId, code,
         code_verifier: flow.verifier, redirect_uri: flow.redirectUri, resource: this.resource }), flow.abort.signal);
       if (!response.ok) {
-        // A used/expired code must not create another client on retry. Keep
-        // this issued ID only in the pending attempt until identity is verified.
+          // A used or expired code must not create another client on retry.
         if (!flow.previous && body.error === "invalid_grant") this.retryClientId = clientId;
         throw new Error("ChatGPT could not finish this sign-in. Start again with a fresh authorization.");
       }
@@ -327,8 +324,7 @@ export class ChatGptPlanAuthController {
         if (record.tokens.expiresAt > Date.now()) return record.tokens.access;
         throw new Error("ChatGPT credentials cannot refresh yet. Please try again shortly.");
       }
-      // Fetch validation keys before consuming a rotating refresh token. There
-      // must be no fallible network dependency between receiving and saving its successor.
+      // Fetch validation keys first: nothing fallible between receiving a rotated token and saving its successor.
       const keys = await this.identityKeys();
       const { response, body } = await this.exchange(new URLSearchParams({ grant_type: "refresh_token", client_id: record.clientId,
         refresh_token: record.tokens.refresh, resource: this.resource }));
@@ -346,8 +342,7 @@ export class ChatGptPlanAuthController {
           if (identity.subject !== record.subject) throw new Error("ChatGPT returned a different account during renewal.");
         }
       } catch {
-        // The old refresh token was consumed. Never retry it after an invalid
-        // successor, even though the selected account/client mapping is retained.
+        // The old refresh token was consumed: never retry it after an invalid successor.
         delete record.tokens;
         this.save(record);
         throw new Error("ChatGPT renewal could not be verified. Continue with ChatGPT again in Settings.");
@@ -400,7 +395,7 @@ export class ChatGptPlanAuthController {
       } catch { /* Sign-out is local even if OpenAI is temporarily unavailable. */ }
       delete record.tokens;
       this.save(record);
-      if (!revoked) throw Object.assign(new Error("Signed out locally, but remote revocation was not confirmed. Disconnect OpenMausBot in ChatGPT Settings → Usage to end access there."), { code: "chatgpt_revocation_unconfirmed" });
+      if (!revoked) throw Object.assign(new Error("Signed out locally, but remote revocation was not confirmed. Disconnect Legion in ChatGPT Settings → Usage to end access there."), { code: "chatgpt_revocation_unconfirmed" });
     });
   }
 }

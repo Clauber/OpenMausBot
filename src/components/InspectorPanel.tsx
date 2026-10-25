@@ -27,8 +27,7 @@ type Lens = "run" | "events" | "raw";
 
 export function InspectorPanel({ bot }: { bot: Bot }) {
   const { dispatch } = useStore();
-  // Docked flush under the Windows caption corner: drop the header 16px.
-  const { padClass } = useCaptionChrome();
+  const { padClass, dragProps } = useCaptionChrome();
   const threadId = bot.threadId;
   const [lens, setLens] = useState<Lens>("run");
   const activity = useMemo(() => timelineEvents(visibleMessages(bot)), [bot]);
@@ -47,8 +46,7 @@ export function InspectorPanel({ bot }: { bot: Bot }) {
     try {
       const res = await fetch(`/api/threads/${threadId}/events?limit=400`, { signal: controller.signal });
       if (!res.ok) throw new Error(`${res.status}`);
-      // SAFETY: this same-version renderer calls the harness's typed
-      // inspector endpoint; malformed transport data is handled by catch.
+      // SAFETY: the same-version harness's typed inspector endpoint; malformed transport data is handled by catch.
       const next = (await res.json()) as InspectorPage;
       if (controller.signal.aborted) return;
       setPage(next);
@@ -61,7 +59,6 @@ export function InspectorPanel({ bot }: { bot: Bot }) {
     }
   }, [threadId]);
 
-  // history from disk on open / thread change
   useEffect(() => {
     setPage(null);
     setExpanded(new Set());
@@ -82,8 +79,7 @@ export function InspectorPanel({ bot }: { bot: Bot }) {
 
     const appendRuntime = (runtime: RuntimeEvent) => {
       setPage((prev) => {
-        // A disk refresh and replay can overlap. eventId is canonical, so a
-        // replayed entry already present in the snapshot is an exact no-op.
+        // eventId is canonical, so a replayed entry already in the snapshot is a no-op.
         if (
           prev?.entries.some(
             (entry) => entry.kind === "runtime" && entry.data.eventId === runtime.eventId,
@@ -146,7 +142,6 @@ export function InspectorPanel({ bot }: { bot: Bot }) {
   );
   const rows = useMemo(() => toRows(entries), [entries]);
 
-  // follow the tail unless the user has scrolled up to read
   useEffect(() => {
     const el = listRef.current;
     if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
@@ -170,7 +165,7 @@ export function InspectorPanel({ bot }: { bot: Bot }) {
 
   return (
     <aside aria-label="Inspector" className="animate-panel-in absolute inset-0 z-40 flex h-full min-w-0 flex-col border-l border-hairline/40 bg-panel md:static md:z-auto md:w-[min(460px,45vw)] md:shrink-0">
-      <div className={cn("flex items-center justify-between px-4 py-3", padClass)}>
+      <div {...dragProps} className={cn("flex items-center justify-between px-4 py-3", padClass)}>
         <span className="flex items-center gap-2 text-[15px] font-semibold text-ink">
           <Bug size={16} className="text-ink-secondary" /> Inspector
         </span>

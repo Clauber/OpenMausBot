@@ -1,9 +1,5 @@
-// The skin picker: built-in skins first, then the workspace's own skins, then
-// the tile that opens the editor. Each card carries a working miniature of the
-// app rendered in that skin, not a row of paint chips — a skin is judged by
-// where its colour lands, and the miniatures cannot drift from what picking
-// actually does because every block (built-in or generated) is keyed on
-// `[data-skin]`, which any element can open for its own subtree.
+// Works because styles.css keys skins on [data-skin], not :root[data-skin], so any element opens a skin context for its
+// subtree.
 import { useState } from "react";
 import { Check, Pencil, Plus, Trash2 } from "lucide-react";
 import { SKINS, applySkin, readSkin } from "@/lib/skins";
@@ -11,6 +7,10 @@ import { customSkinAttr } from "@/lib/custom-skins";
 import { api, useStore } from "@/state/store";
 import { t } from "@/lib/i18n";
 import { cn } from "@/lib/cn";
+import { setDressUp, useDressUp } from "@/lib/halloween-dress";
+import type { HalloweenBodyId } from "../../shared/halloween-bodies";
+import { MausAvatar } from "./Avatar";
+import { Switch } from "./SettingsPrimitives";
 import { Miniature } from "./SkinPickerMiniature";
 import { CustomSkinEditor } from "./CustomSkinEditor";
 import type { CustomSkin } from "../../shared/skin-recipe";
@@ -20,12 +20,34 @@ function customTagline(skin: CustomSkin): string {
   return skin.createdBy ? t("settings.skin.custom.madeBy", { name: skin.createdBy.name }) : t("settings.skin.custom.fallbackTagline");
 }
 
+const DRESS_UP_PREVIEW: ReadonlyArray<[HalloweenBodyId, "orange" | "purple" | "teal" | "red"]> = [
+  ["pumpkin", "orange"],
+  ["ghost", "purple"],
+  ["witch", "teal"],
+  ["bat", "red"],
+];
+
+export function DressUpRow() {
+  const dressed = useDressUp();
+  const title = t("settings.skin.dressUp.title");
+  return (
+    <div data-dress-up className="mt-4 flex items-center gap-4 rounded-xl border border-accent-border/40 bg-accent/[0.06] p-3">
+      <div className="flex shrink-0 -space-x-1.5" aria-hidden="true">
+        {DRESS_UP_PREVIEW.map(([body, color]) => (
+          <MausAvatar key={body} color={color} bodyId={body} size={30} animated={false} trackPointer={false} />
+        ))}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="text-[14px] font-medium text-ink">{title}</div>
+        <div className="mt-1 text-[12px] leading-relaxed text-ink-secondary">{t("settings.skin.dressUp.subtitle")}</div>
+      </div>
+      <Switch checked={dressed} aria-label={title} onClick={() => setDressUp(!dressed)} />
+    </div>
+  );
+}
+
 export function SkinPicker() {
-  // The document is the source of truth, not storage: main.tsx has already
-  // stamped it, and reading it back keeps the checkmark honest even if the
-  // skin was set some other way.
-  // SAFETY: main.tsx writes this attribute from applySkin() before the first
-  // paint, and readSkin() covers the case where it is absent or unreadable.
+  // SAFETY: main.tsx writes data-skin from applySkin() before the first paint; readSkin() covers it missing.
   const [active, setActive] = useState<string>(
     () => document.documentElement.dataset.skin || readSkin(),
   );
@@ -59,8 +81,6 @@ export function SkinPicker() {
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Four columns keep each miniature useful while allowing the collection
-          to grow into a second row; Settings already scrolls on short windows. */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {SKINS.map((skin) => {
           const selected = skin.id === active;
@@ -71,7 +91,7 @@ export function SkinPicker() {
               onClick={() => pick(skin.id)}
               aria-pressed={selected}
               className={cn(
-                "flex flex-col gap-2 rounded-xl border p-2 text-left transition-colors",
+                "cursor-pointer flex flex-col gap-2 rounded-xl border p-2 text-left transition-colors",
                 selected
                   ? "border-accent-border bg-control"
                   : "border-hairline/60 hover:border-hairline hover:bg-control/50",
@@ -91,6 +111,7 @@ export function SkinPicker() {
           );
         })}
       </div>
+      {active === "halloween" && <DressUpRow />}
 
       <div className="flex items-center justify-between gap-2">
         <div className="text-[13px] font-medium text-ink">{t("settings.skin.custom.title")}</div>

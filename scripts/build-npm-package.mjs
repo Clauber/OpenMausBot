@@ -37,7 +37,7 @@ writeFileSync(
     {
       name: "openmausbot",
       version: app.version,
-      description: "Run the OpenMausBot server anywhere and pair your devices to it",
+      description: "Run the Legion server anywhere and pair your devices to it",
       license: "Apache-2.0",
       type: "module",
       bin: { openmausbot: "cli.js" },
@@ -46,14 +46,16 @@ writeFileSync(
       // resolves its own package layout at runtime); declared here so an npm
       // install brings it along, and pre-installed below so the packed
       // tarball is self-contained even for an extraction-style deploy.
+      // @1password/sdk is never bundled: plain JS with a WebAssembly core, the
+      // same on every platform, so npm installs it beside the server.
       dependencies: {
+        "@1password/sdk": app.dependencies["@1password/sdk"],
         patchright: app.dependencies.patchright,
         "fingerprint-generator": app.dependencies["fingerprint-generator"],
         "fingerprint-injector": app.dependencies["fingerprint-injector"],
       },
       optionalDependencies: { "node-pty": app.optionalDependencies["node-pty"] },
       bundledDependencies: ["patchright", "fingerprint-generator", "fingerprint-injector", "node-pty"],
-
       engines: { node: ">=24" },
       repository: { type: "git", url: "https://github.com/milind-soni/OpenMausBot.git" },
       homepage: "https://github.com/milind-soni/OpenMausBot#readme",
@@ -90,14 +92,14 @@ conversations keep their settings.
 One optional step connects your phone, defaulting to Skip for now. Choose
 an explicitly approved managed public HTTPS endpoint protected by pairing,
 existing Tailscale, or an HTTPS reverse proxy you already configured.
-Managed access uses a separate OpenMausBot account and asks permission for
+Managed access uses a separate Legion account and asks permission for
 the public endpoint and possible connector download. The pairing page and
 basic server identity are public; chat and settings require pairing.
 Tailscale must already be installed and signed in on both devices.
 
 After the HTTPS connection is checked, scan the QR with your phone. When
 you pair an Android phone the QR is an app link, so scan it inside the
-OpenMausBot app; the web address is printed beside it if you would rather
+Legion app; the web address is printed beside it if you would rather
 use a browser. On iPhone or iPad, scan with Camera for Safari, or use the
 app's own scanner. Choose Connect on the phone; scanning alone is not a
 completed pairing. Codes
@@ -105,7 +107,7 @@ are private, single-use, and expire after five minutes. Guided phone
 access permits chat and approvals, not settings or pairing administration.
 Localhost and a bare LAN address cannot connect your phone to this server.
 
-Later launches reuse your saved choices and open OpenMausBot on this computer.
+Later launches reuse your saved choices and open Legion on this computer.
 Keep the terminal open: this is a foreground server, not a background
 service. Ctrl-C stops the server without deleting saved work. Automatic
 browser opening uses only the local address; it is skipped for SSH and
@@ -143,10 +145,21 @@ without starting a server. Completed installs and sign-ins remain; run
 
 For a service, use \`serve --tunnel\` after \`login\` for managed HTTPS,
 \`serve --tailscale\` for your tailnet, or your own reverse proxy. The
-\`login\` command signs in to an OpenMausBot account, not an AI provider;
+\`login\` command signs in to an Legion account, not an AI provider;
 it does not start the tunnel itself.
 
+Scripts, CI and other agents can drive a running workspace without a screen:
+set a team up from a file, give a bot one job and wait until it and every
+teammate it asked are done, and export what they made.
+
+\`\`\`sh
+openmausbot team apply team.yaml
+openmausbot run "Room Lead" "Rehearse the launch of https://example.com" --export ./out
+openmausbot help run       # every verb: doctor, run, wait, send, export, events, team, engine, connect, mcp
+\`\`\`
+
 [Setup guide](https://github.com/milind-soni/OpenMausBot/blob/main/docs/cli-onboarding.md)
+· [Scripts and CI](https://github.com/milind-soni/OpenMausBot/blob/main/docs/headless-cli.md)
 · [Hosting guide](https://github.com/milind-soni/OpenMausBot/blob/main/docs/self-hosting.md)
 `,
 );

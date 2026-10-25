@@ -31,7 +31,7 @@ export async function loadPatchright(): Promise<PatchrightModule> {
   try {
     return patchrightModule ??= await import("patchright");
   } catch {
-    throw new Error("the stealth browser runtime (patchright) is not installed on this server; reinstall OpenMausBot so its bundled dependencies come along, or turn off browserEngine.stealth");
+    throw new Error("the stealth browser runtime (patchright) is not installed on this server; reinstall Legion so its bundled dependencies come along, or turn off browserEngine.stealth");
   }
 }
 
@@ -47,7 +47,7 @@ export async function loadFingerprintSuite(): Promise<NonNullable<typeof suite>>
     generatorModule ??= await import("fingerprint-generator");
     injectorModule ??= await import("fingerprint-injector");
   } catch {
-    throw new Error("the stealth browser fingerprint suite is not installed on this server; reinstall OpenMausBot so its bundled dependencies come along, or turn off browserEngine.stealth");
+    throw new Error("the stealth browser fingerprint suite is not installed on this server; reinstall Legion so its bundled dependencies come along, or turn off browserEngine.stealth");
   }
   suite = {
     generator: new generatorModule.FingerprintGenerator({

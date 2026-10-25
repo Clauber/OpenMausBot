@@ -27,11 +27,46 @@ function writeWeb(text: string): Promise<boolean> {
   });
 }
 
-/** The web Clipboard API rejects unfocused, denied and insecure-context writes. */
+/** The web Clipboard API rejects unfocused, denied and insecure-context writes; then the desktop bridge runs, then a
+ * hidden-textarea execCommand("copy") for browsers without either. Never throws. */
 export async function copyText(text: string): Promise<CopyResult> {
   if (!text.trim()) return "empty";
   if (await writeWeb(text)) return "copied";
-  return "failed";
+  try {
+    if (typeof window !== "undefined" && (await window.ogb?.copyText?.(text)) === true) return "copied";
+  } catch {
+  }
+  return legacyCopy(text) ? "copied" : "failed";
+}
+
+function legacyCopy(text: string): boolean {
+  if (typeof document === "undefined" || !document.body || typeof document.execCommand !== "function") return false;
+  const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const selection = document.getSelection();
+  const ranges = selection ? Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index)) : [];
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.setAttribute("aria-hidden", "true");
+  area.tabIndex = -1;
+  // Off-screen rather than display:none, which cannot be selected.
+  area.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0;pointer-events:none";
+  document.body.append(area);
+  try {
+    area.focus({ preventScroll: true });
+    area.select();
+    area.setSelectionRange(0, text.length);
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    area.remove();
+    if (selection) {
+      selection.removeAllRanges();
+      for (const range of ranges) selection.addRange(range);
+    }
+    previous?.focus({ preventScroll: true });
+  }
 }
 
 interface CopyFeedbackOptions {

@@ -4,7 +4,7 @@ import { z } from "zod";
 
 import { MAX_MCP_SERVERS, mcpServerNameError, parseStoredMcpServer, type StoredMcpServer } from "./mcp-registry.ts";
 
-/** One connector OpenMausBot can install on request. The catalog is what
+/** One connector Legion can install on request. The catalog is what
  * ships in the repo, so it holds the NAMES of the secrets an entry needs and
  * where to look for them, never a value. Everything else (URL, command,
  * non-secret headers) is stored literally. */

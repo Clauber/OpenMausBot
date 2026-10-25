@@ -59,7 +59,7 @@ describe("Company switch planning", () => {
     expect(planCompanySwitch([bot("signed-out", "claude")], [signedOutClaude, companyMissingCli])).toEqual({ bots: [], needsAsk: [] });
   });
 
-  it("keeps bots out of the switch only when the new engine can't run their level", () => {
+  it("carries Full access through the switch and keeps Custom bots out of it", () => {
     const full = bot("full", "deleted-instance", { approvalMode: "full" });
     const custom = bot("custom", "deleted-instance", { approvalMode: "custom" });
     const fullSameEngine = bot("full-claude", "claude", { approvalMode: "full" });

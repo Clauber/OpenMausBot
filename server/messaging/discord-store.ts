@@ -1,5 +1,5 @@
 // Discord bindings, kept in <data dir>/messaging/discord.json (mode 0600: it
-// holds bot tokens). One binding ties one OpenMausBot bot to one Discord
+// holds bot tokens). One binding ties one Legion bot to one Discord
 // application's bot; the DM channels that may talk to it (and the task each
 // one lands in) hang off the binding. Loaded once, saved atomically on every
 // change. Pairing machinery is shared (see pairing.ts).

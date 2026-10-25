@@ -53,12 +53,9 @@ function requireExecutable(file) {
   }
 }
 
-// electron-updater picks its installer from resources/package-type: present
-// and reading "deb" routes to DebUpdater, absent falls back to AppImageUpdater.
-// electron/updater.mjs reads the same marker to decide whether the update is
-// applied in place or handed to the system package manager. If packaging ever
-// puts the marker in both artifacts (or neither), that routing silently
-// inverts, so pin it here where both trees are already extracted.
+// electron-updater picks its installer from resources/package-type ("deb" →
+// DebUpdater, absent → AppImageUpdater), and the app's updater reads the same
+// marker; a marker in both artifacts (or neither) silently inverts the routing.
 function requirePackageType(resources, label, expected) {
   const marker = path.join(resources, "package-type");
   const found = statSync(marker, { throwIfNoEntry: false })?.isFile()
@@ -75,7 +72,7 @@ function requireUpdaterTarget(resources, label) {
   const updateFile = path.join(resources, "app-update.yml");
   requireFile(updateFile);
   const update = readFileSync(updateFile, "utf8");
-  if (!/^owner: milind-soni$/m.test(update) || !/^repo: OpenMausBot$/m.test(update)) {
+  if (!/^owner: milind-soni$/m.test(update) || !/^repo: Legion$/m.test(update)) {
     fail(`${label} app-update.yml does not point at milind-soni/OpenMausBot`);
   }
 }
@@ -405,7 +402,7 @@ const resources = path.join(unpacked, "resources");
 requireExecutable(appImage);
 requireExecutable(executable);
 requireDirectoryMode(unpacked, 0o755);
-for (const relative of ["app.asar", "ui/index.html", "server/index.js"]) {
+for (const relative of ["app.asar", "ui/index.html", "server/index.js", "server/desktop-entry.mjs"]) {
   requireFile(path.join(resources, relative));
 }
 for (const forbidden of ["speech-helper", "cua-driver", "cua-sdk"]) {
@@ -435,7 +432,7 @@ for (const expected of [
 const extracted = mkdtempSync(path.join(tmpdir(), "omb-deb-verify-"));
 try {
   execFileSync("dpkg-deb", ["--extract", deb, extracted]);
-  const debAppRoot = path.join(extracted, "opt", "OpenMausBot");
+  const debAppRoot = path.join(extracted, "opt", "Legion");
   requireDirectoryMode(debAppRoot, 0o755);
   const debResources = path.join(debAppRoot, "resources");
   // Routes the in-app updater to the package-manager hand-off.
@@ -471,8 +468,8 @@ try {
   requireFile(scalableIcon);
   const desktop = readFileSync(desktopFile, "utf8");
   for (const expected of [
-    "Name=OpenMausBot",
-    "Exec=/opt/OpenMausBot/openmausbot %U",
+    "Name=Legion",
+    "Exec=/opt/Legion/openmausbot %U",
     "Icon=openmausbot",
     "StartupWMClass=com.openmausbot.app",
     "Categories=Utility;",

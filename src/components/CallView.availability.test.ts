@@ -34,17 +34,18 @@ describe("call capability guidance", () => {
     }), true)).toBeNull();
   });
 
-  it("sends a hosted workspace view to the native workspace menu", () => {
-    expect(callCapabilityHelp(capabilities({
+  it("says where taking turns works on a server's page in the Mac app, with no trip there", () => {
+    const help = callCapabilityHelp(capabilities({
       available: false,
       engine: "none",
       onDevice: false,
       reasonCode: "remote-server",
-    }), false)).toEqual({
-      label: "Calls are available on This computer",
-      reason: "You're viewing a server. Calls use the microphone and on-device speech recognition on your Mac.",
-      action: "choose-local-workspace",
+    }), false);
+    expect(help).toEqual({
+      label: "Calls where you take turns work with bots on this Mac",
+      reason: "They listen with your Mac's own speech recognition, which only bots on this Mac can use.",
     });
+    expect(help).not.toHaveProperty("action");
   });
 
   // Only a Mac's own window can take turns. Elsewhere This computer can't
