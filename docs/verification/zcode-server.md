@@ -29,8 +29,9 @@ new conversation, the app-server path runs exactly as before.
 ## Turn it on and sign in
 
 ```sh
-# Enable server mode on a ZCode instance (edit its config; the instance reloads).
-# "server": true
+# Enable server mode on a ZCode instance (it reloads; bots using it must be idle).
+curl -sS -X PATCH -H 'Content-Type: application/json' -H 'Origin: http://127.0.0.1:8799' \
+  http://127.0.0.1:8799/api/instances/<instanceId> -d '{"server": true}'
 
 # Install the official server, if none is found:
 curl -sS -X POST -H 'Content-Type: application/json' -H 'Origin: http://127.0.0.1:8799' \
