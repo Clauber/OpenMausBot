@@ -798,11 +798,14 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
       if (turn.model && turn.model !== "agent-default" && !selection) {
         throw new Error(`"${turn.model}" is not a zcode model selection (expected provider/model with an optional $reasoning level). Pick a model from this engine's list.`);
       }
-      if (selection && server && turn.variant) {
+      if (selection && server) {
         const row = models.options.find((option) => option.id.replace(/\$[^$]*$/, "") === `${selection.providerId}/${selection.modelId}`);
-        if (row?.variants?.length && !row.variants.some((variant) => variant.id === turn.variant)) {
+        if (turn.variant && row?.variants?.length && !row.variants.some((variant) => variant.id === turn.variant)) {
           throw new Error(`"${turn.variant}" is not an effort level of ${row.label}. Pick one of: ${row.variants.map((variant) => variant.id).join(", ")}.`);
         }
+        // A bare provider/model id takes the level the list shows for it; setModel rejects a model that needs one without it.
+        const listed = /\$([^$]*)$/.exec(row?.id ?? "")?.[1];
+        if (!selection.options && listed) selection.options = { reasoningLevel: listed };
       }
       // The persona rides the first prompt of a fresh session: the protocol
       // has no developer-instructions slot, so the system prompt travels

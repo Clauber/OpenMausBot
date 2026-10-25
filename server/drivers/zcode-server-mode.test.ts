@@ -97,6 +97,24 @@ describe("ZcodeDriver in server mode (fake ZCode server)", () => {
     expect(recorder.events).toContainEqual(expect.objectContaining({ type: "item.completed", itemType: "tool", itemId: "call_1", ok: true }));
   });
 
+  it("mounts the harness's MCP servers and the gated custom ones on the server session", async () => {
+    await create();
+    const { turnId } = await instance.adapter.sendTurn({
+      threadId: "mcp", text: "x", cwd: scratch,
+      integrations: {
+        agents: { command: "agents-fixture", args: [], env: {} },
+        custom: { notes: { type: "http", url: "https://example.com/mcp", headers: { Authorization: "fixture-secret" } } },
+      },
+    });
+    await completed(turnId);
+    const mounts = called("createSession")[0]!.args[0].mcpServers as Array<{ name: string; command?: string; args?: string[] }>;
+    expect(mounts.map((mount) => mount.name)).toEqual(["agents", "notes"]);
+    expect(mounts.find((mount) => mount.name === "agents")!.command).toBe("agents-fixture");
+    // A custom server goes through the discovery gate, and its credential never reaches argv.
+    expect(mounts.find((mount) => mount.name === "notes")!.args![0]).toContain("mcp-gate");
+    expect(JSON.stringify(mounts.find((mount) => mount.name === "notes")!.args)).not.toContain("fixture-secret");
+  });
+
   it("resumes the server session from its cursor and ignores a CLI cursor on a new server turn", async () => {
     await create();
     const resumed = await instance.adapter.sendTurn({ threadId: "resume", text: "Continue", cwd: scratch, resumeCursor: "session_fake_9" });
@@ -133,6 +151,14 @@ describe("ZcodeDriver in server mode (fake ZCode server)", () => {
     const { turnId } = await instance.adapter.sendTurn({ threadId: "variant", text: "Fixture", cwd: scratch, model: "account:zai-start-plan/GLM-5.3-Flash$high", variant: "max" });
     await completed(turnId);
     expect(called("setModel")[0]!.args[0].model.options).toEqual({ reasoningLevel: "max" });
+  });
+
+  it("gives a bare provider/model id the level the model list shows for it", async () => {
+    await create();
+    await instance.refreshModels?.();
+    const { turnId } = await instance.adapter.sendTurn({ threadId: "bare", text: "x", cwd: scratch, model: "account:zai-start-plan/GLM-5.3-Flash" });
+    await completed(turnId);
+    expect(called("setModel")[0]!.args[0].model.options).toEqual({ reasoningLevel: "high" });
   });
 
   it("fails an effort level the model does not offer, and a bad model id, before starting a turn", async () => {

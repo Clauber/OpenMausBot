@@ -28,13 +28,18 @@ export interface ZcodeChannelClient {
   readonly closed: Promise<void>;
 }
 
-// The server sends `{ name, message, code, ... }`. Only name and a scalar code are kept: messages can carry paths and other data.
+// Only a plain configuration complaint about a model's effort level keeps its text (it names a provider/model
+// id the person configured); every other remote message can carry paths and other data.
+const SAFE_REMOTE_MESSAGE = /^Reasoning (?:level|effort) [^\n]{0,140}$/i;
+
+// The server sends `{ name, message, code, ... }`. Only name, a scalar code and a safe message are kept.
 function remoteErrorDetail(data: unknown): string {
   if (typeof data !== "object" || data === null) return "remote error";
-  const { name, code } = data as { name?: unknown; code?: unknown };
+  const { name, code, message } = data as { name?: unknown; code?: unknown; message?: unknown };
   const label = typeof name === "string" ? name : "remote error";
   const suffix = typeof code === "string" || typeof code === "number" ? ` (${code})` : "";
-  return `${label}${suffix}`.slice(0, MAX_DETAIL_LENGTH);
+  const safe = typeof message === "string" && SAFE_REMOTE_MESSAGE.test(message) ? `: ${message}` : "";
+  return `${label}${suffix}${safe}`.slice(0, MAX_DETAIL_LENGTH + 130);
 }
 
 function socketErrorDetail(error: unknown): string {

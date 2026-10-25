@@ -158,6 +158,19 @@ describe("call", () => {
     expect(error.message).not.toContain("secret");
   });
 
+  it("keeps only a plain effort-level complaint from the remote message", async () => {
+    const { fake, client } = await connected();
+    const safe = failureOf(client.call("c", "setModel"));
+    await fake.nextRequest();
+    fake.respond([ResponseType.PromiseError, 0], { name: "ZCodeProtocolClientError", message: "Reasoning level is required for fake/needs-level", code: -32603 });
+    expect((await safe).detail).toBe("ZCodeProtocolClientError (-32603): Reasoning level is required for fake/needs-level");
+
+    const hostile = failureOf(client.call("c", "other"));
+    await fake.nextRequest();
+    fake.respond([ResponseType.PromiseError, 1], { name: "Error", message: "Reasoning level is required\nsecret /home/x" });
+    expect((await hostile).detail).toBe("Error");
+  });
+
   it("maps error object responses to a fixed detail", async () => {
     const { fake, client } = await connected();
     const failure = failureOf(client.call("c", "boom"));
