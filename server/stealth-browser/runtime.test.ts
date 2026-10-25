@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  createStealthRuntime,
   forgetCdpPort,
   gpuEnv,
   isValidStealthSession,
@@ -14,6 +15,8 @@ import {
   stealthProfileDir,
 } from "./runtime.ts";
 import { buildEvasionScript } from "./evasions.ts";
+
+const CHROME = process.env.OMB_TEST_CHROME ?? "/opt/google/chrome/chrome";
 
 describe("stealth browser runtime", () => {
   let stateDir: string;
@@ -131,5 +134,29 @@ describe("stealth browser runtime", () => {
 
   it("profiles live one directory per session under the profiles dir", () => {
     expect(stealthProfileDir(profilesDir, "bot-a")).toBe(join(profilesDir, "bot-a"));
+  });
+
+  describe.skipIf(!existsSync(CHROME))("launched sessions", { timeout: 60_000 }, () => {
+    it("refuses to prepare a page it cannot give the session's identity", async () => {
+      const runtime = createStealthRuntime({ stateDir, profilesDir, debugPortBase: 19610, headed: false, solveCloudflare: false, chromeExecutable: CHROME });
+      try {
+        const context = await runtime.context("bot-a");
+        const page = context.pages()[0] ?? await context.newPage();
+        await expect(runtime.prepare("bot-a", page)).resolves.toBeUndefined();
+        await expect(runtime.prepare("bot-never-launched", page)).rejects.toThrow(/identity/);
+      } finally { await runtime.shutdown(); }
+    });
+
+    it("relaunches a session whose Chrome died instead of handing back its dead context", async () => {
+      const runtime = createStealthRuntime({ stateDir, profilesDir, debugPortBase: 19620, headed: false, solveCloudflare: false, chromeExecutable: CHROME });
+      try {
+        const dead = await runtime.context("bot-a");
+        const cdp = await dead.browser()!.newBrowserCDPSession();
+        await cdp.send("Browser.close").catch(() => {});
+        await expect.poll(async () => await runtime.context("bot-a") !== dead, { timeout: 30_000 }).toBe(true);
+        const page = await (await runtime.context("bot-a")).newPage();
+        expect(page.url()).toBe("about:blank");
+      } finally { await runtime.shutdown(); }
+    });
   });
 });

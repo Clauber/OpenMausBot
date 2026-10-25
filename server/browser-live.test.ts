@@ -1,7 +1,12 @@
 import { EventEmitter } from "node:events";
-import type { ServerResponse } from "node:http";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BrowserRuntime } from "./browser-runtime.ts";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { createServer, type Server, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { chromium, type Browser, type BrowserContext } from "patchright";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { BrowserRuntime, STEALTH_ENGINE } from "./browser-runtime.ts";
 import { BrowserActionFailedError, BrowserLive, browserRestartRefusal, browserStreamPort, normalizeBrowserLiveMessage, parseBrowserLiveAction } from "./browser-live.ts";
 import type { Cdp, CdpListeners } from "./browser-sites.ts";
 
@@ -1165,5 +1170,161 @@ describe("opening a view while the bot holds the browser", () => {
     expect(JSON.parse(nativeInput.mock.calls.at(-1)![1].body)).toEqual({ action: "stream_status" });
     execute.mockRejectedValueOnce(Object.assign(new Error("spawn /engine ENOENT"), { code: "ENOENT" }));
     await expect(a.action({ type: "reload" })).rejects.toThrow(/browser engine is installed/);
+  });
+});
+
+const CHROME = process.env.OMB_TEST_CHROME ?? "/opt/google/chrome/chrome";
+const PAGES: Record<string, string> = {
+  "/a": "<title>A</title><h1>Page A</h1>",
+  "/b": "<title>B</title><h1>Page B</h1>",
+  "/form": `<title>Form</title><button id="press" style="position: fixed; left: 0; top: 0; width: 200px; height: 100px" onclick="out.textContent = 'clicked'">Press</button>
+    <input id="field" style="position: fixed; left: 0; top: 120px; width: 200px; height: 40px"><p id="out" style="margin-top: 200px">idle</p>`,
+  "/anim": `<title>Anim</title><h1 id="count">0</h1><script>let n = 0; (function tick() { count.textContent = n++; requestAnimationFrame(tick); })();</script>`,
+  // Holds every key press in its handler for a second, so the input's answer is late.
+  "/busy": `<title>Busy</title><script>addEventListener("keydown", () => { const start = Date.now(); while (Date.now() - start < 1000); });</script>`,
+};
+
+describe.skipIf(!existsSync(CHROME))("stealth browser viewer", { timeout: 30_000 }, () => {
+  let browser: Browser;
+  let server: Server;
+  let base: string;
+  let context: BrowserContext;
+  let screenshotDir: string;
+  let closeBrowser: ReturnType<typeof vi.fn<(session: string) => Promise<boolean>>>;
+
+  beforeAll(async () => {
+    server = createServer((request, response) => {
+      response.setHeader("content-type", "text/html; charset=utf-8");
+      response.end(PAGES[request.url ?? "/"] ?? "<title>Missing</title>");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    browser = await chromium.launch({ headless: true, executablePath: CHROME });
+  });
+  afterAll(async () => {
+    await browser?.close();
+    await new Promise<void>((resolve) => server?.close(() => resolve()));
+  });
+  beforeEach(async () => {
+    context = await browser.newContext();
+    screenshotDir = mkdtempSync(join(tmpdir(), "omb-stealth-live-"));
+    closeBrowser = vi.fn(async () => true);
+    runtime = new BrowserRuntime({ stealth: { context: async () => context, prepare: async () => {}, screenshotDir: () => screenshotDir } });
+    live = new BrowserLive({ runtime, closeBrowser });
+  });
+  afterEach(async () => {
+    live.closeAll();
+    await runtime.closeAll();
+    await context.close();
+    rmSync(screenshotDir, { recursive: true, force: true });
+  });
+
+  const spec = () => ({ command: STEALTH_ENGINE, args: [], env: {} });
+  async function tool(name: string, args: Record<string, unknown> = {}): Promise<string> {
+    const result = await runtime.agentRpc("profile-s", spec(), "tools/call", { name: `agent_browser_${name}`, arguments: args }) as { content: Array<{ text: string }>; isError?: boolean };
+    expect(result.isError, `${name}: ${result.content.map((part) => part.text).join("\n")}`).not.toBe(true);
+    return result.content[0]!.text;
+  }
+  async function openStealth() {
+    const res = new ResponseFixture();
+    await live.open({ botId: "bot-s", session: "profile-s", owner: "admin-s", isCurrent: () => true, res: res as unknown as ServerResponse, spec: spec() });
+    return { res, action: (body: unknown) => live.action({ viewerId: res.id, botId: "bot-s", owner: "admin-s", body }) };
+  }
+  const lastUrl = (res: ResponseFixture) => res.events("url").at(-1)?.url;
+  const activeTab = (res: ResponseFixture) => res.events("tabs").at(-1)?.tabs.find((tab: { active: boolean }) => tab.active)?.tabId;
+
+  it("streams the engine's tab when the panel opens before any bot tool call, without agent-browser", async () => {
+    const { res, action } = await openStealth();
+    await vi.waitFor(() => expect(res.events("frame").length).toBeGreaterThan(0), { timeout: 10_000 });
+    expect(res.events("frame")[0]).toMatchObject({ seq: 1, format: "jpeg", metadata: { deviceWidth: 1280, deviceHeight: 720 } });
+    expect(res.events("status")[0]).toMatchObject({ connected: true, screencasting: true });
+    await vi.waitFor(() => expect(activeTab(res)).toBe("t1"));
+    // The bot's first call meets the same engine and the tab the panel opened.
+    expect(JSON.parse(await tool("tab_list")).tabs.map((tab: { tabId: string }) => tab.tabId)).toEqual(["t1"]);
+    await action({ type: "restart" });
+    expect(closeBrowser).toHaveBeenCalledWith("profile-s", expect.objectContaining({ command: STEALTH_ENGINE }));
+    expect(res.writableEnded).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    expect(nativeClose).not.toHaveBeenCalled();
+    expect(nativeInput).not.toHaveBeenCalled();
+    expect(SocketFixture.instances).toHaveLength(0);
+  });
+
+  it("paces frames by the view's acknowledgements", async () => {
+    await tool("open", { url: `${base}/anim` });
+    const { res, action } = await openStealth();
+    await vi.waitFor(() => expect(res.events("frame").length).toBe(2), { timeout: 10_000 });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(res.events("frame")).toHaveLength(2);
+    await action({ type: "ack", seq: 2 });
+    await vi.waitFor(() => expect(res.events("frame").length).toBeGreaterThan(2), { timeout: 5_000 });
+  });
+
+  it("moves the stream when the bot opens and switches tabs", async () => {
+    await tool("open", { url: `${base}/a` });
+    const { res, action } = await openStealth();
+    await vi.waitFor(() => expect(lastUrl(res)).toBe(`${base}/a`));
+    await tool("tab_new", { url: `${base}/b` });
+    await vi.waitFor(() => { expect(lastUrl(res)).toBe(`${base}/b`); expect(activeTab(res)).toBe("t2"); });
+    await vi.waitFor(() => expect(res.events("frame").length).toBeGreaterThan(0));
+    const frames = res.events("frame").length;
+    await action({ type: "ack", seq: res.events("frame").at(-1).seq });
+    await tool("tab_switch", { tab: "t1" });
+    await vi.waitFor(() => { expect(lastUrl(res)).toBe(`${base}/a`); expect(activeTab(res)).toBe("t1"); });
+    await vi.waitFor(() => expect(res.events("frame").length).toBeGreaterThan(frames));
+  });
+
+  it("lands a person's click and typing on the engine's active tab", async () => {
+    await tool("open", { url: `${base}/a` });
+    await tool("tab_new", { url: `${base}/form` });
+    const { action } = await openStealth();
+    await action({ type: "take" });
+    const click = (x: number, y: number) => action({ type: "input_batch", events: [
+      { type: "input_mouse", eventType: "mousePressed", x, y, button: "left", clickCount: 1 },
+      { type: "input_mouse", eventType: "mouseReleased", x, y, button: "left", clickCount: 1 },
+    ] });
+    await click(50, 50);
+    await click(50, 140);
+    await action({ type: "input_keyboard", eventType: "keyDown", key: "a", code: "KeyA", text: "a" });
+    await action({ type: "input_keyboard", eventType: "keyUp", key: "a", code: "KeyA" });
+    await action({ type: "input_keyboard", eventType: "char", text: "bc" });
+    await action({ type: "input_keyboard", eventType: "keyDown", key: "Backspace", code: "Backspace" });
+    await action({ type: "release" });
+    expect(await tool("eval", { script: "out.textContent + '|' + field.value" })).toBe(JSON.stringify("clicked|ab"));
+    expect(nativeInput).not.toHaveBeenCalled();
+  });
+
+  it("runs panel navigation and tab commands on the engine the bot uses", async () => {
+    const { res, action } = await openStealth();
+    const asPerson = async (body: unknown) => { await action({ type: "take" }); await action(body); await action({ type: "release" }); };
+    await asPerson({ type: "navigate", url: `${base}/a` });
+    expect(await tool("get_url")).toBe(`${base}/a`);
+    await asPerson({ type: "tab-new", url: `${base}/b` });
+    expect(JSON.parse(await tool("tab_list")).tabs.map((tab: { tabId: string; active: boolean }) => [tab.tabId, tab.active])).toEqual([["t1", false], ["t2", true]]);
+    await asPerson({ type: "tab-select", tabId: "t1" });
+    expect(await tool("get_url")).toBe(`${base}/a`);
+    await asPerson({ type: "tab-close", tabId: "t2" });
+    expect(JSON.parse(await tool("tab_list")).tabs.map((tab: { tabId: string }) => tab.tabId)).toEqual(["t1"]);
+    await vi.waitFor(() => expect(res.events("tabs").at(-1)?.tabs).toHaveLength(1));
+    await action({ type: "take" });
+    const refused = action({ type: "tab-close", tabId: "t9" });
+    await expect(refused).rejects.toBeInstanceOf(BrowserActionFailedError);
+    await expect(refused).rejects.toMatchObject({ settled: true });
+    await expect(action({ type: "back" })).resolves.toEqual({ ok: true });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("does not admit bot work after hand-back until the person's input is confirmed", async () => {
+    await tool("open", { url: `${base}/busy` });
+    const { action } = await openStealth();
+    await action({ type: "take" });
+    let confirmed = false;
+    const input = action({ type: "input_keyboard", eventType: "keyDown", key: "Enter", code: "Enter" }).then(() => { confirmed = true; });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await action({ type: "release" });
+    await expect(runtime.withAgentAction("profile-s", async () => true)).rejects.toThrow("paused");
+    expect(confirmed).toBe(false);
+    await input;
+    await expect(runtime.withAgentAction("profile-s", async () => true)).resolves.toBe(true);
   });
 });

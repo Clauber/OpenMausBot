@@ -2,7 +2,7 @@
 // The openmausbot headless verbs for verifying an isolated fixture. A verb that
 // changes something never runs on a server it merely found.
 import { spawn, type ChildProcess } from "node:child_process";
-import { closeSync, mkdirSync, mkdtempSync, openSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -341,6 +341,13 @@ export async function launchVerificationServer(
   if (browser) Object.assign(childEnv, {
     OMB_AGENT_BROWSER_PATH: browser.binaryPath,
     AGENT_BROWSER_EXECUTABLE_PATH: browser.executablePath,
+    // The stealth runtime spawns Xvfb by name, and a Chrome wrapper script
+    // needs its own directory's tools: add exactly those two directories.
+    PATH: [...new Set([
+      childEnv.PATH!,
+      dirname(browser.executablePath),
+      ...(parentEnv.PATH ?? "").split(delimiter).filter((dir) => dir && existsSync(join(dir, "Xvfb"))).slice(0, 1),
+    ])].join(delimiter),
   });
   if (boatFixtureApi) childEnv.OMB_BOAT_API = boatFixtureApi;
   if (taughtFixtureMcp) childEnv.OMB_TEST_TAUGHT_MCP = taughtFixtureMcp;

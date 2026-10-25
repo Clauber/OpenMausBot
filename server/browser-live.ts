@@ -2,11 +2,13 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { ServerResponse } from "node:http";
 import { promisify } from "node:util";
-import { BROWSER_VIEWPORT_ARGS, attachesToChrome, browserRuntimeEnv, ownsBrowserViewport, type BrowserRuntime } from "./browser-runtime.ts";
+import { BROWSER_VIEWPORT_ARGS, attachesToChrome, browserRuntimeEnv, ownsBrowserViewport, runsOnStealth, type BrowserRuntime } from "./browser-runtime.ts";
 import { closeBrowserSession } from "./browser-engine.ts";
 import { DialogWatch, localDevToolsUrl } from "./browser-dialogs.ts";
 import type { Cdp, CdpListeners } from "./browser-sites.ts";
 import { relay } from "./browser-relay.ts";
+import { StealthLiveStream, type LiveInput } from "./stealth-browser/live.ts";
+import type { StealthBrowserEngine } from "./stealth-browser/engine.ts";
 import { BROWSER_HELD_ELSEWHERE } from "../shared/browser-held.ts";
 
 const execute = promisify(execFile);
@@ -246,7 +248,9 @@ interface OpenOptions {
 }
 interface Viewer extends OpenOptions {
   id: string;
-  socket?: WebSocket;
+  socket?: WebSocket | StealthLiveStream;
+  /** A stealth session's view: its in-process engine's screencast, input and commands instead of agent-browser's stream. */
+  stealth?: StealthLiveStream;
   closed: boolean;
   blocked: boolean;
   heartbeat?: NodeJS.Timeout;
@@ -443,17 +447,16 @@ export class BrowserLive {
    * Only a release the browser does not confirm keeps the restart barrier. */
   private async releaseHeld(viewer: Viewer): Promise<void> {
     if (!viewer.pressedKeys.size && !viewer.pressedButtons.size) return;
-    const port = viewer.port;
-    if (!port || !this.runtime.canControl(viewer.session, viewer.id)) { this.abandonPressedInput(viewer); return; }
+    if ((!viewer.port && !viewer.stealth) || !this.runtime.canControl(viewer.session, viewer.id)) { this.abandonPressedInput(viewer); return; }
     await this.runtime.withHumanAction(viewer.session, viewer.id, async () => {
       const unconfirmed = () => new BrowserInputUnconfirmedError();
       for (const [code, key] of viewer.pressedKeys) {
-        if (!await this.sendInput(viewer, port, { action: "input_keyboard", type: "keyUp", key, ...(code === key ? {} : { code }) }, true)) throw unconfirmed();
+        if (!await this.sendInput(viewer, { action: "input_keyboard", type: "keyUp", key, ...(code === key ? {} : { code }) }, true)) throw unconfirmed();
         viewer.pressedKeys.delete(code);
       }
       for (const button of viewer.pressedButtons) {
         const release = { action: "input_mouse", type: "mouseReleased", ...viewer.pointer, button, clickCount: 1, modifiers: 0, deltaX: 0, deltaY: 0 };
-        if (!await this.sendInput(viewer, port, release, true)) throw unconfirmed();
+        if (!await this.sendInput(viewer, release, true)) throw unconfirmed();
         viewer.pressedButtons.delete(button);
       }
     }).catch(() => undefined);
@@ -558,6 +561,19 @@ export class BrowserLive {
     return port;
   }
 
+  /** A stealth session's engine, the one its bot's tools use, started here when the panel opens first. */
+  private async stealthEngine(viewer: Viewer): Promise<StealthBrowserEngine> {
+    await this.runtime.settled(viewer.session);
+    return this.runtime.stealthEngine(viewer.session, { command: viewer.spec.command, args: [...viewer.spec.args ?? []], env: { ...viewer.spec.env } });
+  }
+
+  /** A person's tab or navigation command, queued on the stealth engine with the bot's own calls. */
+  private async stealthCommand(viewer: Viewer, stealth: StealthLiveStream, args: string[]): Promise<void> {
+    const result = await stealth.command(args);
+    if (!this.current(viewer)) throw new BrowserLiveError("This browser view is no longer available.", 409);
+    if (result.isError) throw new BrowserActionFailedError(args);
+  }
+
   private async connectWhenFree(viewer: Viewer): Promise<number> {
     const deadline = Date.now() + BUSY_LIMIT_MS;
     for (let attempt = 0; ; attempt++) {
@@ -586,7 +602,7 @@ export class BrowserLive {
   }
 
   private async input(viewer: Viewer, message: ObjectValue): Promise<void> {
-    if (!viewer.port) throw new BrowserLiveError("The browser stream is not connected.", 409);
+    if (!viewer.port && !viewer.stealth) throw new BrowserLiveError("The browser stream is not connected.", 409);
     let command: ObjectValue;
     const { type, eventType, ...fields } = message;
     const key = String(fields.code || fields.key);
@@ -611,7 +627,7 @@ export class BrowserLive {
     if (type === "input_mouse" && eventType === "mousePressed") viewer.pressedButtons.add(String(fields.button));
     const releases = (command.action === "input_keyboard" && eventType === "keyUp") || (type === "input_mouse" && eventType === "mouseReleased");
     let confirmed: boolean;
-    try { confirmed = await this.sendInput(viewer, viewer.port, command, releases); }
+    try { confirmed = await this.sendInput(viewer, command, releases); }
     catch (error) {
       if (error instanceof BrowserInputRefusedError) {
         if (command.action === "input_keyboard" && eventType === "keyDown") viewer.pressedKeys.delete(key);
@@ -627,7 +643,12 @@ export class BrowserLive {
   /** The relay awaits the daemon's CDP reply; a WS send is only an enqueue and cannot serve as the hand-back barrier. A single CDP
    * event the daemon refused had no effect, and a release may repeat, so each is sent once more; a press is two events. Chrome
    * holds an input that opened the page's own question until it is answered, then delivers it. */
-  private async sendInput(viewer: Viewer, port: number, command: ObjectValue, releases: boolean): Promise<boolean> {
+  private async sendInput(viewer: Viewer, command: ObjectValue, releases: boolean): Promise<boolean> {
+    // The stealth engine answers once Chrome handled the input, and it accepts the page's own questions itself.
+    // parseBrowserLiveAction validated these fields; `command` carries them in LiveInput's shape.
+    if (viewer.stealth) return viewer.stealth.input(command as LiveInput).then(() => true, () => false);
+    const port = viewer.port;
+    if (!port) return false;
     const send = () => relay(port, command, INPUT_RELAY).then((answer) => answer.success);
     const watch = this.dialogs.get(viewer.session)?.watch;
     const before = watch?.opened ?? 0;
@@ -706,7 +727,8 @@ export class BrowserLive {
     options.res.once("close", () => this.close(viewer, true, true));
     options.res.once("error", () => this.close(viewer, true, true));
     try {
-      const port = await this.connectWhenFree(viewer);
+      const engine = runsOnStealth(viewer.spec) ? await this.stealthEngine(viewer) : undefined;
+      const port = engine ? undefined : await this.connectWhenFree(viewer);
       if (!this.current(viewer)) throw new BrowserLiveError("This browser view is no longer available.", 409);
       // Before its frames flow: the person's own panel, reconnecting after its stream dropped, still holds the browser.
       const parked = this.parkedFor(viewer);
@@ -715,18 +737,19 @@ export class BrowserLive {
       viewer.port = port;
       await this.watchDialogs(viewer);
       if (!this.current(viewer)) throw new BrowserLiveError("This browser view is no longer available.", 409);
-      const socket = new WebSocket(`ws://127.0.0.1:${port}/?pacing=ack&maxFps=15`);
+      const socket = engine ? (viewer.stealth = new StealthLiveStream(engine)) : new WebSocket(`ws://127.0.0.1:${port}/?pacing=ack&maxFps=15`);
       viewer.socket = socket;
       this.startEvents(viewer);
       viewer.waiting = false;
       this.send(viewer, { type: "ready", viewerId: viewer.id, inputBatch: INPUT_BATCH_LIMIT });
       this.control(viewer.session);
       socket.addEventListener("message", (event) => {
+        const { data } = event as MessageEvent;
         if (!this.current(viewer)) { this.close(viewer, true, true); return; }
-        if (typeof event.data !== "string" || event.data.length > MAX_BUFFER) { this.close(viewer); return; }
+        if (typeof data !== "string" || data.length > MAX_BUFFER) { this.close(viewer); return; }
         let message: ObjectValue | null;
         let raw: ObjectValue | null;
-        try { raw = object(JSON.parse(event.data)); message = normalizeBrowserLiveMessage(raw); } catch { this.close(viewer); return; }
+        try { raw = object(JSON.parse(data)); message = normalizeBrowserLiveMessage(raw); } catch { this.close(viewer); return; }
         if (!message) { if (raw?.type === "frame") this.close(viewer); return; }
         const heldBy = this.runtime.heldBy(viewer.session);
         if (heldBy && heldBy !== viewer.id && ["tabs", "url"].includes(String(message.type))) return;
@@ -833,6 +856,7 @@ export class BrowserLive {
         };
         if (action.type === "input") await take(action.message);
         else if (action.type === "inputs") { for (const message of action.messages) await take(message); }
+        else if (action.type === "command" && viewer.stealth) await this.stealthCommand(viewer, viewer.stealth, action.args);
         else if (action.type === "command") await this.command(viewer, action.args, COMMAND_TIMEOUT_MS, true).catch(async (error: unknown) => {
           throw error instanceof BrowserBusyError && viewer.port && await this.ended(viewer.port) ? new BrowserSlowActionError() : error;
         });

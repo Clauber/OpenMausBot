@@ -1,16 +1,12 @@
 // The built-in stealth browser fixture: a fingerprinted Chrome per session.
 //
 // Starts a disposable fixture server with the built-in stealth browser
-// enabled (browserEngine.stealth), has the fake engine drive a real bot turn
-// through the agent_browser tools against a loopback test page, and proves
-// from the page itself that the browser the bot drove reports the session's
-// fingerprint identity — never this Linux host's plain Chrome — and that a
-// Cloudflare challenge mock on the page is auto-clicked clear.
-//
-// When the fixture engine settles its turn without executing the tools (a
-// host-state failure this recipe detects), the same proofs run against pages
-// this script opens directly over the stealth context's CDP — the identical
-// client relationship agent-browser has — and the output says so.
+// enabled (browserEngine.stealth). The fake engine runs each scripted call on
+// the turn's own browser MCP server (`"server": "browser"`), so the bot's own
+// calls go through /api/internal/browser/mcp to the in-process stealth engine against
+// loopback test pages. From those tool results the recipe proves the page
+// reports a coherent real-Chrome identity, a mocked Cloudflare challenge is
+// auto-clicked clear, and no agent-browser process served the session.
 //
 //   OMB_VERIFY_BROWSER_BINARY=<agent-browser> OMB_VERIFY_BROWSER_CHROME=<chrome> \
 //     node --experimental-strip-types scripts/verify-browser-stealth.ts
@@ -81,15 +77,18 @@ const challengeUrl = `${origin}/__stealth-challenge`;
 const fail = (message: string): never => { throw new Error(message); };
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-// The scripted turn (used when the fixture engine executes its tools): open
-// the identity page, hold it, open the challenge page, hold it, read back.
+// The bot's turn: read the identity page, then hold the challenge page while
+// the watcher clears it, then read its status. Expected values never appear
+// in the inputs, so a result that contains them came from the page.
+const identityScript = "JSON.stringify({ ua: navigator.userAgent, platform: navigator.platform, chrome: Boolean(window.chrome), languages: navigator.languages, webdriver: navigator.webdriver })";
 process.env.FAKE_CLAUDE_TOOL_CALLS = JSON.stringify([
   { name: "agent_browser_open", input: { url: testPageUrl } },
-  { name: "agent_browser_wait_ms", input: { ms: 12_000 } },
+  { name: "agent_browser_get_text", input: { selector: "#ua" } },
+  { name: "agent_browser_eval", input: { script: identityScript } },
   { name: "agent_browser_open", input: { url: challengeUrl } },
   { name: "agent_browser_wait_ms", input: { ms: 15_000 } },
-  { name: "agent_browser_get_text", input: { selector: "#ua" } },
-]);
+  { name: "agent_browser_eval", input: { script: "document.getElementById('status')?.textContent ?? 'gone'" } },
+].map((call) => ({ ...call, server: "browser" })));
 
 const fixture = await launchVerificationServer(process.env, undefined, undefined, { binaryPath, executablePath });
 const url = fixture.info.url;
@@ -114,10 +113,10 @@ try {
   const sent = await api(`/api/bots/${botId}/messages`, "POST", { text: "open the test pages and read the user agent", threadId });
   if (sent.status !== 200 && sent.status !== 202) fail(`send failed: ${sent.status} ${JSON.stringify(sent.json)}`);
 
-  // The stealth context launches at the turn's first browser mount; its port
+  // The stealth context launches at the bot's first browser call; its port
   // record appears within seconds of the send.
   const stateDir = join(fixture.info.dataDir, "stealth-browser", "state");
-  for (let i = 0; i < 20 && !existsSync(join(stateDir, "debug-ports.json")); i++) {
+  for (let i = 0; i < 30 && !existsSync(join(stateDir, "debug-ports.json")); i++) {
     await sleep(1_000);
   }
   if (!existsSync(join(stateDir, "debug-ports.json"))) {
@@ -126,112 +125,67 @@ try {
   }
   const portRecord = JSON.parse(readFileSync(join(stateDir, "debug-ports.json"), "utf-8")) as Record<string, number>;
   const sessionPort = Object.values(portRecord)[0];
-  const fpName = readdirSync(stateDir).find((name) => name.endsWith("-fingerprint.json"))
-    ?? fail("the stealth browser persisted no session fingerprint");
-  void fpName;
+  const fingerprintSessions = readdirSync(stateDir).filter((name) => name.endsWith("-fingerprint.json"));
+  if (!fingerprintSessions.length) fail("the stealth browser persisted no session fingerprint");
 
-  // Did the engine really run the tools? A wait_ms(12000) turn that settles
-  // in under five seconds executed nothing; then this recipe drives the two
-  // proof pages itself over the context's CDP (the same client relationship
-  // agent-browser has) instead of failing on an environmental host issue.
-  let engineAssisted = true;
-  let transcript = "";
-  for (let i = 0; i < 30; i++) {
+  // An agent-browser process for this fixture runs with its HOME (the data dir).
+  const agentBrowserProcesses = new Set<string>();
+  const sampleAgentBrowser = (): void => {
+    for (const pid of readdirSync("/proc").filter((name) => /^\d+$/.test(name))) {
+      try {
+        const cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf-8").replaceAll("\0", " ");
+        if (!cmdline.includes("agent-browser")) continue;
+        if (readFileSync(`/proc/${pid}/environ`, "utf-8").split("\0").includes(`HOME=${fixture.info.dataDir}`)) agentBrowserProcesses.add(`${pid}: ${cmdline}`);
+      } catch { /* exited, or not ours */ }
+    }
+  };
+
+  // The turn runs the bot's six calls for real (the wait alone is 15s).
+  let toolItems: ToolItem[] = [];
+  let transcript: unknown = null;
+  for (let i = 0; i < 120 && toolItems.length < 6; i++) {
+    sampleAgentBrowser();
     await sleep(1_000);
-    transcript = JSON.stringify((await api(`/api/threads/${threadId}/messages?limit=50`)).json);
-    if (/"turnTerminal":true/.test(transcript)) break;
+    transcript = (await api(`/api/threads/${threadId}/messages?limit=50`)).json;
+    toolItems = toolItemsIn(transcript);
   }
-  const digestMatch = transcript.match(/"durationMs":(\d+)/);
-  if (digestMatch && Number(digestMatch[1]) < 5_000) {
-    engineAssisted = false;
-    console.log("note: the fixture engine settled its turn without executing tools; driving the proof pages directly over the stealth context's CDP");
+  if (toolItems.length < 6) {
+    const logTail = readFileSync(fixture.info.logPath, "utf-8").split("\n").slice(-25).join("\n");
+    fail(`the turn settled ${toolItems.length} of 6 browser calls.\ntranscript:\n${JSON.stringify(transcript).slice(-4_000)}\nserver log tail:\n${logTail}`);
   }
+  const failed = toolItems.filter((item) => item.ok === false);
+  if (failed.length) fail(`browser calls failed through the route:\n${JSON.stringify(failed, null, 2)}`);
+  const [, uaText, identityText, , , challengeText] = toolItems.map((item) => item.output);
 
-  const { chromium } = await import("patchright");
-  let browser: Awaited<ReturnType<typeof chromium.connectOverCDP>> | undefined;
-  if (engineAssisted) browser = await chromium.connectOverCDP(`http://127.0.0.1:${sessionPort}`);
-  try {
-    if (!engineAssisted) {
-      // Create the proof pages over the raw CDP HTTP endpoint, client-less —
-      // exactly what agent-browser (plain playwright) is on the real path
-      // (a patchright client strips the runtime's injected identity script
-      // from targets it attaches to). The identity page stays on its initial
-      // blank document, which the runtime's browser-wide evaluate patches;
-      // the challenge page navigates directly (the auto-click needs no
-      // identity). Then connect and read.
-      await fetch(`http://127.0.0.1:${sessionPort}/json/new`, { method: "PUT" });
-      await sleep(1_000);
-      const challengeTarget = await fetch(`http://127.0.0.1:${sessionPort}/json/new`, { method: "PUT" }).then((r) => r.json() as Promise<{ id: string }>);
-      await sleep(1_000);
-      // Navigate the challenge target through its own debugger websocket: a
-      // patchright goto would strip the runtime's injected identity script.
-      const pageWs = await fetch(`http://127.0.0.1:${sessionPort}/json/list`)
-        .then((r) => r.json() as Promise<Array<{ id: string; webSocketDebuggerUrl?: string }>>)
-        .then((targets) => targets.find((t) => t.id === challengeTarget.id)?.webSocketDebuggerUrl);
-      if (!pageWs) fail("the challenge target has no debugger websocket");
-      await navigateViaCdp(pageWs, challengeUrl);
-      browser = await chromium.connectOverCDP(`http://127.0.0.1:${sessionPort}`);
-    }
+  // The session's identity is the runtime's Windows Chrome override (UA,
+  // platform and client hints together), never this Linux host's own: the
+  // page script's #ua text and the bot's eval must both report it.
+  const cdpBrowser = await fetch(`http://127.0.0.1:${sessionPort}/json/version`).then((r) => r.json() as Promise<{ Browser?: string }>).then((b) => b.Browser ?? "");
+  const major = cdpBrowser.match(/Chrome\/(\d+)/)?.[1] ?? fail(`the stealth context reports no Chrome version: ${cdpBrowser}`);
+  const sessionIdentity = (text: string) => text.includes("Windows NT 10.0; Win64; x64") && text.includes(`Chrome/${major}.0.0.0`) && /Win32/.test(text) && !text.includes("Linux");
+  const identity = String(identityText);
+  const coherent = sessionIdentity(String(uaText)) && sessionIdentity(identity) && /\\?"webdriver\\?":false/.test(identity);
+  if (!coherent) fail(`the page did not report the session's identity:\n${uaText}\n${identity}`);
+  if (!String(challengeText).includes("cleared")) fail(`the cloudflare challenge mock was not auto-cleared (status: ${challengeText})`);
 
-    // The identity page must report the session fingerprint.
-    const deadline = Date.now() + 60_000;
-    let identity: string | null = null;
-    while (Date.now() < deadline && identity === null) {
-      for (const context of browser.contexts()) {
-        for (const page of context.pages()) {
-          // Engine-assisted: the bot opened the identity page by URL.
-          // Fallback: the blank page the runtime's browser-wide evaluate
-          // patched (the identity never needs a navigation).
-          if (engineAssisted ? !page.url().includes("__stealth-page") : !page.url().startsWith("about:blank")) continue;
-          try {
-            identity = await page.evaluate(() => JSON.stringify({
-              ua: navigator.userAgent,
-              platform: navigator.platform,
-              chrome: Boolean(window.chrome),
-              languages: navigator.languages,
-              webdriver: navigator.webdriver,
-            }));
-          } catch { /* mid-navigation */ }
-        }
-      }
-      if (identity === null) await sleep(300);
-    }
-    if (identity === null) fail("no stealth-context page to read the identity from");
-    // The identity is deliberately the REAL Chrome on this Linux host:
-    // headers, JS and rendering all agree. What must not happen is a
-    // contradiction (e.g. Windows UA with Linux platform), which is what
-    // Cloudflare sealed into tokens and rejected.
-    const coherent = identity.includes("Linux x86_64") && identity.includes("Chrome/") && identity.includes('"webdriver":false');
-    const checks: Record<string, unknown> = {
-      engineAssisted,
-      pageIdentity: JSON.parse(identity),
-      identityCoherent: coherent,
-    };
-    if (!coherent) fail(`the browser identity is not the coherent real-Chrome identity:\n${identity}`);
+  // The in-process engine served every call: no agent-browser daemon or CLI
+  // ran for this fixture, and the server never mounted one on the session.
+  sampleAgentBrowser();
+  if (agentBrowserProcesses.size) fail(`agent-browser ran for the stealth session:\n${[...agentBrowserProcesses].join("\n")}`);
+  const serverLog = readFileSync(fixture.info.logPath, "utf-8");
+  if (/mounts through|agent-browser/i.test(serverLog)) fail(`the server log shows agent-browser activity:\n${serverLog.split("\n").filter((line) => /mounts through|agent-browser/i.test(line)).join("\n")}`);
 
-    // The cloudflare step: the watcher must click the mocked challenge's
-    // checkbox and clear the page.
-    const challengeDeadline = Date.now() + 45_000;
-    let challengeStatus = "page not found";
-    while (Date.now() < challengeDeadline && challengeStatus !== "cleared") {
-      for (const context of browser.contexts()) {
-        for (const page of context.pages()) {
-          if (!page.url().includes("__stealth-challenge")) continue;
-          challengeStatus = await page.evaluate(() => document.getElementById("status")?.textContent ?? "gone").catch(() => "gone");
-        }
-      }
-      if (challengeStatus !== "cleared") await sleep(400);
-    }
-    checks.cloudflareAutoClick = challengeStatus;
-    if (challengeStatus !== "cleared") fail(`the cloudflare challenge mock was not auto-cleared (status: ${challengeStatus})`);
-    checks.cdpBrowser = await fetch(`http://127.0.0.1:${sessionPort}/json/version`).then((r) => r.json() as Promise<{ Browser?: string }>).then((b) => b.Browser);
-    checks.fingerprintSessions = readdirSync(stateDir).filter((name) => name.endsWith("-fingerprint.json"));
-    checks.portRecord = portRecord;
-    console.log(`stealth browser verification passed${engineAssisted ? "" : " (engine-unassisted mode)"}:`);
-    console.log(JSON.stringify(checks, null, 2));
-  } finally {
-    await browser.close().catch(() => {});
-  }
+  const checks = {
+    toolResults: toolItems.map((item) => ({ ok: item.ok, output: String(item.output).slice(0, 160) })),
+    identityCoherent: coherent,
+    cloudflareAutoClick: "cleared",
+    agentBrowserProcesses: 0,
+    cdpBrowser,
+    fingerprintSessions,
+    portRecord,
+  };
+  console.log("stealth browser verification passed:");
+  console.log(JSON.stringify(checks, null, 2));
 } finally {
   // Scoped to this fixture's HOME, never the operator's sessions.
   await promisify(execFile)(binaryPath, ["close", "--all"], { env: { HOME: fixture.info.dataDir, USERPROFILE: fixture.info.dataDir, PATH: process.env.PATH }, timeout: 15_000 }).catch(() => {});
@@ -239,26 +193,17 @@ try {
   testPageServer.close();
 }
 
-/** Page.navigate through the target's own debugger websocket (CDP only, no
- * client library — a patchright navigation would strip the injected
- * identity from the document that loads). */
-function navigateViaCdp(pageWs: string, url: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const socket = new WebSocket(pageWs);
-    const done = (error?: Error): void => {
-      clearTimeout(timer);
-      socket.close();
-      if (error) reject(error); else resolve();
-    };
-    const timer = setTimeout(() => done(new Error("the challenge navigation timed out")), 15_000);
-    socket.onopen = () => socket.send(JSON.stringify({ id: 1, method: "Page.navigate", params: { url } }));
-    socket.onmessage = (event) => {
-      const message = JSON.parse(String(event.data)) as { id?: number; error?: unknown };
-      if (message.id === 1) {
-        if (message.error) done(new Error(`challenge navigation failed: ${JSON.stringify(message.error)}`));
-        else setTimeout(() => done(), 1_500); // let the document settle
-      }
-    };
-    socket.onerror = () => done(new Error("the challenge page's debugger refused the connection"));
+type ToolItem = { ok?: boolean; output: string };
+/** The thread's tool activity in order, each result's text blocks joined. */
+function toolItemsIn(transcript: unknown): ToolItem[] {
+  const messages = (transcript as { messages?: Array<{ tool?: { ok?: boolean; output?: string } }> } | null)?.messages ?? [];
+  return messages.flatMap(({ tool }) => {
+    if (!tool || tool.output === undefined) return [];
+    let blocks: unknown = tool.output;
+    try { blocks = JSON.parse(tool.output); } catch { /* a plain-text preview */ }
+    const output = Array.isArray(blocks)
+      ? blocks.map((block: { text?: unknown }) => typeof block?.text === "string" ? block.text : JSON.stringify(block?.text)).join("\n")
+      : String(blocks);
+    return [{ ok: tool.ok, output }];
   });
 }

@@ -1,9 +1,12 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { chromium, type Browser, type BrowserContext } from "patchright";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { addHeldSecretScrubber, HELD_SECRET_MASK } from "../shared/redact.ts";
-import { BROWSER_CALL_DEFAULTS, BROWSER_HOVER_TOOL, BROWSER_RESTART_TOOL, BROWSER_UPLOAD_TOOL, BrowserRuntime, TransportError, browserRuntimeEnv, formatBrowserTiming, type BrowserSpawnSpec, type BrowserTiming } from "./browser-runtime.ts";
+import { BROWSER_CALL_DEFAULTS, BROWSER_HOVER_TOOL, BROWSER_RESTART_TOOL, BROWSER_UPLOAD_TOOL, BrowserRuntime, STEALTH_ENGINE, TransportError, browserRuntimeEnv, formatBrowserTiming, type BrowserSpawnSpec, type BrowserTiming } from "./browser-runtime.ts";
 import { HARNESS_CALL_BUDGET_MS, HARNESS_PROXY_TIMEOUT_MS } from "./harness-budget.ts";
 import { RelayPorts } from "./browser-relay.ts";
 import { BrowserSteps, type StepCall, type StepContext } from "./browser-steps.ts";
@@ -1448,5 +1451,123 @@ describe("one time budget per bot call", () => {
       await value.closeAll();
       daemon.cleanup();
     }
+  });
+});
+
+const CHROME = process.env.OMB_TEST_CHROME ?? "/opt/google/chrome/chrome";
+const STEALTH_PAGES: Record<string, string> = {
+  "/form": `<title>Form</title><input type="file" id="cv"><input id="secret">
+    <div id="menu" style="width: 200px; height: 50px" onmouseenter="tip.textContent = 'Menu opened'">Menu</div><p id="tip">Closed</p>`,
+};
+
+describe.skipIf(!existsSync(CHROME))("stealth sessions", { timeout: 30_000 }, () => {
+  let browser: Browser;
+  let server: Server;
+  let base: string;
+  let context: BrowserContext;
+  let dir: string;
+  const stealthSpec = (): BrowserSpawnSpec => ({ command: STEALTH_ENGINE, args: [], env: {} });
+  const stealthRuntime = (options: ConstructorParameters<typeof BrowserRuntime>[0] = {}) => runtime({
+    requestTimeoutMs: BROWSER_CALL_DEFAULTS.requestTimeoutMs,
+    stealth: { context: async () => context, prepare: async () => {}, screenshotDir: () => dir },
+    ...options,
+  });
+  type Result = { isError?: boolean; content: Array<{ type: string; text: string }> };
+  const call = (value: BrowserRuntime, name: string, args: Record<string, unknown> = {}) =>
+    value.agentRpc("s", stealthSpec(), "tools/call", { name, arguments: args }) as Promise<Result>;
+
+  beforeAll(async () => {
+    server = createServer((request, response) => {
+      response.setHeader("content-type", "text/html; charset=utf-8");
+      response.end(STEALTH_PAGES[request.url ?? "/"] ?? "<title>Missing</title>");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    browser = await chromium.launch({ headless: true, executablePath: CHROME });
+  });
+  afterAll(async () => {
+    await browser?.close();
+    await new Promise<void>((resolve) => server?.close(() => resolve()));
+  });
+  beforeEach(async () => {
+    context = await browser.newContext();
+    dir = mkdtempSync(join(tmpdir(), "omb-stealth-runtime-"));
+  });
+  afterEach(async () => {
+    await Promise.all(runtimes.splice(0).map((value) => value.closeAll()));
+    await context.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("serves agent-browser's tools in-process, advertised as for agent-browser, without its launcher, viewport or relay", async () => {
+    const relayCommand = vi.fn(async () => ({ success: true, data: {} }));
+    const applyViewport = vi.fn(async () => true);
+    const launch = { ready: vi.fn(async () => {}), started: vi.fn(async () => {}), stopped: vi.fn() };
+    const onTiming = vi.fn();
+    const value = stealthRuntime({ relayCommand, applyViewport, launch, onTiming });
+    const listed = await value.agentRpc("s", stealthSpec(), "tools/list", {}) as { tools: Array<{ name: string }> };
+    const names = listed.tools.map((tool) => tool.name);
+    expect(names).toHaveLength(32);
+    expect(names.slice(-3)).toEqual([BROWSER_UPLOAD_TOOL, BROWSER_HOVER_TOOL, BROWSER_RESTART_TOOL]);
+    const opened = await call(value, "agent_browser_open", { url: `${base}/form` });
+    expect(opened.isError).not.toBe(true);
+    expect(opened.content.map((part) => part.text).join("\n")).toMatch(/Page observed after navigation[\s\S]*Choose File/);
+    expect(onTiming).toHaveBeenCalledWith(expect.objectContaining({ session: "s", tool: "agent_browser_open", outcome: "ok" }));
+    expect(relayCommand).not.toHaveBeenCalled();
+    expect(applyViewport).not.toHaveBeenCalled();
+    expect(launch.ready).not.toHaveBeenCalled();
+    expect(launch.started).not.toHaveBeenCalled();
+  });
+
+  it("runs upload and hover on the engine, never the daemon's relay, and says what changed on the page", async () => {
+    const relayCommand = vi.fn(async () => ({ success: true, data: {} }));
+    const value = stealthRuntime({ relayCommand });
+    const file = join(dir, "cv.txt");
+    writeFileSync(file, "hello");
+    await call(value, "agent_browser_open", { url: `${base}/form` });
+    expect((await call(value, BROWSER_UPLOAD_TOOL, { selector: "#cv", files: [file] })).isError).not.toBe(true);
+    expect((await call(value, "agent_browser_eval", { script: "cv.files[0].name" })).content[0]!.text).toBe(JSON.stringify("cv.txt"));
+    const hovered = await call(value, BROWSER_HOVER_TOOL, { selector: "#menu" });
+    expect(hovered.isError).not.toBe(true);
+    expect(hovered.content.at(-1)!.text).toMatch(/Text that appeared on the page: .*Menu opened/);
+    expect(relayCommand).not.toHaveBeenCalled();
+  });
+
+  it("fails a call that outlasts its time as an ordinary failed call: the browser is not left interrupted", async () => {
+    const value = stealthRuntime({ callBudgetMs: 3_000, followUpReserveMs: 500 });
+    await call(value, "agent_browser_open", { url: `${base}/form` });
+    const started = Date.now();
+    const late = await call(value, "agent_browser_wait_for_selector", { selector: "#never", waitTimeoutMs: 60_000 });
+    expect(late.isError).toBe(true);
+    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(value.interrupted("s")).toBe(false);
+    expect((await call(value, "agent_browser_get_url")).content[0]!.text).toBe(`${base}/form`);
+  });
+
+  it("refuses eval on the page a filled secret is held on", async () => {
+    const value = stealthRuntime();
+    await call(value, "agent_browser_open", { url: `${base}/form` });
+    await value.withSecretInput("s", stealthSpec(), async () => ({ ok: true, text: "Filled the password.", filled: ["password"], held: { url: `${base}/form`, ms: 60_000 } }));
+    const refused = await call(value, "agent_browser_eval", { script: "secret.value" });
+    expect(refused).toMatchObject({ isError: true, content: [{ text: expect.stringMatching(/^A saved password was just filled on this page/u) }] });
+  });
+
+  it("pictures the engine's tab for the preview, and only once a tool opened the browser", async () => {
+    const value = stealthRuntime();
+    const capture = vi.fn(async () => ({ png: "", format: "png" }));
+    await expect(value.previewFrame("s", capture, stealthSpec())).rejects.toThrow("no open page");
+    await call(value, "agent_browser_open", { url: `${base}/form` });
+    const frame = await value.previewFrame("s", capture, stealthSpec());
+    expect(frame).toMatchObject({ format: "jpeg", png: expect.stringMatching(/^\/9j\//) });
+    expect(capture).not.toHaveBeenCalled();
+  });
+
+  it("closes through closeBrowser on restart_browser, then reconnects on the next call", async () => {
+    const closeBrowser = vi.fn(async () => true);
+    const value = stealthRuntime({ closeBrowser });
+    await call(value, "agent_browser_open", { url: `${base}/form` });
+    expect((await call(value, BROWSER_RESTART_TOOL)).content[0]!.text).toMatch(/^Browser restarted/);
+    expect(closeBrowser).toHaveBeenCalledWith("s", expect.objectContaining({ command: STEALTH_ENGINE }));
+    expect((await call(value, "agent_browser_get_url")).content.at(-1)!.text).toBe(`${base}/form`);
   });
 });

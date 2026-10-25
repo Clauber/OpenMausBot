@@ -1,3 +1,5 @@
+import type { BrowserContext, Page } from "patchright";
+
 import { killCliTree, spawnCli } from "./procs.ts";
 import { scrubHeldSecrets } from "../shared/redact.ts";
 import { advertiseBrowserTool, DEFAULT_BROWSER_RESULT_BUDGET, describePageChange, OBSERVE_PAGE_SCRIPT, parsePageState, READ_OPEN_PAGE_ONLY, readsAroundBrowser, scrubBrowserResult, shapeBrowserToolResult, slimBrowserToolList, stripHarnessOwnedArguments, type PageState } from "./browser-tool-shape.ts";
@@ -7,11 +9,27 @@ import type { BrowserSteps, StepCall, StepContext } from "./browser-steps.ts";
 import { HARNESS_CALL_BUDGET_MS } from "./harness-budget.ts";
 import { BROWSER_CLICK_TOOL, BROWSER_CLICK_TOOL_DEFINITION, clickByDescription } from "./decider/browser-click.ts";
 import type { Decider } from "./decider/index.ts";
+import { StealthBrowserClient } from "./stealth-browser/client.ts";
+import type { StealthBrowserEngine } from "./stealth-browser/engine.ts";
 
 export interface BrowserSpawnSpec {
   command: string;
   args: string[];
   env: Record<string, string | undefined>;
+}
+
+/** A spec's command when the session's tools run in-process on the built-in stealth runtime's own patchright context
+ * (server/stealth-browser/engine.ts) instead of a spawned agent-browser: no daemon, CLI or relay serves that session. */
+export const STEALTH_ENGINE = "omb-stealth";
+export function runsOnStealth(spec: { command: string } | undefined): boolean { return spec?.command === STEALTH_ENGINE; }
+
+/** The built-in stealth runtime as a stealth session's engine reaches it (server/browser-stealth.ts). */
+export interface StealthHost {
+  context(session: string): Promise<BrowserContext>;
+  /** Resolves once the session's identity is installed on `page`; the engine awaits it before every navigation. */
+  prepare(session: string, page: Page): Promise<void>;
+  screenshotDir(session: string): string;
+  log?(line: string): void;
 }
 
 export const BROWSER_CONTROL_REFUSAL = "Browser tools are paused while a person controls this browser. Wait for them to hand control back; do not try another browser or execution tool.";
@@ -325,7 +343,7 @@ interface Gate {
   reopened: "idle" | "restart" | null;
 }
 
-type ClientEntry = { key: string; client: BrowserClient; viewport?: Promise<unknown> };
+type ClientEntry = { key: string; client: BrowserClient | StealthBrowserClient; viewport?: Promise<unknown> };
 
 /** Closes one session's native browser daemon; true only when it is gone. */
 export type CloseBrowser = (session: string, spec: BrowserSpawnSpec) => Promise<boolean>;
@@ -357,8 +375,9 @@ export class BrowserRuntime {
   /** Strips held secrets (a filled password, a one-time code) from every tool result before the bot reads it. */
   private scrub: (text: string) => string;
   private onTiming?: (timing: BrowserTiming) => void;
+  private stealth?: StealthHost;
 
-  constructor({ closeBrowser, applyViewport, launch, relayCommand, steps, scrub, onTiming, ...options }: Partial<BrowserRuntime["options"]> & { closeBrowser?: CloseBrowser; applyViewport?: ApplyViewport; launch?: BrowserLaunch; relayCommand?: RelayCommand; steps?: BrowserRuntime["steps"]; scrub?: (text: string) => string; onTiming?: (timing: BrowserTiming) => void } = {}) {
+  constructor({ closeBrowser, applyViewport, launch, relayCommand, steps, scrub, onTiming, stealth, ...options }: Partial<BrowserRuntime["options"]> & { closeBrowser?: CloseBrowser; applyViewport?: ApplyViewport; launch?: BrowserLaunch; relayCommand?: RelayCommand; steps?: BrowserRuntime["steps"]; scrub?: (text: string) => string; onTiming?: (timing: BrowserTiming) => void; stealth?: StealthHost } = {}) {
     this.options = { ...BROWSER_CALL_DEFAULTS, takeoverTimeoutMs: 15_000, idleMs: 60_000, maxPending: 16, resultBudget: DEFAULT_BROWSER_RESULT_BUDGET, recoveryCheckMs: 30_000, ...options };
     this.closeBrowser = closeBrowser ?? (async () => false);
     this.applyViewport = applyViewport;
@@ -367,6 +386,7 @@ export class BrowserRuntime {
     this.steps = steps;
     this.scrub = scrub ?? scrubHeldSecrets;
     this.onTiming = onTiming;
+    this.stealth = stealth;
   }
 
   private timed<T>(session: string, tool: string, phases: Partial<BrowserTiming>, fn: () => Promise<T>): Promise<T> {
@@ -441,15 +461,31 @@ export class BrowserRuntime {
 
   /** agent-browser runs one command at a time, and a frame behind a stuck action stays queued past its own timeout (0.37.0:
    * 27 frames during a 120 s stuck click kept it busy two more minutes), so frames are skipped while an action runs. */
-  async previewFrame<T>(session: string, capture: () => Promise<T>): Promise<T> {
+  async previewFrame<T>(session: string, capture: () => Promise<T>, spec?: { command: string }): Promise<T> {
     if (this.gate(session).agents > 0 || this.lanes.held(session)) throw new Error("The browser is busy with an agent action.");
     const phases: Partial<BrowserTiming> = {};
     return this.timed(session, "preview_frame", phases, () => this.agentAction(session, async () => {
-      const frame = (this.steps?.recentFrame(session) as T | null | undefined) ?? await capture();
+      const frame = (this.steps?.recentFrame(session) as T | null | undefined) ?? await (runsOnStealth(spec) ? this.stealthFrame(session) as Promise<T> : capture());
       const png = (frame as { png?: unknown } | null)?.png;
       if (typeof png === "string") phases.chars = png.length;
       return frame;
     }, false));
+  }
+
+  /** A stealth session's picture, of the tab its engine is on; like agent-browser's, it never starts the browser. */
+  private async stealthFrame(session: string): Promise<{ png: string; format: "jpeg" }> {
+    const client = this.clients.get(session)?.client;
+    if (!(client instanceof StealthBrowserClient)) throw new Error("the browser has no open page to picture");
+    const page = await (await client.liveEngine()).livePage();
+    return { png: (await page.screenshot({ type: "jpeg", quality: 80, timeout: 12_000 })).toString("base64"), format: "jpeg" };
+  }
+
+  /** A stealth session's in-process engine, for the Browser panel and fill_login; created here when they come first. */
+  async stealthEngine(session: string, spec: BrowserSpawnSpec): Promise<StealthBrowserEngine> {
+    if (this.gate(session).closing) throw new Error("The browser is closing. Try again shortly.");
+    const { client } = this.connect(session, spec);
+    if (!(client instanceof StealthBrowserClient)) throw new Error("This browser does not run on the stealth engine.");
+    return client.liveEngine();
   }
 
   /** Every tool result, recovery notes included, is scrubbed of held secrets. */
@@ -484,6 +520,8 @@ export class BrowserRuntime {
     try { outcome = await Promise.race([work, late]); } finally { clearTimeout(timer); }
     if (outcome !== LATE) return outcome;
     if (method !== "tools/call") throw new TransportError("The browser did not answer in time.");
+    // The stealth engine bounds and serializes its own calls, so a late one is an ordinary failure: the next call queues behind it.
+    if (runsOnStealth(this.gate(session).spec)) return { isError: true, content: [{ type: "text", text: `The browser did not answer this ${call} call in time. Check the page with agent_browser_get_url or agent_browser_snapshot before repeating it.` }] };
     this.latchLostCall(session, call);
     return this.gate(session).lostCall === null ? stuckBrowserToolError() : lostCallToolError(call);
   }
@@ -514,22 +552,25 @@ export class BrowserRuntime {
       return url === null ? stillBusyToolError(lostCall) : recoveredResult(lostCall, url);
     }
     const followUpMs = () => Math.min(this.options.requestTimeoutMs, deadline - Date.now());
+    // A stealth engine that stopped answering is gone (its client reconnects on the next call), never a call still running.
+    const stealth = runsOnStealth(spec);
     const phases: Partial<BrowserTiming> = {};
     const invoke = async () => {
       const launchStarted = performance.now();
       let dispatched = false;
-      if (method === "tools/call") await this.launchReady(spec);
+      // The stealth runtime launches and sizes its own Chrome (1280x720): agent-browser's launcher and viewport do not apply.
+      if (method === "tools/call" && !stealth) await this.launchReady(spec);
       const entry = this.connect(session, spec);
       await entry.client.ready;
       beforeDispatch?.();
       if (method === "tools/call" && this.gate(session).owner !== null) throw new Error(BROWSER_CONTROL_REFUSAL);
-      if (method === "tools/call" && this.applyViewport) {
+      if (method === "tools/call" && this.applyViewport && !stealth) {
         entry.viewport ??= this.applyViewport(spec).catch(() => undefined);
         await entry.viewport;
         beforeDispatch?.();
         if (this.gate(session).owner !== null) throw new Error(BROWSER_CONTROL_REFUSAL);
       }
-      if (method === "tools/call" && this.launch && toolName !== "agent_browser_close") {
+      if (method === "tools/call" && this.launch && toolName !== "agent_browser_close" && !stealth) {
         await this.launched(session, spec);
         beforeDispatch?.();
         if (this.gate(session).owner !== null) throw new Error(BROWSER_CONTROL_REFUSAL);
@@ -542,7 +583,8 @@ export class BrowserRuntime {
         // Launch and session parameters OMB owns never reach the engine from a call.
         const request = method === "tools/call" ? stripHarnessOwnedArguments(params) : params;
         const args = (request as { arguments?: unknown } | null)?.arguments;
-        const call: StepCall | null = this.steps && method === "tools/call" && toolName !== undefined ? {
+        // Steps read and picture the page through agent-browser's daemon relay, which a stealth session does not have.
+        const call: StepCall | null = this.steps && method === "tools/call" && toolName !== undefined && !stealth ? {
           session, spec, tool: toolName, args: args && typeof args === "object" ? args as Record<string, unknown> : {}, ctx,
           stopped: () => gate.owner !== null || gate.uncertain || gate.closing,
           alive: () => { try { beforeDispatch?.(); return true; } catch { return false; } },
@@ -575,7 +617,8 @@ export class BrowserRuntime {
         const engineStarted = performance.now();
         if (method === "tools/call") { dispatched = true; gate.dispatched++; }
         const engineTimeoutMs = Math.max(1, Math.min(this.options.requestTimeoutMs, deadline - Date.now() - this.options.followUpReserveMs));
-        const relayed = method === "tools/call" && toolName !== undefined ? RELAYED_TOOLS.get(toolName) : undefined;
+        // The stealth engine runs upload and hover itself.
+        const relayed = method === "tools/call" && toolName !== undefined && !stealth ? RELAYED_TOOLS.get(toolName) : undefined;
         let result = relayed
           ? await this.relayTool(session, spec, relayed, args, engineTimeoutMs)
           : method === "tools/call" && toolName === BROWSER_CLICK_TOOL
@@ -644,7 +687,7 @@ export class BrowserRuntime {
       }
       catch (error) {
         // An MCP timeout cannot prove the daemon stopped an accepted action, so nothing reaches the engine until it answers or a restart.
-        if (method === "tools/call" && error instanceof TransportError) {
+        if (method === "tools/call" && error instanceof TransportError && !stealth) {
           this.latchLostCall(session, toolName ?? method);
           if (gate.lostCall !== null && toolName) gate.lostCall = toolName;
         }
@@ -658,6 +701,7 @@ export class BrowserRuntime {
     } catch (error) {
       if (error instanceof Error && error.message === BROWSER_INTERRUPTED) return stuckBrowserToolError();
       if (error instanceof TransportError && gate.uncertain && gate.lostCall !== null) return lostCallToolError(toolName ?? gate.lostCall);
+      if (error instanceof TransportError && stealth) return { isError: true, content: [{ type: "text", text: `${error.message} Call again: the next call reconnects to the browser.` }] };
       throw error;
     }
   }
@@ -665,7 +709,7 @@ export class BrowserRuntime {
   /** The harness's own tool, made of engine calls in the same session and
    * never forwarded as itself. While it is not offered it refuses, like an
    * unknown tool. */
-  private async clickByDescription(session: string, client: BrowserClient, args: unknown, timeoutMs: number, beforeDispatch?: () => void): Promise<unknown> {
+  private async clickByDescription(session: string, client: ClientEntry["client"], args: unknown, timeoutMs: number, beforeDispatch?: () => void): Promise<unknown> {
     const click = this.options.clickByDescription;
     if (!click?.ready()) {
       return { isError: true, content: [{ type: "text", text: `${BROWSER_CLICK_TOOL} is not available. Take agent_browser_snapshot and click by ref with agent_browser_click.` }] };
@@ -703,9 +747,18 @@ export class BrowserRuntime {
     const existing = this.clients.get(session);
     if (existing && existing.key !== key) throw new Error("Browser launch settings changed. Close the browser before reconnecting.");
     if (existing) return existing;
-    const client = new BrowserClient(spec, this.options.requestTimeoutMs, this.options.idleMs, this.options.maxPending, () => {
-      if (this.clients.get(session)?.client === client) this.clients.delete(session);
-    }, (params) => this.latchLostCall(session, toolNameOf(params) ?? "browser"));
+    const forget = () => { if (this.clients.get(session)?.client === client) this.clients.delete(session); };
+    let client: ClientEntry["client"];
+    if (runsOnStealth(spec)) {
+      const stealth = this.stealth;
+      if (!stealth) throw new Error("This browser runs on the stealth engine, which is not set up here.");
+      client = new StealthBrowserClient(stealth.context(session), {
+        screenshotDir: stealth.screenshotDir(session), log: (line) => stealth.log?.(line), prepare: (page) => stealth.prepare(session, page), onClose: forget,
+      });
+    } else {
+      client = new BrowserClient(spec, this.options.requestTimeoutMs, this.options.idleMs, this.options.maxPending, forget,
+        (params) => this.latchLostCall(session, toolNameOf(params) ?? "browser"));
+    }
     const entry: ClientEntry = { key, client };
     this.clients.set(session, entry);
     return entry;
