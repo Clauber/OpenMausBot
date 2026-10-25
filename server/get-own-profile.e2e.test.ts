@@ -10,7 +10,7 @@ import { launchVerificationServer, runControlOmb } from "../scripts/control-omb.
 import { waitForExit } from "./testing/cleanup.ts";
 
 it("get_own_profile reads back a just-applied soul in the same turn and only for the caller", async () => {
-  const fixture = await launchVerificationServer({}, undefined, undefined, undefined, undefined, { scripted: true });
+  const fixture = await launchVerificationServer({}, undefined, undefined, undefined, { scripted: true });
   const { url, dataDir, logPath } = fixture.info;
   const planPath = join(dataDir, "room-plan.json");
   const plans: Record<string, { turns: any[] }> = {};
