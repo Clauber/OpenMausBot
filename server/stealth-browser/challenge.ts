@@ -120,6 +120,7 @@ async function attemptClick(page: Page): Promise<boolean> {
 /** Pages the solver itself opened (the shadow page is clean patchright —
  * it must never get a watcher of its own). */
 const shadowPages = new WeakSet<Page>();
+export const isCloudflareShadowPage = (page: Page): boolean => shadowPages.has(page);
 
 /** One solver pass per page, armed on every main-frame navigation. All
  * failures are swallowed: a closed page, a vanished frame, or a checkbox
