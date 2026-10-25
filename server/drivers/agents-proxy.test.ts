@@ -639,6 +639,7 @@ describe("agents-proxy MCP surface", () => {
       "list_routines",
       "propose_routine",
       "propose_routine_action",
+      "get_own_profile",
       "propose_profile",
       "propose_model",
       "propose_team_memory",
@@ -712,7 +713,7 @@ describe("agents-proxy MCP surface", () => {
       "list_shared_computers",
       "list_bots", "list_rooms", "check_delegation", "wait_delegation", "list_threads",
       "list_team_setup",
-      "session_search", "session_read", "list_routines", "skills_list",
+      "session_search", "session_read", "list_routines", "get_own_profile", "skills_list",
     ];
     expect(list.result.tools.filter((tool: any) => tool.annotations?.readOnlyHint)
       .map((tool: any) => tool.name)).toEqual(readNames);

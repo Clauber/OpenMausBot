@@ -713,6 +713,12 @@ const toolDefinitions = (externalRuntime: boolean) => [
     },
   },
   {
+    name: "get_own_profile",
+    description:
+      "Read back your own current profile: name, title, description, standing instructions (SOUL.md), working folder (cwd), notifications, speakReplies and default model. Always the live saved values, so use it after a confirmed propose_profile or propose_model to check what applied; the SOUL.md in your system prompt is fixed at session start. Reads only you, never another bot.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {} },
+  },
+  {
     name: "propose_profile",
     description:
       "Submit user-requested changes to your own name, title, description, standing instructions (SOUL.md), working folder (cwd), or your alert and voice toggles (notifications, speakReplies). Keep SOUL.md short — who you are and the rules you never break; put step-by-step procedure into a skill instead. A Chief of Staff may pass for_bot_id (from list_bots) for a requested change to another bot in its section." + PROPOSAL_OUTCOME,

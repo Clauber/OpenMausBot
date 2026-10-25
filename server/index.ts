@@ -16514,6 +16514,17 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             .map((routine) => agentRoutine(routine, latestRuns.get(routine.id))),
         });
       }
+      if (method === "GET" && path === "/api/internal/profile") {
+        const from = internalSender;
+        if (!connectorThread(from.id, internalCapability.threadId)) {
+          return json(res, 403, { error: "source conversation does not belong to sender" });
+        }
+        // Re-read the store: a confirmed propose_profile patches the record
+        // in place, so this is the live value rather than the turn's snapshot.
+        const bot = store.bot(from.id);
+        if (!bot) return json(res, 404, { error: "no such bot" });
+        return json(res, 200, { profile: { ...profileSnapshot(bot), modelSelection: bot.modelSelection } });
+      }
       if (method === "POST" && path === "/api/internal/routine-requests") {
         const parsed = routineRequestEnvelopeSchema.safeParse(await readInternalBody());
         if (!parsed.success) return json(res, 400, { error: "invalid routine proposal" });
