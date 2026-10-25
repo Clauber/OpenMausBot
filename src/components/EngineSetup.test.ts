@@ -2,11 +2,17 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { EngineSetup, EngineUpdateNotice, needsCli, needsSignIn } from "./EngineSetup";
+import { EngineSetup, EngineUpdateNotice, installCommandFor, needsCli, needsSignIn } from "./EngineSetup";
 import { engineStatus } from "./ModelPicker";
 import { StoreProvider, type InstanceInfo } from "@/state/store";
 
 afterEach(() => vi.unstubAllGlobals());
+
+it("chooses the server installer even when the client has a different OS", () => {
+  vi.stubGlobal("window", { ogb: { platform: "win32" } });
+  expect(installCommandFor({ platform: "linux", command: { linux: "linux-install", win32: "windows-install" } })).toBe("linux-install");
+  expect(installCommandFor({ platform: "linux", command: { win32: "windows-only" } })).toBeNull();
+});
 
 function instance(snapshot: InstanceInfo["snapshot"]): InstanceInfo {
   return {
@@ -96,6 +102,31 @@ describe("engines set up with a key in Settings", () => {
     expect(markup).not.toContain("Open install in Terminal");
     expect(markup).not.toContain("config.json");
   });
+
+  it("still offers the install when a key engine's own CLI is missing, and the key once it is installed", () => {
+    vi.stubGlobal("window", { ogb: { platform: "darwin" } });
+    const dsh = (snapshot: InstanceInfo["snapshot"]): InstanceInfo => ({
+      ...instance(snapshot),
+      instanceId: "deepseek",
+      driverKind: "deepseekAgent",
+      displayName: "DeepSeek Harness",
+      install: {
+        command: { linux: "npm install -g @deepseek-ai/dsh", darwin: "npm install -g @deepseek-ai/dsh", win32: "npm install -g @deepseek-ai/dsh" },
+        docsUrl: "https://github.com/deepseek-ai/deepseek-harness",
+        needsNode: true,
+        settings: "connections",
+      },
+    });
+    const missing = renderToStaticMarkup(createElement(StoreProvider, null, createElement(EngineSetup, { instance: dsh({ state: "unavailable", reason: "dsh not found" }) })));
+    expect(missing).toContain("npm install -g @deepseek-ai/dsh");
+    expect(missing).not.toContain("needs an API key");
+    const keyless = renderToStaticMarkup(createElement(StoreProvider, null, createElement(EngineSetup, { instance: dsh({ state: "available", authenticated: false, version: "0.2.1" }) })));
+    expect(keyless).toContain("DeepSeek Harness needs an API key");
+    expect(keyless).toContain("Open API keys");
+    expect(keyless).not.toContain("Terminal");
+    // No key is saved, so nothing was rejected.
+    expect(keyless).not.toContain("rejected the saved key");
+  });
 });
 
 describe("install from Settings on the server", () => {
@@ -117,7 +148,7 @@ describe("install from Settings on the server", () => {
 
   it("offers one click on the server and keeps the terminal command behind a disclosure", () => {
     const markup = render(npmEngine({ state: "unavailable", reason: "`kimi` CLI not found" }));
-    expect(markup).toContain("Install Kimi on this server");
+    expect(markup).toContain("Install Kimi here");
     expect(markup).toContain("as its own user");
     expect(markup).toContain("Prefer a terminal?");
     expect(markup).toContain("npm install -g kimi-fixture");
@@ -126,13 +157,13 @@ describe("install from Settings on the server", () => {
 
   it("falls back to the terminal command when the server cannot install", () => {
     const markup = render(npmEngine({ state: "unavailable", reason: "`kimi` CLI not found" }, false));
-    expect(markup).not.toContain("on this server");
+    expect(markup).not.toContain("Install Kimi here");
     expect(markup).toContain("npm install -g kimi-fixture");
   });
 
   it("never offers an install when only sign-in is missing", () => {
     const markup = render(npmEngine({ state: "available", authenticated: false, version: "1.0.0" }));
-    expect(markup).not.toContain("Install Kimi on this server");
+    expect(markup).not.toContain("Install Kimi here");
     expect(markup).toContain("kimi login");
   });
 
@@ -140,10 +171,10 @@ describe("install from Settings on the server", () => {
     const update = { title: "Kimi update available", message: "Newer models need it.", command: "npm install -g kimi-fixture@latest" };
     vi.stubGlobal("window", { ogb: { platform: "linux" } });
     const withServer = renderToStaticMarkup(createElement(StoreProvider, null, createElement(EngineUpdateNotice, { update, instance: npmEngine({ state: "available", authenticated: true }) })));
-    expect(withServer).toContain("Update Kimi on this server");
+    expect(withServer).toContain("Update Kimi here");
     expect(withServer).toContain("Prefer a terminal?");
     const without = renderToStaticMarkup(createElement(StoreProvider, null, createElement(EngineUpdateNotice, { update, instance: npmEngine({ state: "available", authenticated: true }, false) })));
-    expect(without).not.toContain("on this server");
+    expect(without).not.toContain("Update Kimi here");
     expect(without).toContain("npm install -g kimi-fixture@latest");
   });
 });
@@ -158,7 +189,6 @@ describe("server device-code sign-in", () => {
     };
     const markup = renderToStaticMarkup(createElement(StoreProvider, null, createElement(EngineSetup, { instance: engine })));
     expect(markup).toContain("Continue with ChatGPT");
-    // Any OMB Cloud plan, not only Pro.
     expect(markup).toContain("separate from OMB Cloud and API billing");
     expect(markup).not.toContain("codex login");
     expect(markup).not.toContain("Device-code login");
@@ -224,9 +254,17 @@ describe("API-key engine setup", () => {
     expect(html).not.toContain("config.json");
   });
 
+  it("says so when the provider rejected the saved key", () => {
+    const html = render(keyEngine("grok", { state: "available", authenticated: false, reason: "The provider rejected this key." }));
+    expect(html).toContain("data-engine-setup-api-key");
+    expect(html).toContain("The provider rejected the saved key.");
+    expect(html).toContain("Open API keys");
+    expect(render(keyEngine("grok", { state: "unavailable" }))).not.toContain("rejected");
+  });
+
   it("has no button on a remote client, whose settings hide the keys", () => {
     const html = render(keyEngine("openai-compat", { state: "unavailable" }), { platform: "darwin", remoteClient: { active: true } });
-    expect(html).toContain("on the computer running OpenMausBot");
+    expect(html).toContain("on the computer running Legion");
     expect(html).not.toContain("Open API keys");
   });
 

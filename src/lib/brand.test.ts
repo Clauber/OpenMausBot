@@ -6,7 +6,6 @@ describe("brand", () => {
   it("derives readable ink for light and dark accents", () => {
     expect(accentInk("#1D4ED8")).toBe("#ffffff");
     expect(accentInk("#C2510A")).toBe("#ffffff");
-    // a bright blue: white text only reaches 3.7:1 on it, dark ink reaches 5.8:1
     expect(accentInk("#1084fe")).toBe("#111111");
     expect(accentInk("#ffd400")).toBe("#111111");
     expect(accentInk("#ffffff")).toBe("#111111");
@@ -36,7 +35,7 @@ describe("brand", () => {
     const hangs = (_: RequestInfo | URL, init?: RequestInit) =>
       new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted"))));
     expect((await bootstrapBrand(hangs, 20)).brand).toEqual(DEFAULT_BRAND);
-    expect(brand()).toEqual(DEFAULT_BRAND);
+    expect(brand()).toEqual({ name: "Legion" });
   });
 
   it("applies a served brand without a DOM", async () => {

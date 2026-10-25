@@ -1,8 +1,6 @@
 #!/usr/bin/env node
-// A stand-in for OpenAI's GPT-Live API, for tests and the isolated fixture.
-// It speaks just enough HTTP and RFC 6455 WebSocket for the harness:
-// POST /v1/live/sessions and GET /v1/live/sessions/:id/attach. Nothing here
-// touches audio. Self-contained on purpose (node built-ins only).
+// A stand-in for OpenAI's GPT-Live API: just enough HTTP and RFC 6455 WebSocket for POST /v1/live/sessions
+// and GET /v1/live/sessions/:id/attach. No audio.
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 import type { Socket } from "node:net";
@@ -10,6 +8,7 @@ import { pathToFileURL } from "node:url";
 
 export interface FakeLiveSession {
   id: string;
+  key: string;
   body: Record<string, unknown>;
   commands: Array<Record<string, unknown>>;
   attached: boolean;
@@ -25,16 +24,20 @@ export interface FakeOpenAiLive {
   waitForAttach(sessionId: string, timeoutMs?: number): Promise<void>;
   waitForCommand(sessionId: string, match: (command: Record<string, unknown>) => boolean, timeoutMs?: number): Promise<Record<string, unknown>>;
   dropSideband(sessionId: string): void;
+  /** After a session.close the fake answers session.closed, then keeps the
+   * socket open this long (default 0) so a test can send transcript that trails the end. */
+  setCloseLinger(ms: number): void;
+  /** The voice calls a tool (ask_compute): sends session.tool_call.created. */
+  callTool(sessionId: string, name: string, args: Record<string, unknown>, id?: string): string;
+  /** The harness's answer to a tool call, parsed from its output. */
+  waitForToolOutput(sessionId: string, toolCallId: string, timeoutMs?: number): Promise<Record<string, unknown>>;
   stop(): Promise<void>;
 }
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-/** An SDP answer to `offer` that a real WebRTC client (browser, simulator,
- * emulator) accepts in setRemoteDescription, so it reaches its "live" state
- * against this fake. Media never connects: nothing listens on the one host
- * candidate. Audio answers with the offer's first codec, the data channel
- * with the offer's SCTP settings, anything else is rejected (port 0). */
+/** An SDP answer a real WebRTC client accepts in setRemoteDescription. Media never connects; audio takes the
+ * offer's first codec, the data channel its SCTP settings, anything else port 0. */
 export function fakeAnswerSdp(offer: string): string {
   const lines = offer.split(/\r?\n/).filter(Boolean);
   const firstMedia = lines.findIndex((line) => line.startsWith("m="));
@@ -137,6 +140,8 @@ export async function startFakeOpenAiLive(options: { port?: number; closeOnReque
   let nextAttachRefusal: number | null = null;
   let counter = 0;
   let eventCounter = 0;
+  let toolCounter = 0;
+  let closeLingerMs = 0;
 
   const send = (socket: Socket, event: Record<string, unknown>) => {
     if (!socket.destroyed) socket.write(frame(0x1, Buffer.from(JSON.stringify({ event_id: `evt_${++eventCounter}`, ...event }))));
@@ -155,8 +160,8 @@ export async function startFakeOpenAiLive(options: { port?: number; closeOnReque
         return;
       }
       let body: Record<string, unknown> = {};
-      try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>; } catch { /* recorded as {} */ }
-      const session: FakeLiveSession = { id: `sess_fake_${++counter}`, body, commands: [], attached: false, closed: false };
+      try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>; } catch {}
+      const session: FakeLiveSession = { id: `sess_fake_${++counter}`, key: bearer(req), body, commands: [], attached: false, closed: false };
       sessions.push(session);
       wake();
       res.writeHead(201, { "content-type": "application/json" }).end(JSON.stringify({
@@ -193,7 +198,9 @@ export async function startFakeOpenAiLive(options: { port?: number; closeOnReque
         if (command.type === "session.close" && options.closeOnRequest !== false) {
           session.closed = true;
           send(socket, { type: "session.closed", reason: "close_requested", usage: { seconds: 42 }, session: { id: session.id } });
-          socket.end(frame(0x8, Buffer.from([0x03, 0xe8])));
+          const hangUp = () => socket.end(frame(0x8, Buffer.from([0x03, 0xe8])));
+          if (closeLingerMs > 0) setTimeout(hangUp, closeLingerMs).unref();
+          else hangUp();
         }
       }
     });
@@ -236,6 +243,21 @@ export async function startFakeOpenAiLive(options: { port?: number; closeOnReque
       return waitFor(() => sessions.find((s) => s.id === sessionId)?.commands.find(match), timeoutMs, `a command on ${sessionId}`);
     },
     dropSideband(sessionId) { sockets.get(sessionId)?.destroy(); },
+    setCloseLinger(ms) { closeLingerMs = ms; },
+    callTool(sessionId, name, args, id = `call_fake_${++toolCounter}`) {
+      const socket = sockets.get(sessionId);
+      if (!socket) throw new Error(`fake GPT-Live: ${sessionId} has no sideband`);
+      send(socket, { type: "session.tool_call.created", tool_call: { id, name, arguments: JSON.stringify(args) } });
+      return id;
+    },
+    async waitForToolOutput(sessionId, toolCallId, timeoutMs = 20_000) {
+      const command = await waitFor(
+        () => sessions.find((s) => s.id === sessionId)?.commands.find((c) => c.type === "session.tool_call.output" && c.tool_call_id === toolCallId),
+        timeoutMs,
+        `the output of ${toolCallId}`,
+      );
+      return JSON.parse(String(command.output)) as Record<string, unknown>;
+    },
     async stop() {
       for (const socket of sockets.values()) socket.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));

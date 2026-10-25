@@ -1,12 +1,5 @@
-// A bot's activity: what it did, in plain words, with the outcome. The
-// receipt view — for the person who wants to know what ran while they were
-// away, not the wire-level inspector next to it.
-//
-// Nothing here is captured for the panel's sake. The harness folds the
-// thread's runtime events and the decision log into rows (server/activity.ts);
-// this only asks for them, and asks again when a turn settles.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ListChecks, RefreshCw, X } from "lucide-react";
+import { ChevronRight, ListChecks, RefreshCw, X } from "lucide-react";
 import { useStore, type Bot } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { useCaptionChrome } from "@/components/DesktopCapabilities";
@@ -17,8 +10,9 @@ import {
   type ActivityRow,
   type ChipTone,
 } from "@/lib/activity";
-import { openLiveEvents } from "@/lib/live-events";
-import type { RuntimeEvent } from "../../shared/runtime-events";
+import { listenLiveFrames } from "@/lib/live-events";
+import { t } from "@/lib/i18n";
+import { ToolDetailBody } from "@/components/ToolActivity";
 
 const LIMIT = 300;
 
@@ -31,29 +25,26 @@ const TONE_CLASS: Record<ChipTone, string> = {
 
 export function ActivityPanel({ bot }: { bot: Bot }) {
   const { dispatch } = useStore();
-  const { padClass } = useCaptionChrome();
+  const { padClass, dragProps } = useCaptionChrome();
   const [rows, setRows] = useState<ActivityRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const loadAbort = useRef<AbortController | null>(null);
 
-  const load = useCallback(async (): Promise<boolean> => {
+  const load = useCallback(async () => {
     loadAbort.current?.abort();
     const controller = new AbortController();
     loadAbort.current = controller;
     try {
       const res = await fetch(`/api/bots/${bot.id}/activity?limit=${LIMIT}`, { signal: controller.signal });
       if (!res.ok) throw new Error(`${res.status}`);
-      // SAFETY: this same-version renderer calls the harness's typed
-      // activity endpoint; malformed transport data is handled by catch.
+      // SAFETY: the same-version harness's typed activity endpoint; malformed transport data is handled by catch.
       const next = (await res.json()) as { rows: ActivityRow[] };
-      if (controller.signal.aborted) return false;
+      if (controller.signal.aborted) return;
       setRows(next.rows);
       setError(null);
-      return true;
     } catch (e) {
-      if (controller.signal.aborted) return false;
+      if (controller.signal.aborted) return;
       setError(e instanceof Error ? e.message : String(e));
-      return false;
     } finally {
       if (loadAbort.current === controller) loadAbort.current = null;
     }
@@ -65,33 +56,23 @@ export function ActivityPanel({ bot }: { bot: Bot }) {
     return () => loadAbort.current?.abort();
   }, [load]);
 
-  // Re-read when one of this bot's turns settles, or when a card is
-  // answered: both change what a row says. Own EventSource on purpose,
-  // the same way the inspector does — the store folds runtime events into
-  // chat state and does not re-emit them.
-  const threadIds = useMemo(
-    () => new Set([bot.threadId, ...(bot.tasks ?? []).map((task) => task.threadId)]),
-    [bot.threadId, bot.tasks],
-  );
+  const threadKey = JSON.stringify([bot.threadId, ...(bot.tasks ?? []).map((task) => task.threadId)]);
+  const threadIds = useMemo(() => new Set<string>(JSON.parse(threadKey)), [threadKey]);
   useEffect(() => {
     let settle: ReturnType<typeof setTimeout> | null = null;
-    const stopLive = openLiveEvents({
-      screens: false,
-      onSnapshotRequired: load,
+    const stopLive = listenLiveFrames({
+      onMissedFrames: () => void load(),
       onFrame: (frame) => {
         if (frame.kind !== "runtime") return;
-        const event = frame.event;
-        if (!event || Array.isArray(event) || Object(event) !== event) return;
-        // SAFETY: runtime stream frames are produced from the typed harness
-        // bus; this guard rejects non-object transport corruption.
-        const runtime = event as RuntimeEvent;
+        const runtime = frame.event;
         if (!threadIds.has(runtime.threadId)) return;
         if (
           runtime.type === "turn.completed" ||
           runtime.type === "runtime.error" ||
           runtime.type === "request.opened" ||
           runtime.type === "request.resolved" ||
-          runtime.type === "item.completed"
+          runtime.type === "item.completed" ||
+          (runtime.type === "item.started" && runtime.itemType === "tool")
         ) {
           if (settle) clearTimeout(settle);
           settle = setTimeout(() => void load(), 400);
@@ -113,24 +94,24 @@ export function ActivityPanel({ bot }: { bot: Bot }) {
   };
 
   return (
-    <aside aria-label={`${bot.name} activity`} className="animate-panel-in flex h-full w-[400px] max-w-full shrink-0 flex-col border-l border-hairline/40 bg-panel max-md:absolute max-md:inset-y-0 max-md:right-0 max-md:z-30">
-      <div className={cn("flex items-center justify-between px-4 py-3", padClass)}>
+    <aside aria-label={t("activity.panel.aria", { name: bot.name })} className="animate-panel-in flex h-full w-[400px] max-w-full shrink-0 flex-col border-l border-hairline/40 bg-panel max-md:absolute max-md:inset-y-0 max-md:right-0 max-md:z-30">
+      <div {...dragProps} className={cn("flex items-center justify-between px-4 py-3", padClass)}>
         <span className="flex items-center gap-2 text-[15px] font-semibold text-ink">
-          <ListChecks size={16} className="text-ink-secondary" /> Activity
+          <ListChecks size={16} className="text-ink-secondary" /> {t("activity.panel.title")}
         </span>
         <span className="flex items-center gap-1">
           <button
             onClick={() => void load()}
             className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"
-            title="Reload"
-            aria-label="Reload activity"
+            title={t("activity.panel.reload")}
+            aria-label={t("activity.panel.reload")}
           >
             <RefreshCw size={14} />
           </button>
           <button
             onClick={() => dispatch({ type: "toggleActivity", open: false })}
-            aria-label="Close Activity"
-            title="Close Activity"
+            aria-label={t("activity.panel.close")}
+            title={t("activity.panel.close")}
             className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"
           >
             <X size={18} />
@@ -139,24 +120,24 @@ export function ActivityPanel({ bot }: { bot: Bot }) {
       </div>
 
       <p className="border-b border-hairline/40 px-4 pb-3 text-[12px] text-ink-secondary">
-        Every tool {bot.name} used and every approval it asked for, newest first.
+        {t("activity.panel.subtitle", { name: bot.name })}
       </p>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {error && <div className="px-4 py-3 text-[13px] text-danger">couldn&apos;t load: {error}</div>}
+        {error && <div className="px-4 py-3 text-[13px] text-danger">{t("activity.panel.error", { message: error })}</div>}
         {rows && rows.length === 0 && !error && (
           <div className="px-4 py-6 text-[13px] text-ink-secondary">
-            Nothing yet. Once {bot.name} runs a tool or asks for an approval, it shows up here.
+            {t("activity.panel.empty", { name: bot.name })}
           </div>
         )}
-        {!rows && !error && <div className="px-4 py-6 text-[13px] text-ink-secondary">Loading…</div>}
+        {!rows && !error && <div className="px-4 py-6 text-[13px] text-ink-secondary">{t("activity.panel.loading")}</div>}
         {days.map((day) => (
           <section key={day.key}>
             <h3 className="sticky top-0 bg-panel px-4 pt-3 pb-1 text-[11px] font-semibold tracking-wide text-ink-secondary uppercase">
               {day.label}
             </h3>
             {day.rows.map((row) => (
-              <ActivityLine key={`${row.threadId}:${row.at}:${row.tool}:${row.requestId ?? ""}`} row={row} current={row.threadId === bot.threadId} onJump={() => jump(row)} />
+              <ActivityLine key={`${row.threadId}:${row.turnId ?? ""}:${row.detail?.itemId ?? `${row.at}:${row.tool}`}:${row.requestId ?? ""}`} row={row} current={row.threadId === bot.threadId} onJump={() => jump(row)} />
             ))}
           </section>
         ))}
@@ -166,14 +147,11 @@ export function ActivityPanel({ bot }: { bot: Bot }) {
 }
 
 function ActivityLine({ row, current, onJump }: { row: ActivityRow; current: boolean; onJump: () => void }) {
+  const [expanded, setExpanded] = useState(false);
   const chip = outcomeChip(row.outcome);
-  return (
-    <button
-      type="button"
-      onClick={onJump}
-      className="flex w-full items-start gap-3 border-b border-hairline/20 px-4 py-2 text-left hover:bg-raised/60"
-      title={current ? row.tool : `${row.tool} — in another task; click to open it`}
-    >
+  const lineClass = "flex w-full items-start gap-3 px-4 py-2 text-left hover:bg-raised/60";
+  const line = (
+    <>
       <span className="mt-[2px] shrink-0 tabular-nums text-[11px] text-ink-secondary">{formatActivityTime(row.at)}</span>
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-1.5 text-[13px] text-ink">
@@ -188,6 +166,38 @@ function ActivityLine({ row, current, onJump }: { row: ActivityRow; current: boo
       <span className={cn("mt-[2px] shrink-0 rounded px-1.5 py-0.5 text-[10.5px] font-medium", TONE_CLASS[chip.tone])}>
         {chip.text}
       </span>
-    </button>
+    </>
+  );
+  if (!row.detail) {
+    return (
+      <button
+        type="button"
+        onClick={onJump}
+        className={cn(lineClass, "border-b border-hairline/20")}
+        title={current ? row.tool : `${row.tool} — in another task; click to open it`}
+        data-testid="activity-row"
+      >
+        {line}
+      </button>
+    );
+  }
+  return (
+    <details onToggle={(event) => setExpanded(event.currentTarget.open)} className="group/activity border-b border-hairline/20" data-testid="activity-row">
+      <summary
+        role="button"
+        aria-expanded={expanded}
+        title={row.tool}
+        className={cn(lineClass, "cursor-pointer list-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent [&::-webkit-details-marker]:hidden")}
+      >
+        {line}
+        <ChevronRight size={13} className="mt-[3px] shrink-0 text-ink-secondary group-open/activity:rotate-90" aria-hidden="true" />
+      </summary>
+      {!current && (
+        <button type="button" onClick={onJump} className="mx-4 mb-1 rounded-md px-2 py-1 text-[12px] font-medium text-accent hover:bg-raised">
+          Open this task&apos;s chat
+        </button>
+      )}
+      <ToolDetailBody tool={row.detail} label={row.label} />
+    </details>
   );
 }

@@ -1,13 +1,10 @@
-// A screenshot in a 1:1 chat loads from the image route, never from inline
-// pixels: live frames carry none, and neither does the paged transcript the
-// desktop hydrates from after a reload.
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import type { AppState, Bot, InstanceInfo, Message } from "@/state/store";
 
 vi.hoisted(() => {
-  vi.stubGlobal("window", {});
+  vi.stubGlobal("window", { location: { hash: "" } });
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
 });
 vi.mock("@/state/store", async (importOriginal) => {
@@ -22,7 +19,7 @@ vi.mock("./DesktopCapabilities", async (importOriginal) => ({
   useDesktopCapabilities: () => ({ capabilities: { dictation: { available: false }, host: { packaged: true, platform: "other" }, localComputer: { available: false } }, ready: true }),
 }));
 vi.mock("@/lib/analytics", () => ({ track: vi.fn() }));
-vi.mock("./ModelPicker", () => ({ ModelPicker: () => null }));
+vi.mock("./ModelPicker", () => ({ ModelPicker: () => null, ThinkingPicker: () => null }));
 
 const { ChatView } = await import("./ChatView");
 const { initialState, reducer } = await import("@/state/store");

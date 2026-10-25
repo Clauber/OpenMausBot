@@ -5,15 +5,33 @@ Ask a bot in ordinary language, for example:
 > Prepare a report at 9 am on the first of every month, in Asia/Kolkata.
 
 The bot turns calendar timing into a cron expression, and OpenMausBot validates
-it. The existing confirmation card shows the rule, its timezone and the next
-three dates. Nothing is scheduled until you confirm. The scheduler wakes the
-bot at the matching time; no model runs in the background to check the date.
+it. The change applies at once; its card shows the rule, its timezone and the
+next three dates, with Edit, Pause and Undo. The scheduler wakes the bot at the
+matching time; no model runs in the background to check the date.
+
+A routine can also name **checks** (calendar, mail, other routines' runs): plain
+code that runs on each tick before any AI turn, so a quiet tick costs nothing.
+See [Proactive routines](proactive-routines.md).
 
 In **Automations → Schedule**, choose **Monthly**, **Yearly**, or **Custom cron
 (advanced)** in the existing routine editor. Monthly offers days 1–31 and
 **Last day**. The timezone defaults to your browser's zone for a new preset and
 can be changed. Saved cron routines retain their own zone even on another
 computer. Editing just a title or instructions preserves the exact schedule.
+
+## Off, on, and done
+
+The switch on **Automations** pauses a schedule or a webhook and turns it back
+on; a schedule comes back with its next time. If the server refuses, the reason
+shows beside the switch. A one-time schedule whose time has passed reads
+**Done** and has no switch: turning it on would have nothing to do, so the
+server refuses it ("Its time has passed. Edit it to pick a new time."). Saving
+it with a new time turns it back on.
+
+Deleting a bot deletes its schedules and webhooks too, and their runs. A
+webhook's address stops working at once. Automations left behind by a bot
+deleted in an earlier version are removed the next time OpenMausBot starts, and
+never run meanwhile.
 
 ## Advanced cron
 
@@ -69,7 +87,36 @@ use an appropriate event/webhook workflow instead of a fake weekly schedule.
 - Existing catch-up policy remains: up to 12 hours late, one missed occurrence
   can be dispatched; older work receives a missed-run receipt. The next date
   advances without replaying every missed minute. Queued/running/waiting work
-  for the same cron routine does not accumulate overlapping copies.
+  for the same cron routine does not accumulate overlapping copies (a run is
+  waiting while teammates still owe it results on the job runtime,
+  docs/runtime-contract.md §9).
+- A run that asks you for an approval or an answer waits for you. Its card and
+  the Routines log say what it waits for ("Waiting for your approval to use
+  COMPOSIO_SEARCH_TOOLS"), the approval notification names the routine, and the
+  time it waits does not count toward its optional run limit, which bounds
+  active work only. If the engine's own wait for an approval runs out with
+  nobody's answer, the run stops with "Stopped: nobody answered the approval to
+  use …" and the routine-failed notification. A run still waiting when its
+  routine's next occurrence is due gives way to that occurrence.
+- An unattended run (scheduled, webhook or Run now) recovers from a passing
+  failure by itself, the same on the desktop, a headless server and a Cloud
+  home (`server/routine-recovery.ts`):
+  - Its engine stalled, OpenMausBot restarted while it ran, the provider
+    rate-limited it, or the provider failed for a moment: it starts once more
+    in the same conversation after a short wait (15 s; a minute after a rate
+    limit), told to check what its first start already did. A second failure
+    fails it: "Failed after one automatic retry: …".
+  - A run that a shutdown or crash cut off is picked up once when OpenMausBot
+    starts again; the same run, never a copy.
+  - Its bot or conversation was busy when it started: it waits there,
+    checking every 30 s, for up to an hour.
+  - Signed out, out of credit, payment required, a usage limit or an engine
+    that needs setting up: no retry. The owner gets one notification per bot
+    and cause saying what to do, and no more until one of that bot's runs
+    completes. A usage limit that says when it resets (Claude Code does) puts
+    the run back for just after the reset, if that is within 12 hours.
+  - The log says what happened ("Retried after the engine stalled ·
+    Completed"), and each routine shows "N of M runs OK this week".
 - Existing one-time, daily/weekday and interval schedules are not migrated or
   reinterpreted. Team exports retain cron expressions and zones; imports remain
   paused until enabled. Older phone apps safely treat cron as a newer schedule;
@@ -78,3 +125,77 @@ use an appropriate event/webhook workflow instead of a fake weekly schedule.
 Cron series are edited through the routine editor rather than calendar dragging,
 which could otherwise ambiguously change an entire expression. Dense calendar
 projections are bounded per day; Run logs remain the source of actual outcomes.
+
+## Optional local pre-check
+
+A bot routine may have a locally approved `preCheck` through the routine API
+or a reviewed routine proposal. It executes on the OpenMausBot server, even
+when the bot itself uses a remote computer. The calendar editor displays an existing check in Advanced and preserves
+it when editing other fields; configure the executable through
+the API or proposal rather than entering a shell command in the schedule.
+
+```json
+{
+  "preCheck": {
+    "command": "/absolute/path/to/inbox-check",
+    "args": ["--read-only"],
+    "timeoutMs": 30000
+  }
+}
+```
+
+`command` must be an absolute executable path. `args` are literal arguments:
+OpenMausBot spawns the executable directly, without a shell or expansion.
+The default timeout is 30 seconds; a configured timeout must be a whole
+number from 100 to 60,000 milliseconds. No more than 64 arguments, each at
+most 4,096 characters, are accepted. Do not put credentials in arguments:
+use the executable's own designated secure authentication files instead.
+Checks inherit only bounded OS path/home/temp/locale/timezone variables,
+SSH-agent discovery and XDG configuration/runtime paths. Provider and decision
+keys from the server environment are not passed to them. This configuration
+selects an executable; it does not grant it server secrets. A proposal
+shows the executable, arguments and timeout for review. A PATCH with
+`preCheck: null` removes it; omitting the field preserves it.
+
+The executable must exit successfully and write exactly one JSON object to
+stdout, with this shape (diagnostic text belongs on stderr):
+
+```json
+{"items":[{"source":"mail","id":"message-1","from":"sender@example.com","subject":"Support request","channel":"inbox","snippet":"Please review this issue."}]}
+```
+
+The whole array is validated before use. Unknown fields, missing required
+fields or wrong types invalidate the whole result. Limits are 64 items and
+16,000 UTF-8 bytes of serialized item JSON, with at most 200 characters for
+`source` and optional `channel`, 500 for `id` and `from`, 1,000 for optional
+`subject`, and 2,000 for `snippet`. Source and id must be nonempty, and each item must include subject or channel. Combined
+stdout and stderr are limited to 48 KiB. Over-limit output is never silently
+clipped or partially classified.
+
+An empty array records **Skipped** in Run logs and creates no bot turn or
+chat run card. Nonempty items normally wake the bot and are added to its
+prompt as untrusted data. With **Settings → Decision model → Wake routines
+for useful items** on, the fixed `routineWake` decision can also skip when it
+returns `noise_only` at probability 0.7 or above. This switch starts off.
+Every uncertainty, invalid answer, missing key, timeout, process error or
+malformed persisted configuration falls back to normal dispatch. The full
+instructions and complete item set must fit the decision budget; otherwise
+the bot wakes without asking the classifier.
+
+Only scheduled bot routines use pre-checks. **Run now** always bypasses them,
+including on a paused routine, because it expresses explicit manual intent.
+Webhook deliveries and room goals keep their existing dispatch behavior.
+Each scheduled run snapshots its check and instructions. Checked items are
+saved before the optional decision, retained while the target is busy and
+reused after restart. Cancellation, pause or deletion during an awaited
+check cannot start a turn afterwards; cancellation aborts the executable and
+cleans up its process group. Items already returned and saved stay on the
+cancelled receipt. This protocol does not transactionally acknowledge script
+state: a crash or cancellation between script output and a script's own state
+write can cause a repeat or an undelivered candidate. Use read-only,
+idempotent checks and reconcile with the source in the bot's actual turn.
+
+Portable bot/team/package exports omit executable pre-check authority.
+Workspace backups retain historical receipts, but restoring one removes
+executable checks from routine definitions and pauses schedules. Reconfigure
+and review each executable locally before enabling it on another machine.

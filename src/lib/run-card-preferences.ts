@@ -2,9 +2,6 @@ import { useSyncExternalStore } from "react";
 
 export const RUN_CARD_KEY = "omb-show-run-card";
 
-// Only a renderer preference: no conversation or server configuration belongs
-// here. Keep a session choice even if private/blocked storage rejects reads or
-// writes; another window's storage event can supersede that choice.
 let sessionChoice: boolean | undefined;
 const listeners = new Set<() => void>();
 
@@ -19,9 +16,9 @@ function storage(): Storage | undefined {
 function showRunCard(): boolean {
   if (sessionChoice !== undefined) return sessionChoice;
   try {
-    return storage()?.getItem(RUN_CARD_KEY) !== "0";
+    return storage()?.getItem(RUN_CARD_KEY) === "1";
   } catch {
-    return true;
+    return false;
   }
 }
 
@@ -54,11 +51,10 @@ export function setShowRunCard(enabled: boolean): void {
   try {
     storage()?.setItem(RUN_CARD_KEY, enabled ? "1" : "0");
   } catch {
-    // The visible setting still changes for this session when storage is full.
   }
   notify();
 }
 
 export function useShowRunCard(): boolean {
-  return useSyncExternalStore(subscribe, showRunCard, () => true);
+  return useSyncExternalStore(subscribe, showRunCard, () => false);
 }

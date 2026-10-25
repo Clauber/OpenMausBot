@@ -5,10 +5,14 @@ const movement = (body: Input) => body.type === "input_mouse" && ["mouseMoved", 
 const release = (body: Input) => (body.type === "input_mouse" && body.eventType === "mouseReleased") || (body.type === "input_keyboard" && body.eventType === "keyUp");
 const delta = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : 0;
 const clamp = (value: number) => Math.max(-10_000, Math.min(10_000, value));
+const batchable = (body: Input) => body.type === "input_mouse" || body.type === "input_keyboard";
+/** Under the 32 KB the server reads of one action's body. */
+const BATCH_BYTES = 24_000;
 
 /** One request at a time, with replaceable movement coalesced behind it.
- * Keyboard/button order is preserved; reconnect never replays old input. */
-export function createBrowserInputQueue(send: (body: Input) => Promise<void>, onError: (cause: unknown) => void) {
+ * Keyboard/button order is preserved; reconnect never replays old input. Where the server takes batches
+ * (`batchLimit` above 1), every input queued behind a request goes in the next one. */
+export function createBrowserInputQueue(send: (body: Input) => Promise<void>, onError: (cause: unknown) => void, batchLimit = 1) {
   let queue: Input[] = [];
   let active: Promise<void> | null = null;
   let generation = 0;
@@ -17,14 +21,31 @@ export function createBrowserInputQueue(send: (body: Input) => Promise<void>, on
     queue = queue.filter(release);
     if (!stopped) { stopped = true; onError(cause); }
   };
+  const next = (): Input[] => {
+    const taken = [queue.shift()!];
+    const limit = stopped ? 1 : batchLimit;
+    let bytes = JSON.stringify(taken[0]).length;
+    while (batchable(taken[0]!) && taken.length < limit && queue.length && batchable(queue[0]!)) {
+      const size = JSON.stringify(queue[0]).length;
+      if (bytes + size > BATCH_BYTES) break;
+      bytes += size;
+      taken.push(queue.shift()!);
+    }
+    return taken;
+  };
   const run = () => {
     if (active || !queue.length) return;
     const current = generation;
     active = (async () => {
       while (current === generation && queue.length) {
-        const body = queue.shift()!;
-        try { await send(body); }
-        catch (cause) { if (current === generation) halt(cause); }
+        const taken = next();
+        try { await send(taken.length === 1 ? taken[0]! : { type: "input_batch", events: taken }); }
+        catch (cause) {
+          if (current !== generation) continue;
+          // The server stops a batch at its first failure, so its later releases may never have been sent.
+          if (taken.length > 1) queue.unshift(...taken.slice(1).filter(release));
+          halt(cause);
+        }
       }
     })().finally(() => { active = null; run(); });
   };

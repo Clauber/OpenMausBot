@@ -37,11 +37,10 @@ describe("workspaces section", () => {
     expect(html).not.toContain("<button");
     expect(html).not.toContain(">Running<");
   });
-  it("appears only with the admin entitlement and a fleet agent on this server", () => {
-    expect(workspacesAvailable(config([], true))).toBe(false);
-    expect(workspacesAvailable(config(["admin"], false))).toBe(false);
-    expect(workspacesAvailable(config(["admin"], true))).toBe(true);
-    fixture.config = config(["admin"], false);
+  it("appears with a fleet agent on this server, with no entitlement needed", () => {
+    expect(workspacesAvailable(config([], false))).toBe(false);
+    expect(workspacesAvailable(config([], true))).toBe(true);
+    fixture.config = config([], false);
     expect(renderToStaticMarkup(createElement(WorkspacesSection, { load: async () => fleet }))).toBe("");
   });
 

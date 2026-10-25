@@ -1,28 +1,16 @@
-// The OpenMausBot package file ("openmaus.package"): one team, or a library
-// of skills and preset bots, as a single portable document.
-//
-// This module is the single validation gate for that file. The server, the
-// renderer's import preview and the Admin upload (through the pinned
-// runtime) all parse with exactly this code, so it may only import zod, yaml,
-// croner (via routine-schedule) and the other pure modules in shared/. No
-// Buffer, no node:fs, no node:crypto: TextEncoder and atob only.
-//
-// Two versions exist. v1 is the original team package (JSON or the BotMRR
-// Markdown playbook). v2 adds the team brief, pictures, starter notes,
-// connection slots, presets, room goals and library-only packages. Every
-// reader here accepts both and always returns v2.
-//
-// What never travels is excluded by construction: the schema has no field
-// for chat history, secrets, model choices, computers, visibility or
-// personal settings, and unknown fields are stripped. Secrets written INSIDE
-// free text are a separate problem, handled by redactPackageSecrets (export)
-// and packageSecretFindings (Admin upload).
+// The Legion package file ("openmaus.package"), v1 or v2; every reader
+// returns v2. The single validation gate for the server, the renderer and the
+// Admin upload, so it imports only zod, yaml, croner and pure shared modules
+// (no Buffer, no node:*). The schema has no field for chat history, secrets,
+// model choices, computers, visibility or personal settings, and unknown
+// fields are stripped.
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 
 import { BOT_PROFILE_LIMITS, fitsOnOneLine } from "./bot-profile.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { normalizeCronSchedule } from "./routine-schedule.ts";
+import { MAUS_COLOR_NAMES } from "./wire.ts";
 import { isSkillName, parseSkillMd, scanSkillText, SKILL_FILE_MAX_BYTES } from "./skill-md.ts";
 
 export const PACKAGE_FORMAT = "openmaus.package";
@@ -42,7 +30,7 @@ export const PACKAGE_V1_MAX_SKILLS = 20;
 export const BOTMRR_MARKDOWN_VERSION = 1;
 const BOTMRR_MARKDOWN_MAX_BYTES = 1_000_000;
 
-export const NEWER_PACKAGE_MESSAGE = "This file was made by a newer OpenMausBot. Update the app, then import it again.";
+export const NEWER_PACKAGE_MESSAGE = "This file was made by a newer Legion. Update the app, then import it again.";
 
 export type PackageTrust = "file" | "org";
 export type PackageFormatErrorCode = "not_a_package" | "unsupported_version" | "newer_version" | "invalid" | "too_large";
@@ -56,7 +44,6 @@ export class PackageFormatError extends Error {
   }
 }
 
-const COLORS = ["green", "blue", "red", "orange", "purple", "cyan", "pink", "yellow", "teal", "coral"] as const;
 const AVATAR_MIMES = ["image/png", "image/jpeg", "image/webp"] as const;
 const AVATAR_CROPS = ["circle", "rounded", "square"] as const;
 
@@ -66,12 +53,11 @@ export function utf8Bytes(value: string): number {
   return encoder.encode(value).length;
 }
 
-// ── shared field helpers (identical to the v1 reader) ─────────────────────
 
-const requiredText = (max: number) =>
+export const requiredText = (max: number) =>
   z.string({ error: "must be text" }).trim().min(1, { message: "is required" }).max(max, { message: "is too long" });
 
-const optionalText = (max: number) =>
+export const optionalText = (max: number) =>
   z
     .union([z.string({ error: "must be text" }), z.null(), z.undefined()])
     .transform((value) => value?.trim() || undefined)
@@ -119,7 +105,6 @@ const intervalWindow = z.object({
 }).strict().refine(({ start, end }) => start < end, {
   message: "must end later on the same day",
 });
-/** Unchanged from v1: once, daily, interval and cron. */
 export const packageRoutineScheduleSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("cron"), expression: requiredText(256), timeZone: requiredText(100) }).strict(),
   z.object({ type: z.literal("once"), at: z.number().int() }),
@@ -203,8 +188,7 @@ const roomSchema = z.preprocess(knownRoomResponder, z.object({
     z.object({ kind: z.literal("agent"), agent: key }),
     z.object({ kind: z.literal("everyone") }),
     z.object({ kind: z.literal("mentions") }),
-    // Read, not written: exports spell an Auto room as its lead (see
-    // server/package-export.ts) so every older app can still open them.
+    // Read, not written: exports spell an Auto room as its lead.
     z.object({ kind: z.literal("auto"), agent: key.optional() }),
   ]),
 }));
@@ -213,8 +197,6 @@ const exampleSchema = z.object({
   input: requiredText(4_000),
   output: requiredText(8_000),
 });
-
-// ── v1 (read only; upgraded on the way in, produced only by downgradeToV1) ─
 
 const packageDocumentV1Schema = z.object({
   format: z.literal(PACKAGE_FORMAT, { error: "This is not an OpenMaus package" }),
@@ -240,7 +222,7 @@ const packageDocumentV1Schema = z.object({
       description: optionalText(4_000),
       soul: soulSchema.optional(),
       appearance: z.object({
-        color: z.enum(COLORS, { error: "is not supported" }),
+        color: z.enum(MAUS_COLOR_NAMES, { error: "is not supported" }),
         mascotExpression: optionalText(80),
         mascotBody: optionalText(40),
       }),
@@ -272,7 +254,6 @@ const packageDocumentV1Schema = z.object({
 
 export type PackageDocumentV1 = z.output<typeof packageDocumentV1Schema>;
 
-// ── v2 ─────────────────────────────────────────────────────────────────────
 
 const semver = z.string({ error: "must be text" }).regex(/^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/, {
   message: "must be a version like 1.2.3",
@@ -313,7 +294,6 @@ export function pictureMatchesMime(bytes: Uint8Array, mime: string): boolean {
 
 const avatarSchema = z.object({
   mime: z.enum(AVATAR_MIMES, { error: "must be a PNG, JPEG or WebP picture" }),
-  // base64 of at most AVATAR_MAX_BYTES
   data: z.string({ error: "must be text" }).max(87_384, { message: "is larger than 64 KB" }).regex(/^[A-Za-z0-9+/]+={0,2}$/, {
     message: "must be base64",
   }),
@@ -330,7 +310,7 @@ const avatarSchema = z.object({
 });
 
 const appearanceSchema = z.object({
-  color: z.enum(COLORS, { error: "is not supported" }),
+  color: z.enum(MAUS_COLOR_NAMES, { error: "is not supported" }),
   mascotExpression: optionalText(80),
   mascotBody: optionalText(40),
   avatar: avatarSchema.optional(),
@@ -366,8 +346,8 @@ const agentSchema = z.object({
   description: optionalText(4_000),
   soul: soulSchema.optional(),
   appearance: appearanceSchema,
-  /** A suggestion only: every imported bot starts on Ask. */
-  approval: z.enum(["ask", "auto"], { error: "must be ask or auto" }).optional(),
+  /** A suggestion only: an imported bot starts at the workspace's default level (Full access outside a hosted company workspace). Record browser steps travels as set (no card). */
+  approval: z.enum(["ask", "auto"], { error: "must be ask or auto" }).optional(), recordBrowserSteps: z.boolean().optional(),
   playbooks: z.array(key).max(40).optional(),
   skills: z.array(skillName).max(AGENT_MAX_SKILLS).optional(),
   connections: z.array(connKey).max(PACKAGE_MAX_CONNECTIONS).optional(),
@@ -388,6 +368,8 @@ const routineSchema = z.object({
   timeoutMinutes: z.number().int().min(1).max(1_440).optional(),
   overlap: z.enum(["skip", "queue"]).optional(),
   continuity: z.boolean().optional(),
+  /** Also run once each time Legion starts. Repeating routines only. */
+  runOnStartup: z.boolean().optional(),
   /** The publisher's intent. File imports always arrive paused. */
   enabledAfterInstall: z.boolean(),
 });
@@ -498,7 +480,6 @@ export type PackageConnection = NonNullable<PackageDefinition["connections"]>[nu
 export type PackageAvatar = NonNullable<PackageAgent["appearance"]["avatar"]>;
 export type PackageRoutineSchedule = PackageRoutine["schedule"];
 
-// ── part paths ─────────────────────────────────────────────────────────────
 
 /** Lists whose items are named by `key` in part paths: agents[scout].soul. */
 const KEYED_LISTS = new Set(["agents", "rooms", "routines", "playbooks", "presets", "connections"]);
@@ -547,7 +528,7 @@ function schemaSentence(error: z.ZodError, input: unknown): string {
   return `${describePath(input, issue.path)} ${issue.message}`;
 }
 
-/** The v1 reader's historical message shape ("package.agents.0.name is too long"). */
+/** The v1 reader's message shape ("package.agents.0.name is too long"). */
 function v1SchemaSentence(error: z.ZodError): string {
   const issue = error.issues[0];
   if (!issue) return "This is not a bot package";
@@ -555,7 +536,6 @@ function v1SchemaSentence(error: z.ZodError): string {
   return path ? `${path} ${issue.message}` : issue.message;
 }
 
-// ── canonical form ─────────────────────────────────────────────────────────
 
 /** Sorted keys (default UTF-16 sort), undefined omitted, no whitespace,
  * leaves by JSON.stringify. The release sha256 is over exactly these bytes. */
@@ -578,7 +558,6 @@ function tooLarge(): PackageFormatError {
   return new PackageFormatError("too_large", `This package is larger than ${PACKAGE_MAX_BYTES / (1024 * 1024)} MB.`);
 }
 
-// ── cross-references ───────────────────────────────────────────────────────
 
 function invalid(message: string): PackageFormatError {
   return new PackageFormatError("invalid", message);
@@ -703,7 +682,6 @@ function checkV2References(pkg: PackageDefinition): void {
   }
 }
 
-// ── Markdown (v1 only) ─────────────────────────────────────────────────────
 
 function markdownDocument(markdown: string): unknown {
   if (markdown.length > PACKAGE_MAX_BYTES) throw tooLarge();
@@ -727,7 +705,6 @@ function markdownDocument(markdown: string): unknown {
   return { format: PACKAGE_FORMAT, version: PACKAGE_V1_VERSION, package: definition };
 }
 
-// ── readers ────────────────────────────────────────────────────────────────
 
 /** True for a BotMRR Markdown string or an object that says it is a package. */
 export function isPackageDocument(value: unknown): boolean {
@@ -736,8 +713,7 @@ export function isPackageDocument(value: unknown): boolean {
     (value as { format?: unknown }).format === PACKAGE_FORMAT;
 }
 
-/** Parse exactly one v1 document (JSON object or Markdown) with the v1 rules.
- * Kept for the v1 exporter and its Markdown renderer. */
+/** Parse exactly one v1 document (JSON object or Markdown) with the v1 rules. */
 export function parsePackageV1(value: unknown): PackageDocumentV1 {
   const source = typeof value === "string" ? markdownDocument(value) : value;
   const parsed = packageDocumentV1Schema.safeParse(source);
@@ -803,23 +779,22 @@ export function parsePackageDocument(value: unknown, options: { trust?: PackageT
   return document;
 }
 
-// ── older apps ─────────────────────────────────────────────────────────────
 
 /** A v1 document for apps older than v2 support. Refuses what v1 cannot
  * represent; lists what it had to leave out. */
 export function downgradeToV1(document: PackageDocument):
   { document: PackageDocumentV1; dropped: string[] } | { error: string } {
   const pkg = document.package;
-  if (!pkg.agents.length || !pkg.team) return { error: "Packages without bots cannot be opened by older versions of OpenMausBot." };
+  if (!pkg.agents.length || !pkg.team) return { error: "Packages without bots cannot be opened by older versions of Legion." };
   const referenced = new Set(pkg.agents.flatMap((agent) => agent.skills ?? []));
   const skills = (pkg.skills?.entries ?? []).filter((skill) => referenced.has(skill.name));
   if (skills.length > PACKAGE_V1_MAX_SKILLS) {
-    return { error: `Older versions of OpenMausBot accept at most ${PACKAGE_V1_MAX_SKILLS} skills in a package.` };
+    return { error: `Older versions of Legion accept at most ${PACKAGE_V1_MAX_SKILLS} skills in a package.` };
   }
   const crowded = pkg.agents.find((agent) => (agent.skills?.length ?? 0) > PACKAGE_V1_MAX_SKILLS);
-  if (crowded) return { error: `Older versions of OpenMausBot accept at most ${PACKAGE_V1_MAX_SKILLS} skills per bot (${crowded.key} has more).` };
+  if (crowded) return { error: `Older versions of Legion accept at most ${PACKAGE_V1_MAX_SKILLS} skills per bot (${crowded.key} has more).` };
   const outOfRange = (pkg.routines ?? []).find((routine) => routine.timeoutMinutes !== undefined && (routine.timeoutMinutes < 5 || routine.timeoutMinutes > 240));
-  if (outOfRange) return { error: `Older versions of OpenMausBot accept run limits from 5 to 240 minutes (${outOfRange.key} has ${outOfRange.timeoutMinutes}).` };
+  if (outOfRange) return { error: `Older versions of Legion accept run limits from 5 to 240 minutes (${outOfRange.key} has ${outOfRange.timeoutMinutes}).` };
 
   const dropped: string[] = [];
   if (pkg.publisher) dropped.push("package.publisher");
@@ -843,8 +818,9 @@ export function downgradeToV1(document: PackageDocument):
       dropped.push(`routines[${routine.key}]`);
       return [];
     }
-    const { room: _room, continuity, ...kept } = routine;
+    const { room: _room, continuity, runOnStartup, ...kept } = routine;
     if (continuity !== undefined) dropped.push(`routines[${routine.key}].continuity`);
+    if (runOnStartup !== undefined) dropped.push(`routines[${routine.key}].runOnStartup`);
     return [{ ...kept, enabledAfterInstall: false as const }];
   });
   const {
@@ -865,11 +841,10 @@ export function downgradeToV1(document: PackageDocument):
   try {
     return { document: parsePackageV1({ format: PACKAGE_FORMAT, version: PACKAGE_V1_VERSION, package: v1 }), dropped };
   } catch (error) {
-    return { error: error instanceof Error ? error.message : "This package cannot be written for older versions of OpenMausBot." };
+    return { error: error instanceof Error ? error.message : "This package cannot be written for older versions of Legion." };
   }
 }
 
-// ── text leaves: secrets and scan ──────────────────────────────────────────
 
 type TextVisitor = (part: string, value: string) => string | void;
 
@@ -955,7 +930,6 @@ export function packageScanFindings(document: PackageDocument): Array<{ part: st
   return findings;
 }
 
-// ── identity and contents ──────────────────────────────────────────────────
 
 /** Every item's stable identity: "agents:scout", "skills:x", … */
 export function packageKeys(document: PackageDocument): string[] {

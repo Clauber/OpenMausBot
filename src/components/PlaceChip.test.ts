@@ -4,8 +4,7 @@ import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import type { Bot, InstanceInfo } from "@/state/store";
 
 vi.stubGlobal("window", {});
-const fixture = vi.hoisted(() => ({ config: null as unknown, menuOpen: false }));
-// Static markup never runs the click that opens the menu; this renders it open.
+const fixture = vi.hoisted(() => ({ config: null as unknown, menuOpen: false, computerMcp: true }));
 vi.mock("./MenuMotion", async (importOriginal) => ({
   ...await importOriginal<typeof import("./MenuMotion")>(),
   useMenuMotion: () => ({ shown: fixture.menuOpen, closing: false, className: "", exitProps: {} }),
@@ -23,7 +22,7 @@ vi.mock("@/state/store", async (importOriginal) => {
           driverKind: "grokAgent",
           displayName: "Grok",
           snapshot: { state: "available" },
-          capabilities: { computerMcp: true, browserMcp: true },
+          capabilities: { computerMcp: fixture.computerMcp, browserMcp: true },
         } as InstanceInfo],
       },
       dispatch: vi.fn(),
@@ -76,7 +75,6 @@ describe("PlaceChip composer trigger", () => {
 
 describe("the menu's first row", () => {
   afterEach(() => { fixture.menuOpen = false; });
-  /** The open menu's radio rows: whether each is checked, and its words. */
   const rows = (props: Partial<ComponentProps<typeof PlaceChip>>) => {
     fixture.menuOpen = true;
     const html = renderToStaticMarkup(createElement(PlaceChip, { bot, live: false, onPin: () => {}, ...props }));
@@ -95,7 +93,6 @@ describe("the menu's first row", () => {
     expect(menu[0]).toEqual({ checked: true, text: "Auto Picks the right place for each task" });
     expect(html).not.toContain("Follow this bot");
     expect(html).toContain('aria-label="Where this conversation works: Auto"');
-    // Auto once, then the four places as before: no second Auto row.
     expect(menu).toHaveLength(5);
     expect(menu.filter((row) => row.text.startsWith("Auto"))).toHaveLength(1);
   });
@@ -103,8 +100,8 @@ describe("the menu's first row", () => {
   it("stays Auto, unchecked, when the conversation is pinned elsewhere", () => {
     const { html, rows: menu } = rows({ bot: { ...bot, computer: undefined }, task: { surface: "vm" } });
     expect(menu[0]).toEqual({ checked: false, text: "Auto Picks the right place for each task" });
-    expect(menu.find((row) => row.checked)?.text).toBe("Local VM Isolated local desktop");
-    expect(html).toContain('aria-label="Where this conversation works: Local VM"');
+    expect(menu.find((row) => row.checked)?.text).toBe("Private desktop Isolated local desktop");
+    expect(html).toContain('aria-label="Where this conversation works: Private desktop"');
   });
 
   it("keeps following the bot's setting when the bot works on a specific place", () => {
@@ -130,5 +127,19 @@ describe("the places a conversation can be pinned to", () => {
   it("never reaches them on an OMB Cloud home", () => {
     fixture.config = { cloudHome: true };
     expect(availability()).toMatchObject({ cloud: true, vm: false, local: false });
+  });
+});
+
+describe("J11: the chip names a place's problem in the panel's words", () => {
+  afterEach(() => { fixture.menuOpen = false; fixture.computerMcp = true; });
+
+  it("greys out the cloud desktop for a model that can't use one, with the same few words and line", () => {
+    fixture.computerMcp = false;
+    fixture.menuOpen = true;
+    const html = renderToStaticMarkup(createElement(PlaceChip, { bot, live: false, onPin: () => {} }));
+    const row = html.split('role="menuitemradio"').slice(1).find((entry) => entry.includes("Cloud desktop"))!;
+    expect(row).toContain('disabled=""');
+    expect(row).toContain("Not with this model");
+    expect(row).toContain("title=\"grok-4.6 can&#x27;t use a desktop. Choose a model that can, such as Claude or ChatGPT.\"");
   });
 });

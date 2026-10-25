@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  BROWSER_SIGN_IN_FAILED, cloudOwnerOf, isConnected, isOwnerOrAdmin, previewBrowserSignIn, readSessionState, reasonWorthShowing, SERVICE_TRUST_REASON, signInWithBrowserGrant,
+  BROWSER_SIGN_IN_FAILED, cloudOwnerOf, isConnected, isOwnerOrAdmin, previewBrowserSignIn, readSessionBootstrap, readSessionState, reasonWorthShowing, SERVICE_TRUST_REASON, signInWithBrowserGrant,
   takeBrowserSignInFromLocation, takeInvitedEmailFromLocation, takePairingCodeFromLocation,
 } from "./session";
 
@@ -38,12 +38,10 @@ describe("the OMB Cloud page's \"Use in your browser\" link", () => {
     vi.stubGlobal("location", { pathname: "/pair", search: "", hash: `#signin=${credential}` });
     expect(takeBrowserSignInFromLocation()).toBe(credential);
     expect(replaceState).toHaveBeenCalledWith(null, "", "/pair");
-    // A malformed one is still removed, and is not a code for the pair form either.
     replaceState.mockClear();
     vi.stubGlobal("location", { pathname: "/pair", search: "", hash: "#signin=ABCD-EFGH-JKLM" });
     expect(takeBrowserSignInFromLocation()).toBeNull();
     expect(replaceState).toHaveBeenCalledWith(null, "", "/pair");
-    // An ordinary pairing link is left to the pair form.
     replaceState.mockClear();
     vi.stubGlobal("location", { pathname: "/pair", search: "", hash: "#code=ABCD-EFGH-JKLM" });
     expect(takeBrowserSignInFromLocation()).toBeNull();
@@ -70,7 +68,6 @@ describe("the OMB Cloud page's \"Use in your browser\" link", () => {
     const requests: Array<{ path: string; body: unknown }> = [];
     const server = (async (path: string, init?: RequestInit) => {
       requests.push({ path, body: init?.body ? JSON.parse(String(init.body)) : undefined });
-      // Whatever this browser already has here, the grant is redeemed (and its old session replaced).
       if (path === "/api/auth/session") return new Response(JSON.stringify({ kind: "session", id: "s", label: "Chrome on Mac", scopes: ["client"], expiresAt: 1 }), { status: 200 });
       return new Response(JSON.stringify({ session: {} }), { status: 200 });
     }) as unknown as typeof fetch;
@@ -78,7 +75,6 @@ describe("the OMB Cloud page's \"Use in your browser\" link", () => {
     expect(await signInWithBrowserGrant(credential, "attempt-page-0001", server)).toEqual({ ok: true });
     expect(requests.map((r) => r.path)).toEqual(["/api/auth/pair", "/api/auth/pair"]);
     for (const request of requests) expect(request.body).toMatchObject({ code: credential, cookie: true, browser: true, attemptId: "attempt-page-0001" });
-    // A spent or expired one says so.
     const spent = (async () => new Response(JSON.stringify({ error: "pairing code is wrong or has expired" }), { status: 401 })) as unknown as typeof fetch;
     expect(await signInWithBrowserGrant(credential, "attempt-page-0002", spent)).toEqual({ ok: false, error: "pairing code is wrong or has expired" });
     expect(reasonWorthShowing(BROWSER_SIGN_IN_FAILED)).toBe(BROWSER_SIGN_IN_FAILED);
@@ -93,6 +89,12 @@ describe("the OMB Cloud page's \"Use in your browser\" link", () => {
 
 describe("who the served UI is on its own machine", () => {
   const answer = (body: unknown) => (async () => new Response(JSON.stringify(body), { status: 200 })) as unknown as typeof fetch;
+  it("keeps the key a shared workspace gives this session's reactions, and nothing else in its place", async () => {
+    const shared = { kind: "session", id: "s", label: "Ada's laptop", scopes: ["client"], expiresAt: 1 };
+    expect(await readSessionState(answer({ ...shared, reactor: "p_ada" }))).toEqual({ ...shared, reactor: "p_ada" });
+    expect(await readSessionState(answer({ ...shared, reactor: 7 }))).toEqual(shared);
+    expect(await readSessionState(answer(shared))).toEqual(shared);
+  });
   it("is the owner on loopback unless the server says local requests are only a service", async () => {
     const owner = await readSessionState(answer({ kind: "loopback", scopes: ["admin", "client"] }));
     expect(owner).toEqual({ kind: "loopback" });
@@ -114,5 +116,33 @@ describe("an SSH tunnel to a server that treats local requests as a service", ()
     expect(isConnected({ kind: "unauthenticated", error: "pair" })).toBe(false);
     expect(isConnected(null)).toBe(false);
     expect(reasonWorthShowing(SERVICE_TRUST_REASON)).toBe(SERVICE_TRUST_REASON);
+  });
+});
+
+
+describe("auth startup deadlines", () => {
+  it.each(["session", "preview", "body"])("bounds a stalled %s even when fetch ignores abort", async (kind) => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    const stalled = vi.fn((_path: unknown, init?: RequestInit) => {
+      signal = init?.signal ?? undefined;
+      return kind === "body" ? Promise.resolve({ json: () => new Promise(() => {}) }) : new Promise(() => {});
+    }) as unknown as typeof fetch;
+    try {
+      const pending = kind === "preview" ? previewBrowserSignIn("credential", stalled) : readSessionState(stalled);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(signal?.aborted).toBe(true);
+      expect(await pending).toEqual(kind === "preview" ? null : { kind: "unreachable", error: "The server took too long to respond." });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps onboarding metadata from the same successful session request", async () => {
+    const body = { kind: "loopback", hosted: true, cloudHome: true, scopes: ["admin"] };
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify(body)));
+    expect(await readSessionBootstrap(fetchImpl)).toEqual({ session: { kind: "loopback" }, body });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });

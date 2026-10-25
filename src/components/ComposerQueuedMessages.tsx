@@ -5,8 +5,10 @@ import { t } from "@/lib/i18n";
 import { replySnippet } from "@/lib/replies";
 import { splitTranscriptCitations } from "@/lib/citations";
 
+const ATTACHMENT_TAG = /<attached-(?:image|file)\s/;
+
 function queuedMessageLabel(text: string): string {
-  return splitTranscriptCitations(text).citations.length ? replySnippet(text, 500) : text;
+  return splitTranscriptCitations(text).citations.length || ATTACHMENT_TAG.test(text) ? replySnippet(text, 500) : text;
 }
 
 export function composerCanSteerQueuedMessages(
@@ -18,15 +20,18 @@ export function composerCanSteerQueuedMessages(
   return busy && !locked && !approvalPending && pendingCount > 0;
 }
 
-/** How long a just-queued chip accepts a second Enter as "steer it now". */
+export function composerCanSendQueuedNow(
+  direct: boolean,
+  busy: boolean,
+  locked: boolean,
+  approvalPending: boolean,
+  items: ReadonlyArray<{ reason?: SteerQueueReason }>,
+): boolean {
+  return direct && !busy && !locked && !approvalPending && items.some((item) => item.reason === "group-turn");
+}
+
 export const DOUBLE_ENTER_STEER_WINDOW_MS = 1_500;
 
-/** A new chip on a busy steer-capable thread opens the double-Enter
- * window: the words queued because the live steer lost its race (or carried
- * an attachment) can still join the running turn without interrupting it.
- * Rooms and 1:1 threads share the gesture; capability, not the surface,
- * decides whether it applies.
- * Returns the window's expiry, or null when the gesture does not apply. */
 export function doubleEnterSteerWindowExpiresAt(
   prevPendingCount: number,
   pendingCount: number,
@@ -38,8 +43,6 @@ export function doubleEnterSteerWindowExpiresAt(
   return pendingCount > prevPendingCount ? now + DOUBLE_ENTER_STEER_WINDOW_MS : null;
 }
 
-/** Whether an Enter press is the second one: empty composer, a chip waiting,
- * and inside the window opened when that chip arrived. */
 export function doubleEnterSteersQueue(
   windowExpiresAt: number,
   now: number,
@@ -49,21 +52,13 @@ export function doubleEnterSteersQueue(
   return !hasContent && pendingCount > 0 && now < windowExpiresAt;
 }
 
-/** Messages held by the harness until the running turn settles.
- *
- * The queue sits directly above the composer rather than pretending these
- * words are already part of the transcript. Only its head owns Steer: room
- * queues drain one item at a time, while bot queues coalesce all waiting
- * items into one follow-up. Edit and Delete remain available on every exact
- * queue id: Edit takes the message out of the queue and hands its words back
- * to the composer, so nothing unsent is ever changed behind the harness.
- */
 export function QueuedComposerMessages({
   items,
   onSteer,
   steerMode = "all",
   steering = false,
   steerInterrupts = false,
+  sendsNow = false,
   onCancel,
   onEdit,
 }: {
@@ -71,11 +66,11 @@ export function QueuedComposerMessages({
   onSteer?: () => void;
   steerMode?: "all" | "next";
   steering?: boolean;
-  /** True when Steer is backed by an interrupt (engine without live steer):
-   * the hint must say what the click really does. */
   steerInterrupts?: boolean;
+  /** The thread is idle behind the bot's room turn: the head control starts
+   * the queued words now instead of steering a running turn. */
+  sendsNow?: boolean;
   onCancel: (queueId: string) => void;
-  /** Pull this queued message back into the composer to tweak or extend it. */
   onEdit?: (queueId: string) => void;
 }) {
   if (!items.length) return null;
@@ -83,22 +78,26 @@ export function QueuedComposerMessages({
   const multiple = items.length > 1;
   const steerLabel = steering
     ? t("composer.queued.steering")
-    : multiple
-      ? steerMode === "all"
-        ? t("composer.queued.steerAll")
-        : t("composer.queued.steerNext")
-      : t("composer.queued.steer");
-  const steerDescription = steerInterrupts
-    ? multiple
-      ? steerMode === "all"
-        ? t("composer.queued.steerAllInterruptHint", { count: items.length })
-        : t("composer.queued.steerNextInterruptHint")
-      : t("composer.queued.steerInterruptHint")
-    : multiple
-      ? steerMode === "all"
-        ? t("composer.queued.steerAllHint", { count: items.length })
-        : t("composer.queued.steerNextHint")
-      : t("composer.queued.steerHint");
+    : sendsNow
+      ? t("composer.queued.sendNow")
+      : multiple
+        ? steerMode === "all"
+          ? t("composer.queued.steerAll")
+          : t("composer.queued.steerNext")
+        : t("composer.queued.steer");
+  const steerDescription = sendsNow
+    ? t("composer.queued.sendNowHint")
+    : steerInterrupts
+      ? multiple
+        ? steerMode === "all"
+          ? t("composer.queued.steerAllInterruptHint", { count: items.length })
+          : t("composer.queued.steerNextInterruptHint")
+        : t("composer.queued.steerInterruptHint")
+      : multiple
+        ? steerMode === "all"
+          ? t("composer.queued.steerAllHint", { count: items.length })
+          : t("composer.queued.steerNextHint")
+        : t("composer.queued.steerHint");
 
   return (
     <div

@@ -61,8 +61,7 @@ export function isPublicDomainAddress(address: string): boolean {
   return family === 6 && globalIpv6.check(address, "ipv6") && !excludedAddresses.check(address, "ipv6");
 }
 
-/** Local interfaces only: a tunnel/CDN address or an external IP-echo service
- * does not identify the server where the customer's HTTPS proxy runs. */
+/** Local interfaces only: a tunnel/CDN address or an IP-echo service does not identify where the customer's HTTPS proxy runs. */
 export function customDomainIpv4(
   interfaces = networkInterfaces(),
   configured = process.env.OMB_PUBLIC_IPV4,
@@ -96,8 +95,7 @@ function withAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 
 function requestJson(url: URL, address: LookupAddress, signal: AbortSignal): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    // Pin the validated DNS result for both requests. TLS/SNI and Host still use
-    // the original domain, so a DNS rebind cannot reach a private IP afterwards.
+    // Pin the validated DNS result for both requests; TLS/SNI and Host keep the domain, so a DNS rebind cannot reach a private IP.
     const lookup: LookupFunction = (_hostname, options, callback) => {
       if (options.all) callback(null, [address]);
       else callback(null, address.address, address.family);
@@ -109,7 +107,7 @@ function requestJson(url: URL, address: LookupAddress, signal: AbortSignal): Pro
       // Node's HTTPS client does not follow Location redirects.
       if (response.statusCode !== 200) {
         response.destroy();
-        reject(new CustomDomainError("The domain did not return the OpenMausBot verification page. Check your reverse proxy; redirects are not supported."));
+        reject(new CustomDomainError("The domain did not return the Legion verification page. Check your reverse proxy; redirects are not supported."));
         return;
       }
       const chunks: Buffer[] = [];
@@ -119,14 +117,14 @@ function requestJson(url: URL, address: LookupAddress, signal: AbortSignal): Pro
         size += chunk.length;
         if (size > MAX_RESPONSE_BYTES) {
           response.destroy();
-          reject(new CustomDomainError("The domain returned an unexpected response. Check that it points to OpenMausBot."));
+          reject(new CustomDomainError("The domain returned an unexpected response. Check that it points to Legion."));
           return;
         }
         chunks.push(chunk);
       });
       response.on("end", () => {
         try { resolve(JSON.parse(Buffer.concat(chunks).toString("utf8"))); }
-        catch { reject(new CustomDomainError("The domain did not return OpenMausBot data. Check that it points to this server.")); }
+        catch { reject(new CustomDomainError("The domain did not return Legion data. Check that it points to this server.")); }
       });
     });
     request.on("error", reject);
@@ -134,8 +132,7 @@ function requestJson(url: URL, address: LookupAddress, signal: AbortSignal): Pro
   });
 }
 
-/** Verification only: callers persist the returned origin after success. The
- * public challenge endpoint reveals no account credentials and grants no access. */
+/** Callers persist the returned origin after success; the public challenge endpoint reveals no credentials and grants no access. */
 export function createCustomDomainVerifier(dependencies: CustomDomainDependencies) {
   const lookup = dependencies.lookup ?? ((hostname: string) => dnsLookup(hostname, { all: true, verbatim: true }));
   const request = dependencies.request ?? requestJson;
@@ -171,7 +168,7 @@ export function createCustomDomainVerifier(dependencies: CustomDomainDependencie
         const descriptor = await withAbort(request(new URL(DESCRIPTOR_PATH, origin), address, controller.signal), controller.signal);
         if (!descriptor || typeof descriptor !== "object"
           || Reflect.get(descriptor, "environmentId") !== dependencies.environmentId) {
-          throw new CustomDomainError("This domain does not point to this OpenMausBot server. Check its DNS and reverse proxy configuration.");
+          throw new CustomDomainError("This domain does not point to this Legion server. Check its DNS and reverse proxy configuration.");
         }
         active = {
           token: randomBytes(32).toString("hex"), proof: randomBytes(32).toString("hex"),
@@ -180,7 +177,7 @@ export function createCustomDomainVerifier(dependencies: CustomDomainDependencie
         const proof = await withAbort(request(new URL(`${CUSTOM_DOMAIN_CHALLENGE_PATH}${active.token}`, origin), address, controller.signal), controller.signal);
         if (!proof || typeof proof !== "object" || Reflect.get(proof, "environmentId") !== dependencies.environmentId
           || Reflect.get(proof, "proof") !== active.proof) {
-          throw new CustomDomainError("The domain could not prove it reaches this server. Forward all OpenMausBot routes through your reverse proxy and try again.");
+          throw new CustomDomainError("The domain could not prove it reaches this server. Forward all Legion routes through your reverse proxy and try again.");
         }
         return { origin, verifiedAt: new Date().toISOString() };
       } catch (error) {

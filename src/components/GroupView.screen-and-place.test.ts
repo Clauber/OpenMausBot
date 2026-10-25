@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppState, Bot, Group, Message } from "@/state/store";
 
 const fixture = vi.hoisted(() => {
-  vi.stubGlobal("window", {});
+  vi.stubGlobal("window", { location: { hash: "" } });
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
   return { state: null as Partial<AppState> | null, dispatch: vi.fn() };
 });
@@ -88,5 +88,13 @@ describe("GroupView: computer/browser session visibility", () => {
   it("shows no place badge at all for an idle member", () => {
     const markup = render([bot({ computer: "browser" })], group({ busyBotId: null }));
     expect(markup).not.toMatch(/width="9"[^>]*height="9"/);
+  });
+});
+
+describe("GroupView: the transcript", () => {
+  it("holds every row's positioned parts inside it, as ChatView does, so nothing in it can make the window scroll", () => {
+    const markup = render([bot()], group());
+    const transcript = markup.match(/class="(glass-scroller-content[^"]*)"[^>]*role="log"/)?.[1];
+    expect(transcript?.split(" ")).toContain("relative");
   });
 });

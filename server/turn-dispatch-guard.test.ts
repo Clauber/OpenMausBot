@@ -7,6 +7,7 @@ import {
   guardTurnDispatch,
   isTurnAdmissionBlocked,
   isTurnEventQuarantined,
+  threadLimitError,
 } from "./turn-dispatch-guard.ts";
 
 describe("retryable turn admission", () => {
@@ -17,10 +18,19 @@ describe("retryable turn admission", () => {
     }
   });
 
+  it("states the limit that applied, and stays retryable", () => {
+    for (const limit of [1, 6, 10]) {
+      const error = threadLimitError(limit);
+      expect(error.message).toBe(`this bot has reached its limit of ${limit} parallel threads — wait for one to finish`);
+      expect(error).toMatchObject({ status: 409, code: "thread_limit" });
+      expect(isTurnAdmissionBlocked(error)).toBe(true);
+    }
+  });
+
   it("does not retry other failures just because they mention working", () => {
     for (const error of [
       new Error("already working but the provider is unavailable"),
-      Object.assign(new Error("already working"), { status: 409, code: "workspace_busy" }),
+      Object.assign(new Error("already working"), { status: 409, code: "guarded_busy" }),
       { status: 409 }, { code: "provider_unavailable" }, null, undefined, "thread_limit",
     ]) {
       expect(isTurnAdmissionBlocked(error)).toBe(false);

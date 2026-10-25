@@ -1,5 +1,7 @@
-// The shape of one line in a bot's activity log, shared by the harness
-// reader (server/activity.ts) and the panel that renders it.
+// The shape of one line in a bot's activity log, shared by the harness reader
+// and the panel that renders it.
+
+import type { WireMessage } from "./wire.ts";
 
 export type ActivityOutcome =
   /** the tool finished and reported success */
@@ -21,7 +23,6 @@ export interface ActivityRow {
   threadId: string;
   turnId?: string;
   requestId?: string;
-  /** the raw tool name, for anyone who wants it */
   tool: string;
   /** the connected app or surface it touched, when there is one */
   app: string | null;
@@ -30,4 +31,8 @@ export interface ActivityRow {
   /** the arguments the decision log recorded, already redacted */
   summary?: string;
   outcome: ActivityOutcome;
+  /** the chat activity message's tool record for this exact run (same
+   * thread, turn and provider item), as stored and already redacted; absent
+   * when no single message carries that identity */
+  detail?: NonNullable<WireMessage["tool"]>;
 }

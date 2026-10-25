@@ -5,6 +5,7 @@ import {
   BOTS_SECTION_ID,
   CHANNELS_SECTION_ID,
   PINNED_SECTION_ID,
+  keepFixedSectionSlots,
   mergeSectionOrder,
   moveSection,
   orderedSidebarSections,
@@ -12,10 +13,12 @@ import {
   partitionSidebarGroups,
   pinnedCircleThreadListVisible,
   placeSection,
+  sidebarConnectorPreview,
   sidebarLayoutInteractive,
   sidebarGoalRunPreview,
   sidebarSectionCollapsed,
   sidebarSectionLabel,
+  simpleSidebarSections,
   userSectionId,
   userSectionName,
 } from "./sidebar-layout";
@@ -59,6 +62,21 @@ describe("sidebar virtual sections", () => {
     expect(bot.section).toBe("Work");
   });
 
+  it("lists every bucket in the order the bots arrive, never by name", () => {
+    // The server owns this order (PUT /api/bots/order); a reorder made on a phone must show up here unchanged.
+    const parts = partitionSidebarBots([
+      { id: "zed", name: "Zed", pinned: true },
+      { id: "yak", name: "Yak", section: "Work" },
+      { id: "xon", name: "Xon" },
+      { id: "amy", name: "Amy", pinned: true },
+      { id: "bob", name: "Bob", section: "Work" },
+      { id: "cat", name: "Cat" },
+    ]);
+    expect(parts.pinnedBots.map((bot) => bot.id)).toEqual(["zed", "amy"]);
+    expect(parts.sectionedBots.map((bot) => bot.id)).toEqual(["yak", "bob"]);
+    expect(parts.unsectionedBots.map((bot) => bot.id)).toEqual(["xon", "cat"]);
+  });
+
   it("shows DMs in Bot Chats without rewriting their comms context", () => {
     const dm = { id: "dm", dm: true, section: "Work" };
     const namedBotChats = { id: "named", section: "Bot Chats" };
@@ -75,28 +93,40 @@ describe("sidebar virtual sections", () => {
     expect(namedBotChats.section).toBe("Bot Chats");
   });
 
-  it("keeps section Chiefs in their actual section", () => {
-    const chief = { id: "chief", chiefOfStaff: true, section: "Work", pinned: true };
-    const parts = partitionSidebarBots([chief]);
-    expect(parts.sectionChiefs).toEqual([chief]);
+  it("lifts pinned rooms out of their sections and keeps their saved context", () => {
+    const pinnedRoom = { id: "pinned", section: "Work", pinned: true };
+    const pinnedDm = { id: "pinned-dm", dm: true, pinned: true };
+    const parts = partitionSidebarGroups([
+      pinnedRoom,
+      pinnedDm,
+      { id: "stay", section: "Work" },
+    ]);
+    expect(parts.pinnedRooms.map((room) => room.id)).toEqual(["pinned"]);
+    expect(parts.botChats).toEqual([pinnedDm]);
+    expect(parts.sectionedRooms.map((room) => room.id)).toEqual(["stay"]);
+    expect(parts.unsectionedRooms).toEqual([]);
+    expect(pinnedRoom.section).toBe("Work");
+  });
+
+  it("sends every pinned Chief to the top bucket, whatever team it belongs to", () => {
+    const workChief = { id: "work-chief", chiefOfStaff: true, section: "Work", pinned: true };
+    const looseChief = { id: "loose", chiefOfStaff: true, pinned: true };
+    const unpinnedChief = { id: "michael", chiefOfStaff: true };
+    const parts = partitionSidebarBots([workChief, looseChief, unpinnedChief]);
+    expect(parts.pinnedChiefs.map((bot) => bot.id)).toEqual(["work-chief", "loose"]);
+    expect(parts.unsectionedChief?.id).toBe("michael");
+    expect(parts.sectionChiefs).toEqual([]);
     expect(parts.pinnedBots).toEqual([]);
   });
 
-  it("lifts pinned bots from every group when pins are universal", () => {
-    const workChief = { id: "work-chief", chiefOfStaff: true, section: "Work", pinned: true };
+  it("lifts pinned bots out of their sections without dropping hidden ones", () => {
     const home = { id: "home", section: "Home", pinned: true };
-    const looseChief = { id: "loose", chiefOfStaff: true, pinned: true };
     const stay = { id: "stay", section: "Work" };
     const hidden = { id: "hidden", section: "Home", pinned: true, hidden: true };
-    const parts = partitionSidebarBots(
-      [workChief, home, looseChief, stay, hidden],
-      { universalPins: true },
-    );
-    expect(parts.pinnedBots.map((bot) => bot.id)).toEqual(["work-chief", "home", "loose"]);
-    expect(parts.sectionChiefs).toEqual([]);
+    const parts = partitionSidebarBots([home, stay, hidden]);
+    expect(parts.pinnedBots.map((bot) => bot.id)).toEqual(["home"]);
     expect(parts.unsectionedChief).toBeNull();
     expect(parts.sectionedBots).toEqual([stay]);
-    expect(workChief.section).toBe("Work");
     expect(home.section).toBe("Home");
   });
 
@@ -130,6 +160,20 @@ describe("sidebar virtual sections", () => {
       startedAt: 1,
       finishedAt: 2,
     })).toBe("Completed: Drafted and verified.");
+  });
+
+  it("previews a connection card by its app and state, not the phone fallback line", () => {
+    const say = (key: string) => ({
+      "connectors.card.connected": "Connected",
+      "connectors.card.waiting": "Waiting for sign-in…",
+      "connectors.card.connectSecurely": "Connect securely",
+    })[key] ?? key;
+    const card = { label: "GitHub", status: "required" as const };
+    expect(sidebarConnectorPreview(card, say)).toBe("GitHub · Connect securely");
+    expect(sidebarConnectorPreview({ ...card, status: "failed" }, say)).toBe("GitHub · Connect securely");
+    expect(sidebarConnectorPreview({ ...card, status: "authorizing" }, say)).toBe("GitHub · Waiting for sign-in…");
+    expect(sidebarConnectorPreview({ ...card, status: "connected" }, say)).toBe("GitHub · Connected");
+    expect(sidebarConnectorPreview({ ...card, dismissed: true }, say)).toBe("GitHub");
   });
 });
 
@@ -199,5 +243,32 @@ describe("sidebar section ordering", () => {
       work,
       PINNED_SECTION_ID,
     ]);
+  });
+});
+
+describe("Simple-mode section order", () => {
+  const work = userSectionId("Work");
+  const home = userSectionId("Home");
+
+  it("puts Pinned and the heading-less Bots list first by default and keeps a saved order for the rest", () => {
+    const natural = [PINNED_SECTION_ID, CHANNELS_SECTION_ID, BOT_CHATS_SECTION_ID, BOTS_SECTION_ID, work];
+    expect(simpleSidebarSections(natural)).toEqual([PINNED_SECTION_ID, BOTS_SECTION_ID, CHANNELS_SECTION_ID, BOT_CHATS_SECTION_ID, work]);
+    expect(simpleSidebarSections([CHANNELS_SECTION_ID, BOTS_SECTION_ID, work])).toEqual([BOTS_SECTION_ID, CHANNELS_SECTION_ID, work]);
+    const saved = orderedSidebarSections([CHANNELS_SECTION_ID, BOTS_SECTION_ID, work, home], [home, CHANNELS_SECTION_ID, BOTS_SECTION_ID, work]);
+    expect(simpleSidebarSections(saved)).toEqual([BOTS_SECTION_ID, home, CHANNELS_SECTION_ID, work]);
+  });
+
+  it("writes a Simple reorder back without moving Pinned or Bots in the saved order", () => {
+    const full = [PINNED_SECTION_ID, CHANNELS_SECTION_ID, BOTS_SECTION_ID, work, home];
+    const shown = simpleSidebarSections(full);
+    const moved = simpleSidebarSections(placeSection(shown, home, CHANNELS_SECTION_ID, "before"));
+    expect(moved).toEqual([PINNED_SECTION_ID, BOTS_SECTION_ID, home, CHANNELS_SECTION_ID, work]);
+    expect(keepFixedSectionSlots(full, moved)).toEqual([PINNED_SECTION_ID, home, BOTS_SECTION_ID, CHANNELS_SECTION_ID, work]);
+    expect(keepFixedSectionSlots(full, shown)).toEqual(full);
+  });
+
+  it("cannot move a section above the heading-less Bots list", () => {
+    const shown = [BOTS_SECTION_ID, CHANNELS_SECTION_ID, work];
+    expect(simpleSidebarSections(moveSection(shown, CHANNELS_SECTION_ID, -1))).toEqual(shown);
   });
 });

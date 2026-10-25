@@ -2,9 +2,11 @@ import { createElement, type ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setLocale } from "@/lib/i18n";
+import type { SendKey } from "@/lib/send-key";
+import { en, locales } from "@/locales";
 import type { AppSettingsSection } from "@/state/store";
 import type { Switch } from "./SettingsPrimitives";
-import { SettingsModal } from "./SettingsModal";
+import { SECTIONS, sectionMatches, SettingsModal } from "./SettingsModal";
 
 const fixture = vi.hoisted(() => ({
   section: "appearance" as AppSettingsSection,
@@ -14,23 +16,33 @@ const fixture = vi.hoisted(() => ({
   setShowRunCard: vi.fn(),
   sidebarDensity: "comfortable" as "comfortable" | "compact" | "icons",
   setSidebarDensity: vi.fn(),
+  toolsLayout: "rows" as "rows" | "toolbar",
+  setSidebarToolsLayout: vi.fn(),
   notificationSounds: true,
   setNotificationSounds: vi.fn(),
+  setNotificationFeed: vi.fn(),
+  sendKey: "enter" as SendKey,
+  setSendKey: vi.fn(),
+  colorUserBubbles: false,
+  setColorUserBubbles: vi.fn(),
   advancedMode: false,
   setAdvancedMode: vi.fn(),
   api: vi.fn(),
   dispatch: vi.fn(),
   switches: [] as ComponentProps<typeof Switch>[],
+  customSkins: [] as Array<Record<string, unknown>>,
 }));
-vi.mock("./DesktopCapabilities", () => ({ useDesktopCapabilities: () => ({ capabilities: {} }) }));
+// The Cloud account card reads the host platform (what a saved sign-in still locked asks for).
+vi.mock("./DesktopCapabilities", () => ({ useDesktopCapabilities: () => ({ capabilities: { host: { platform: "darwin" } } }) }));
 
 vi.mock("@/state/store", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/state/store")>(),
   api: fixture.api,
-  useStore: () => ({ state: { appSettingsSection: fixture.section, instances: [] }, dispatch: fixture.dispatch }),
+  useStore: () => ({ state: { appSettingsSection: fixture.section, instances: [], customSkins: fixture.customSkins }, dispatch: fixture.dispatch }),
 }));
 vi.mock("@/lib/thread-preferences", () => ({
   useShowThreads: () => fixture.showThreads,
+  useShowThreadsChoice: () => fixture.showThreads,
   setShowThreads: fixture.setShowThreads,
 }));
 vi.mock("@/lib/run-card-preferences", () => ({
@@ -41,10 +53,25 @@ vi.mock("@/lib/sidebar-preferences", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/sidebar-preferences")>(),
   useSidebarDensity: () => fixture.sidebarDensity,
   setSidebarDensity: fixture.setSidebarDensity,
+  useSidebarToolsLayout: () => fixture.toolsLayout,
+  setSidebarToolsLayout: fixture.setSidebarToolsLayout,
 }));
 vi.mock("@/lib/notification-preferences", () => ({
   useNotificationSounds: () => fixture.notificationSounds,
   setNotificationSounds: fixture.setNotificationSounds,
+  useNotificationFeed: () => false,
+  setNotificationFeed: fixture.setNotificationFeed,
+  useFinishedNotifications: () => true,
+  setFinishedNotifications: vi.fn(),
+}));
+vi.mock("@/lib/send-key", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/send-key")>(),
+  useSendKey: () => fixture.sendKey,
+  setSendKey: fixture.setSendKey,
+}));
+vi.mock("@/lib/user-bubble-preference", () => ({
+  useColorUserBubbles: () => fixture.colorUserBubbles,
+  setColorUserBubbles: fixture.setColorUserBubbles,
 }));
 vi.mock("@/lib/interface-mode", () => ({
   useAdvancedMode: () => fixture.advancedMode,
@@ -68,10 +95,14 @@ beforeEach(() => {
   fixture.showThreads = true;
   fixture.showRunCard = true;
   fixture.sidebarDensity = "comfortable";
+  fixture.toolsLayout = "rows";
   fixture.notificationSounds = true;
+  fixture.sendKey = "enter";
+  fixture.colorUserBubbles = false;
   // these pin the Advanced rail; Simple has its own suite (SettingsModal.simple.test.ts)
   fixture.advancedMode = true;
   fixture.switches = [];
+  fixture.customSkins = [];
   vi.stubGlobal("window", {});
   vi.stubGlobal("document", { documentElement: { dataset: {} } });
   setLocale("en");
@@ -107,6 +138,19 @@ describe("Settings → Appearance", () => {
 
   it("does not repeat the Advanced mode switch in Appearance on this computer", () => {
     expect(render()).not.toContain('aria-label="Advanced mode"');
+  });
+
+  it.each([true, false])("keeps the app language reachable from a paired remote client (Advanced %s)", (advanced) => {
+    fixture.advancedMode = advanced;
+    vi.stubGlobal("window", { ogb: { remoteClient: { active: true } } });
+    const html = render();
+    expect(html).not.toContain('<option value="general">');
+    expect(html).toContain('aria-label="App language"');
+    expect(html).toContain('<option value="en">English</option>');
+  });
+
+  it("does not repeat the app language in Appearance on this computer", () => {
+    expect(render()).not.toContain('aria-label="App language"');
   });
 
 
@@ -168,6 +212,107 @@ describe("Settings → Appearance", () => {
     expect(fixture.dispatch).not.toHaveBeenCalled();
   });
 
+  it("offers the tools layout row right under the density row", () => {
+    const html = render();
+    expect(html).toContain('aria-label="Choose tools layout"');
+    expect(html).toContain("Tools layout");
+    expect(html).toContain("Icons density always shows icons");
+    expect(html).toContain('<option value="rows" selected="">Rows</option>');
+    expect(html).toContain('<option value="toolbar">Toolbar</option>');
+    expect(html.indexOf('aria-label="Choose sidebar density"')).toBeLessThan(
+      html.indexOf('aria-label="Choose tools layout"'),
+    );
+    expect(fixture.setSidebarToolsLayout).not.toHaveBeenCalled();
+  });
+
+  it("appearance search finds the tools layout row via toolbar", () => {
+    const appearance = SECTIONS.find((entry) => entry.id === "appearance")!;
+    for (const query of ["toolbar", "tools layout", "footer", "routines", "triggers", "team map"]) {
+      expect(sectionMatches(appearance, query)).toBe(true);
+    }
+  });
+
+  it.each([
+    ["enter", "Enter"],
+    ["shift-enter", "Shift+Enter"],
+    ["mod-enter", "Ctrl+Enter"],
+  ] as const)("shows the saved send key (%s) on this device only", (sendKey, label) => {
+    fixture.sendKey = sendKey;
+    const html = render();
+    expect(html).toContain("Send messages with");
+    expect(html).toContain('aria-label="Send messages with"');
+    expect(html).toContain("Choose Shift+Enter or Ctrl+Enter so Enter starts a new line");
+    expect(html).toContain("as Japanese input does. Ctrl+Enter sends whichever you choose.");
+    expect(html).toContain(`<option value="${sendKey}" selected="">${label}</option>`);
+    const options = [...html.matchAll(/<option value="(enter|shift-enter|mod-enter)"[^>]*>([^<]*)</g)].map((match) => [match[1], match[2]]);
+    expect(options).toEqual([["enter", "Enter"], ["shift-enter", "Shift+Enter"], ["mod-enter", "Ctrl+Enter"]]);
+    expect(fixture.setSendKey).not.toHaveBeenCalled();
+    expect(fixture.api).not.toHaveBeenCalled();
+    expect(fixture.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("asks Japanese speakers in Japanese, with the key named for this computer", () => {
+    setLocale("ja");
+    fixture.sendKey = "shift-enter";
+    const html = render();
+    expect(html).toContain("メッセージの送信キー");
+    expect(html).toContain("日本語入力のように Enter で変換を確定する場合は、Shift+Enter か Ctrl+Enter を選ぶと Enter で改行できます。");
+    expect(html).toContain('<option value="enter">Enter</option>');
+    expect(html).toContain('<option value="shift-enter" selected="">Shift+Enter</option>');
+    expect(html).toContain('<option value="mod-enter">Ctrl+Enter</option>');
+  });
+
+  it("finds the send key by the keys' names on every platform", () => {
+    const appearance = SECTIONS.find((section) => section.id === "appearance")!;
+    for (const query of ["enter", "return", "shift+enter", "ctrl+enter", "cmd", "cmd+enter", "⌘", "⌘+enter", "command", "send", "new line", "ime"]) {
+      expect(sectionMatches(appearance, query), query).toBe(true);
+    }
+  });
+
+  it("offers the notification feed in Appearance, off until chosen", () => {
+    const html = render();
+    expect(html).toContain("Notification feed");
+    const toggle = fixture.switches.find((props) => props["aria-label"] === "Show the notification feed")!;
+    expect(toggle.checked).toBe(false);
+    toggle.onClick!({} as never);
+    expect(fixture.setNotificationFeed).toHaveBeenCalledWith(true);
+    expect(fixture.api).not.toHaveBeenCalled();
+  });
+
+  it("offers the bot-colored message toggle in Appearance, off until chosen", () => {
+    const html = render();
+    expect(html).toContain("Color my messages");
+    expect(html).toContain("bot&#x27;s color");
+    expect(html).toContain("Rooms keep the neutral bubble");
+    const toggle = fixture.switches.find((props) => props["aria-label"] === "Color my messages with the bot's color")!;
+    expect(toggle.checked).toBe(false);
+    toggle.onClick!({} as never);
+    expect(fixture.setColorUserBubbles).toHaveBeenCalledWith(true);
+    expect(fixture.api).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["standard", "Standard"],
+    ["wide", "Wide"],
+    ["full", "Full width"],
+  ])("shows the saved chat width (%s) alongside message colors", (width, label) => {
+    vi.stubGlobal("localStorage", { getItem: (key: string) => key === "omb-chat-width" ? width : null });
+    const html = render();
+    expect(html).toContain('aria-label="Chat width"');
+    expect(html).toContain(`<option value="${width}" selected="">${label}</option>`);
+    for (const option of ["Standard", "Wide", "Full width"]) expect(html).toContain(`>${option}</option>`);
+    expect(html).toContain("Color my messages");
+    expect(fixture.api).not.toHaveBeenCalled();
+    expect(fixture.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("finds chat width and message colors in Appearance", () => {
+    const appearance = SECTIONS.find((section) => section.id === "appearance")!;
+    for (const query of ["width", "wide", "full width", "bubble", "color"]) {
+      expect(sectionMatches(appearance, query), query).toBe(true);
+    }
+  });
+
   it("offers the run card visibility toggle in Appearance", () => {
     fixture.showRunCard = true;
     const html = render();
@@ -194,7 +339,7 @@ describe("Settings → Appearance", () => {
     const html = render();
     expect(html).toContain("Profile");
     expect(html).toContain("Maximum turn length");
-    expect(html).toContain("Maximum running threads per bot");
+    expect(html).toContain("Default maximum running threads per bot");
     expect(html).toContain("Automatic recovery");
     expect(html).toContain('aria-label="App language"');
     expect(html).toContain("Diagnostics");
@@ -229,31 +374,52 @@ describe("Settings → Appearance", () => {
     expect(html).toContain("Older team backups and shareable templates");
   });
 
-  it("uses English fallback for new keys in untranslated languages", () => {
+  it("renders Appearance and its controls in Japanese", () => {
     setLocale("ja");
     const html = render();
-    expect(html).toContain("Appearance");
-    expect(html).toContain('aria-label="Show threads"');
-    expect(html).toContain('aria-label="Pinned bots as circles"');
-    expect(html).toContain('aria-label="Universal pins"');
-    expect(html).toContain("from every group");
-    expect(html).toContain("like Grok Bot");
-    expect(html).toContain("all conversation history and running work");
-    expect(html).not.toContain("settings.threadDisplay");
+    for (const key of [
+      "settings.section.appearance", "settings.threadDisplay.show",
+      "settings.threadDisplay.subtitle", "settings.pinnedCircles.title",
+      "settings.pinnedCircles.subtitle", "settings.universalPins.title",
+      "settings.universalPins.subtitle",
+    ] as const) {
+      expect(locales.ja[key], key).toBeTruthy();
+      expect(locales.ja[key], key).not.toBe(en[key]);
+      expect(html, key).toContain(locales.ja[key]!);
+    }
+  });
+
+  it("uses English fallback for new keys in an incomplete language pack", () => {
+    locales.zz = {};
+    try {
+      setLocale("zz");
+      const html = render();
+      expect(html).toContain("Appearance");
+      expect(html).toContain('aria-label="Show threads"');
+      expect(html).toContain('aria-label="Pinned bots as circles"');
+      expect(html).toContain('aria-label="Universal pins"');
+      expect(html).toContain("from every group");
+      expect(html).toContain("like Grok Bot");
+      expect(html).toContain("all conversation history and running work");
+      expect(html).not.toContain("settings.threadDisplay");
+    } finally {
+      delete locales.zz;
+      setLocale("en");
+    }
   });
 
   it("offers desktop connections as a top-level page without exposing the list remotely", () => {
     fixture.section = "desktopWorkspaces";
     vi.stubGlobal("window", { ogb: { environments: {} } });
     const local = render();
-    expect(local).toContain('<option value="desktopWorkspaces" selected="">Servers</option>');
+    expect(local).toContain('<option value="servers" selected="">Servers</option>');
     expect(local).toContain("Server address or pairing link");
     expect(local).toContain("Name (optional)");
     expect(local).toContain("Your servers");
     expect(local).toContain("npx openmausbot pair --label");
     fixture.section = "general";
     vi.stubGlobal("window", { ogb: { workspaces: {} } });
-    expect(render()).not.toContain('<option value="desktopWorkspaces"');
+    expect(render()).toContain('<option value="servers"');
   });
 
   it("offers optional Organisation settings only through the local desktop bridge", () => {
@@ -278,5 +444,42 @@ describe("Settings → Appearance", () => {
     vi.stubGlobal("window", {}); expect(render()).not.toContain('<option value="cloudAccount"');
     vi.stubGlobal("window", { ogb: { cloudAccount: {}, remoteClient: { active: true } } });
     expect(render()).not.toContain('<option value="cloudAccount"');
+  });
+});
+
+describe("Settings → Appearance: custom skins", () => {
+  it("offers the entry points and never calls the API on render", () => {
+    const html = render();
+    expect(html).toContain("Your skins");
+    expect(html).toContain("New skin");
+    expect(fixture.api).not.toHaveBeenCalled();
+  });
+
+  it("renders the workspace's custom skins from the store", () => {
+    fixture.customSkins = [{
+      id: "cs-0123abcd",
+      name: "Ember",
+      tagline: "Warm brass on a night floor",
+      recipe: { mode: "dark", accent: "#d97706", tint: "#3b2a18", bubble: "match", corners: "sharp" },
+      createdAt: 1,
+      updatedAt: 1,
+    }];
+    const html = render();
+    expect(html).toContain("Ember");
+    expect(html).toContain("Warm brass on a night floor");
+    expect(html).toContain('data-skin="custom:cs-0123abcd"');
+  });
+
+  it("credits a bot-made skin", () => {
+    fixture.customSkins = [{
+      id: "cs-0123abcd",
+      name: "Ember",
+      tagline: "",
+      recipe: { mode: "dark", accent: "#d97706", tint: "#3b2a18", bubble: "match", corners: "sharp" },
+      createdAt: 1,
+      updatedAt: 1,
+      createdBy: { botId: "b1", name: "Kero" },
+    }];
+    expect(render()).toContain("Made by Kero");
   });
 });

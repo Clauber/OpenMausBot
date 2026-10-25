@@ -15,6 +15,25 @@ options:
     iOS: "16.0"
   createIntermediateGroups: true
 
+# Build settings every target inherits.
+settings:
+  configs:
+    Debug:
+      # The type checker warns, at the line, when it spends more than half a
+      # second on one expression or function body. That is the common way a
+      # SwiftUI build turns from minutes into a CI timeout: a `body` that
+      # chains enough views, modifiers, colour ternaries and closures becomes
+      # one constraint problem the solver searches for seconds. (The other
+      # way, a view type IRGen cannot finish, is what the `ViewModifier` rule
+      # in App/BackDeployCompat.swift is for; this flag does not see it, so
+      # CI checks that rule at the source: scripts/check-ios-view-shims.sh.)
+      # CI reads these warnings out of the build log and fails on any
+      # (ci.yml, the step after "Build the simulator app"), so a new slow
+      # body is a file:line in a two-minute build, not a 30-minute timeout.
+      # Keep bodies small: a section or a row is its own property or
+      # function, and a colour chosen by a ternary is a typed `let`.
+      OTHER_SWIFT_FLAGS: "$(inherited) -Xfrontend -warn-long-expression-type-checking=500 -Xfrontend -warn-long-function-bodies=500"
+
 packages:
   CompanionCore:
     path: .
@@ -72,12 +91,8 @@ targets:
     info:
       path: App/Info.plist
       properties:
-        # What appears under the icon. This MUST stay close to the App Store
-        # listing name ("MausBot") or review rejects the build under
-        # guideline 2.3.8: a person who installs "MausBot" has to be able to
-        # find it on the home screen. The desktop app is "OpenMausBot", which
-        # is near enough to read as the same family and still tell them apart.
-        CFBundleDisplayName: MausBot
+        # The fork name shown under the app icon.
+        CFBundleDisplayName: Legion
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSApplicationCategoryType: public.app-category.productivity
@@ -112,16 +127,16 @@ targets:
         # It looks exactly like "no computers on this network", which is a
         # confusing hour if you don't know to look here.
         NSLocalNetworkUsageDescription: >-
-          OpenMausBot finds your computer on this network so your bots can
+          Legion finds your computer on this network so your bots can
           reach you here.
         NSCameraUsageDescription: >-
-          OpenMausBot uses the camera only to scan a pairing QR code shown on
+          Legion uses the camera only to scan a pairing QR code shown on
           your computer.
         NSMicrophoneUsageDescription: >-
-          OpenMausMobile listens while you dictate a message to a bot or talk
+          Legion listens while you dictate a message to a bot or talk
           to it on a Live call.
         NSSpeechRecognitionUsageDescription: >-
-          OpenMausMobile converts your speech into text so you can send it
+          Legion converts your speech into text so you can send it
           to a bot. Recognition runs on this phone when it can.
         NSBonjourServices:
           - _openmausbot._tcp
@@ -192,7 +207,7 @@ targets:
     info:
       path: ShareExtension/Info.plist
       properties:
-        CFBundleDisplayName: MausBot
+        CFBundleDisplayName: Legion
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         OpenMausKeychainAccessGroup: $(AppIdentifierPrefix)group.com.openmausbot.shared
@@ -268,7 +283,7 @@ targets:
     info:
       path: Widgets/Info.plist
       properties:
-        CFBundleDisplayName: MausBot
+        CFBundleDisplayName: Legion
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         OpenMausKeychainAccessGroup: $(AppIdentifierPrefix)group.com.openmausbot.shared

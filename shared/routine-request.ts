@@ -1,13 +1,11 @@
 /**
- * Durable payload carried by a chat routine confirmation card.
- *
- * Tool input is normalized before it reaches this shape: timestamps are
- * milliseconds, weekly day names are the scheduler's numeric weekday values,
- * and every text field has already been scrubbed for credential-shaped data.
- * Keeping the normalized operation on the card lets a confirmation survive an
- * app restart without asking the model to interpret the request again.
+ * Durable payload carried by a chat routine confirmation card. Tool input
+ * arrives normalized (milliseconds, numeric weekdays, credential-scrubbed
+ * text), so a confirmation survives a restart without asking the model again.
  */
 
+import type { LimitResetRepeat } from "./limit-reset.ts";
+import type { RoutinePreCheck } from "./routine-precheck.ts";
 import type { RoutineCronSchedule } from "./routine-schedule.ts";
 
 export type RoutineRequestRunOn = "maus" | "cloud";
@@ -19,6 +17,8 @@ export interface RoutineRequestIntervalWindow {
 
 export type RoutineRequestSchedule =
   | { type: "once"; at: number }
+  /** The time is the engine's, derived when the routine is saved. */
+  | { type: "limit_reset"; engine: string; repeat: LimitResetRepeat }
   | { type: "daily"; time: string; weekdays: number[] }
   | RoutineCronSchedule
   | {
@@ -50,9 +50,10 @@ export type RoutineRequestScheduleChanges =
 export interface RoutineRequestDefinition {
   name: string;
   instructions: string;
+  preCheck?: RoutinePreCheck;
   schedule: RoutineRequestSchedule;
   runOn: RoutineRequestRunOn;
-  /** Legacy calendar/display length. It does not stop an active run. */
+  /** Calendar/display length only: it does not stop an active run. */
   durationMinutes: number;
   /** Optional safety cap for active work. Missing means no timeout. */
   timeoutMinutes?: number;
@@ -60,14 +61,20 @@ export interface RoutineRequestDefinition {
   continuity?: boolean;
   /** Skip by default, or keep at most one scheduled run waiting. */
   overlap?: "skip" | "queue";
+  /** Also run once each time Legion starts. Repeating routines only. */
+  runOnStartup?: boolean;
+  /** Where run results are posted: the default destination, or a conversation
+   * of the routine's own. Omission keeps the current destination. */
+  results?: "main" | "own";
 }
 
 export type RoutineRequestChanges =
-  & Omit<Partial<RoutineRequestDefinition>, "schedule" | "timeoutMinutes">
+  & Omit<Partial<RoutineRequestDefinition>, "schedule" | "timeoutMinutes" | "preCheck">
   & {
     schedule?: RoutineRequestScheduleChanges;
     /** `null` removes an existing safety cap. */
     timeoutMinutes?: number | null;
+    preCheck?: RoutinePreCheck | null;
   };
 
 /** Another bot in the proposer's section that this proposal targets: a
@@ -88,6 +95,31 @@ export type RoutineRequestOperation =
   | { action: "run_now"; routineId: string; expectedUpdatedAt: number; forBot?: RoutineRequestTargetBot }
   | { action: "delete"; routineId: string; expectedUpdatedAt: number; forBot?: RoutineRequestTargetBot };
 
+/** A routine as it stood before a change applied without a person, so Undo
+ * can put it back. Room goals keep their room; attachments are not kept, so
+ * a routine that has any is not offered an Undo for its update or delete. */
+export interface RoutineRequestSnapshot extends RoutineRequestDefinition {
+  enabled: boolean;
+  target?: "room-goal";
+  groupId?: string;
+  resultsThreadId?: string;
+}
+
+/** Written on a card whose change applied without a person (the bot's own
+ * routine, or Full access): what the one-line receipt shows, and what its
+ * Undo needs. */
+export interface RoutineRequestUndo {
+  /** The routine's name and schedule as the change left them. */
+  name: string;
+  schedule?: RoutineRequestSchedule;
+  /** The routine's revision right after the change; Undo refuses once it moved. */
+  appliedUpdatedAt?: number;
+  /** The routine before an update or a delete. */
+  before?: RoutineRequestSnapshot;
+  /** On a Cloud home: the routine was the owner's before the change. */
+  ownersBefore?: boolean;
+}
+
 export interface RoutineRequestCardData {
   version: 1;
   /** Also used as the scheduler's idempotency key after confirmation. */
@@ -97,7 +129,8 @@ export interface RoutineRequestCardData {
   threadId: string;
   createdAt: number;
   operation: RoutineRequestOperation;
-  /** Written after a successful confirmation. Useful for support/debugging. */
+  /** Written after a successful confirmation. */
   appliedAt?: number;
   resultId?: string;
+  undo?: RoutineRequestUndo;
 }

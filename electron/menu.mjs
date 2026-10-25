@@ -1,34 +1,47 @@
-// The application menu. It exists for two reasons: the Server submenu,
-// where the user switches between the local server and paired remote ones,
-// and the macOS Preferences… item (Electron has no role for it, so it is
-// built explicitly). Everything else is Electron's standard roles so macOS
-// keeps Edit/Window and Windows/Linux get the same items under a visible bar.
+// Electron has no role for the macOS Preferences… item, so it is built explicitly.
 import { Menu, app } from "electron";
 
 /**
  * @param {object} input
  * @param {{ id: string, name: string, origin: string }[]} input.environments
  * @param {string} input.activeId  "local" or an environment id
+ * @param {boolean} [input.localHidden]  This computer was removed from the lists
  * @param {(id: string) => void} input.onSwitch
  * @param {() => void} input.onAddFromClipboard
  * @param {() => void} input.onConnect
  * @param {(id: string) => void} input.onForget
  * @param {() => void} input.onOpenSettings
  * @param {() => void} input.onOrganizationSignIn
+ * @param {{ origin: string, onBack: () => void } | null} [input.home] My Cloud once the person's bots moved there: the
+ *   menu lists only the other saved servers, with Back to My Cloud, and is absent without any.
  */
-export function buildApplicationMenu({ environments, activeId, onSwitch, onAddFromClipboard, onConnect, onForget, onOpenSettings, onOrganizationSignIn }) {
+export function buildApplicationMenu({ environments, activeId, localHidden = false, onSwitch, onAddFromClipboard, onConnect, onForget, onOpenSettings, onOrganizationSignIn, onAddCloud, sublabels = {}, home = null }) {
   const isMac = process.platform === "darwin";
   const active = environments.find((e) => e.id === activeId) ?? null;
-  const server = {
+  const others = home ? environments.filter((e) => e.origin !== home.origin && e.kind !== "local") : [];
+  const away = Boolean(active && home && active.origin !== home.origin);
+  const homeServer = {
     label: "Server",
     submenu: [
-      { label: "Local (this computer)", type: "radio", checked: !active, click: () => onSwitch("local") },
+      { id: "back-to-my-cloud", label: "Back to My Cloud", enabled: away, click: () => home?.onBack() },
+      { type: "separator" },
+      ...others.map((e) => ({ label: `${e.name} — ${new URL(e.origin).host}`, type: "radio", checked: e.id === activeId, click: () => onSwitch(e.id) })),
+      { type: "separator" },
+      { label: "Add Server from Copied Pairing Link…", click: () => onAddFromClipboard() },
+      { label: away ? `Forget “${active.name}”` : "Forget Server", enabled: away, click: () => away && onForget(active.id) },
+    ],
+  };
+  const server = home ? homeServer : {
+    label: "Server",
+    submenu: [
+      ...(!localHidden || !active ? [{ label: "This computer", type: "radio", checked: !active, click: () => onSwitch("local") }] : []),
       ...environments.map((e) => ({
-        label: `${e.name} — ${new URL(e.origin).host}`,
+        label: `${e.name} — ${Object.hasOwn(sublabels, e.id) ? sublabels[e.id] : new URL(e.origin).host}`,
         type: "radio",
         checked: e.id === activeId,
         click: () => onSwitch(e.id),
       })),
+      ...(onAddCloud ? [{ id: "add-cloud", label: "Add a Cloud…", click: () => onAddCloud() }] : []),
       { type: "separator" },
       { id: "organization-sign-in", label: "Sign in with your organization…", click: onOrganizationSignIn },
       { label: "Connect to a server…", click: onConnect },
@@ -44,7 +57,7 @@ export function buildApplicationMenu({ environments, activeId, onSwitch, onAddFr
     ...(isMac ? [{ label: app.name, submenu: [{ role: "about" }, { label: "Preferences…", accelerator: "CmdOrCtrl+,", click: () => onOpenSettings() }, { type: "separator" }, { role: "hide" }, { role: "hideOthers" }, { role: "unhide" }, { type: "separator" }, { role: "quit" }] }] : []),
     { role: "fileMenu" },
     { role: "editMenu" },
-    server,
+    ...(home && !others.length ? [] : [server]),
     { role: "viewMenu" },
     { role: "windowMenu" },
   ];

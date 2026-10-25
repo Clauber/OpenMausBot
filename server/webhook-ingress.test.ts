@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -58,7 +58,7 @@ describe("webhook-only ingress", () => {
       await new Promise<void>((resolve) => guarded.server.close(() => resolve()));
     }
   });
-  it("exposes health but nothing from the main OpenMausBot API", async () => {
+  it("exposes health but nothing from the main Legion API", async () => {
     const health = await fetch(`${ingress.baseUrl}/health`);
     expect(health.status).toBe(200);
     expect(await health.json()).toEqual({ app: "openmausbot-webhooks", ready: true });
@@ -90,6 +90,63 @@ describe("webhook-only ingress", () => {
     });
     expect(response.status).toBe(202);
     expect(queued.at(-1)?.prompt).toContain('"ticket": "42"');
+  });
+
+  it("awaits a room delivery and answers 202 only after the post lands; a failing sink is not 2xx", async () => {
+    let finish: () => void = () => {};
+    let gate = new Promise<void>((resolve) => (finish = resolve));
+    const roomDir = mkdtempSync(join(tmpdir(), "omb-webhook-room-"));
+    const roomQueued: unknown[] = [];
+    const posts: Array<{ payload: Record<string, unknown> }> = [];
+    let sinkFails = true;
+    const rooms = new WebhookManager({
+      file: join(roomDir, "webhooks.json"),
+      botState: () => "ready",
+      enqueue: (input) => {
+        roomQueued.push(input);
+        return { id: `room-run-${roomQueued.length}` };
+      },
+      roomMember: () => ({ ok: true }),
+      roomPost: async (_trigger, payload) => {
+        await gate;
+        if (sinkFails) throw Object.assign(new Error("the voice engine is asleep"), { status: 503 });
+        posts.push({ payload: payload as Record<string, unknown> });
+        return { posted: true, attachments: 1, threadId: "room-7-thread" };
+      },
+    });
+    const created = rooms.create({ name: "Room brief", prompt: "", botId: "maus-1", delivery: "post", groupId: "room-7" });
+    const receiver = await listenWebhookIngress(rooms, { port: 0 });
+    const send = (deliveryId: string) => fetch(`${receiver.baseUrl}/hooks/${created.webhook.endpointId}/${created.secret}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": deliveryId },
+      body: JSON.stringify({ text: "Deploy done", voiceNote: "deploy done" }),
+    });
+    try {
+      const failing = send("room-evt-1");
+      finish();
+      expect((await failing).status).toBe(503);
+      expect(posts).toHaveLength(0);
+      expect(roomQueued).toHaveLength(0);
+      expect(rooms.listAttempts().at(-1)).toMatchObject({ outcome: "rejected", statusCode: 503 });
+
+      sinkFails = false;
+      gate = new Promise<void>((resolve) => (finish = resolve));
+      const accepted = send("room-evt-2");
+      const early = await Promise.race([accepted.then(() => "answered"), new Promise((resolve) => setTimeout(() => resolve("pending"), 50))]);
+      expect(early).toBe("pending");
+      expect(posts).toHaveLength(0);
+      finish();
+      const response = await accepted;
+      expect(response.status).toBe(202);
+      expect(await response.json()).toMatchObject({ accepted: true, duplicate: false, threadId: "room-7-thread" });
+      expect(posts).toHaveLength(1);
+      expect(posts[0]?.payload).toMatchObject({ text: "Deploy done", voiceNote: "deploy done" });
+      expect(roomQueued).toHaveLength(0);
+      expect(created.webhook.groupId).toBe("room-7");
+    } finally {
+      await new Promise<void>((resolve) => receiver.server.close(() => resolve()));
+      rmSync(roomDir, { recursive: true, force: true });
+    }
   });
 
   it("does not deduplicate separate requests that reuse a generic payload id", async () => {
@@ -140,6 +197,64 @@ describe("webhook-only ingress", () => {
   });
 });
 
+describe("requests with a wrong secret", () => {
+  it("answers a malformed escape in the URL secret with 401, not 500", async () => {
+    const response = await fetch(`${ingress.baseUrl}/hooks/${endpointId}/%E0%A4%A`, { method: "POST", body: "{}" });
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "Invalid webhook URL or secret" });
+  });
+
+  it("neither evicts real deliveries nor rewrites the file for each request", async () => {
+    const floodDir = mkdtempSync(join(tmpdir(), "omb-webhook-flood-"));
+    const file = join(floodDir, "webhooks.json");
+    const emitted = new Set<string>();
+    let runs = 0;
+    const flooded = new WebhookManager({
+      file,
+      botState: () => "ready",
+      enqueue: () => ({ id: `flood-run-${++runs}` }),
+      emit: (frame) => { if (frame.kind === "webhook.attempt") emitted.add(frame.attempt.id); },
+    });
+    const created = flooded.create({ name: "CI", prompt: "Review", botId: "maus-1" });
+    const receiver = await listenWebhookIngress(flooded, { port: 0 });
+    const url = `${receiver.baseUrl}/hooks/${created.webhook.endpointId}`;
+    const deliver = (id: string) => fetch(url, {
+      method: "POST",
+      headers: { authorization: `Bearer ${created.secret}`, "content-type": "application/json", "idempotency-key": id },
+      body: "{}",
+    });
+    try {
+      expect((await deliver("real-1")).status).toBe(202);
+      const written = statSync(file);
+      for (let i = 0; i < 2_100; i += 1) {
+        const response = await fetch(url, { method: "POST", headers: { authorization: "Bearer wrong" }, body: "" });
+        expect(response.status).toBe(401);
+        await response.arrayBuffer();
+      }
+      const after = statSync(file);
+      expect([after.ino, after.mtimeMs]).toEqual([written.ino, written.mtimeMs]);
+
+      const attempts = flooded.listAttempts();
+      expect(attempts.filter((attempt) => attempt.outcome === "accepted").map((attempt) => attempt.deliveryId)).toEqual(["real-1"]);
+      const rejected = attempts.filter((attempt) => attempt.outcome === "rejected");
+      expect(rejected).toHaveLength(1);
+      expect(rejected[0]).toMatchObject({ statusCode: 401, reason: "Invalid webhook URL or secret (2100 requests)" });
+      expect(emitted.size).toBe(2);
+
+      expect((await deliver("real-2")).status).toBe(202);
+      const reloaded = new WebhookManager({ file, botState: () => "ready", enqueue: () => ({ id: "unused" }) });
+      expect(reloaded.listAttempts().map((attempt) => [attempt.outcome, attempt.statusCode])).toEqual([
+        ["accepted", 202],
+        ["rejected", 401],
+        ["accepted", 202],
+      ]);
+    } finally {
+      await new Promise<void>((resolve) => receiver.server.close(() => resolve()));
+      rmSync(floodDir, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
+
 describe("advertised base URL", () => {
   it("hands senders the public base instead of the loopback listener", async () => {
     const proxied = await listenWebhookIngress(manager, { port: 0, publicBaseUrl: "https://bots.example.com/" });
@@ -148,7 +263,6 @@ describe("advertised base URL", () => {
       expect(proxied.host).toBe("127.0.0.1");
       const credential = webhookCredential(proxied.baseUrl, endpointId, secret);
       expect(credential.endpointUrl).toBe(`https://bots.example.com/hooks/${endpointId}`);
-      // the listener itself is still local: the public base only changes what is advertised
       const health = await fetch(`http://127.0.0.1:${proxied.port}/health`);
       expect(health.status).toBe(200);
     } finally {

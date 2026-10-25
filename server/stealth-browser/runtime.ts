@@ -1,0 +1,576 @@
+// The stealth browser runtime: one patchright persistent context per browser
+// session, launched with that session's own fingerprint and kept open here.
+//
+// The context must stay open in this process for the stealth to hold: the
+// fingerprint is attached by this Playwright client, and the evasion script
+// (evasions.ts) is re-evaluated on every navigation by this client's
+// listeners — a Chrome detached from this process keeps only its launch
+// flags. Callers hand the context's CDP port to an automation client
+// (agent-browser); pages that client opens still get the evasions, because
+// the context's page events fire here too.
+//
+// Each session keeps a stable CDP port and a stable fingerprint across
+// restarts (state dir), so a browser session stays one identity for the
+// sites that see it. The runtime never closes a context on its own: the
+// caller knows when a session is idle and calls closeSession, which keeps
+// that identity so the next cdpTarget relaunches the same browser.
+import { spawn } from "node:child_process";
+import { accessSync, constants, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
+import { join } from "node:path";
+
+import type { Fingerprint } from "fingerprint-generator";
+import type { BrowserContext } from "patchright";
+
+import { BROWSER_ARGS, loadFingerprintSuite, loadPatchright } from "./stealth.ts";
+import { armCloudflareSolver } from "./challenge.ts";
+import { buildEvasionScript } from "./evasions.ts";
+
+type FingerprintBundle = { fingerprint: Fingerprint; headers: Record<string, string> };
+
+const SESSION_NAME = /^[A-Za-z0-9_.-]{1,96}$/;
+const XVFB_SCREEN = "2560x1440x24";
+const PORT_PROBE_TIMEOUT_MS = 250;
+const DISPLAY_WAIT_MS = 10_000;
+
+export interface StealthRuntimeOptions {
+  /** Fingerprints, port assignments. Secrets-adjacent: keep 0700. */
+  stateDir: string;
+  /** Chrome profile directories, one per session. */
+  profilesDir: string;
+  /** First CDP port handed out; later sessions count up from here. */
+  debugPortBase: number;
+  /** Headed Chrome is meaningfully harder to fingerprint than headless;
+   * displayless Linux hosts get an automatic Xvfb display unless this is
+   * explicitly turned off. */
+  headed?: boolean;
+  /** Click Cloudflare's "verify you are human" checkbox automatically when a
+   * challenge blocks a page, so the bot never sees the interstitial. */
+  solveCloudflare?: boolean;
+  /** A system Chrome to use when channel:"chrome" is not installed. */
+  chromeExecutable?: string;
+  env?: NodeJS.ProcessEnv;
+  log?: (line: string) => void;
+}
+
+export interface StealthRuntime {
+  /** The loopback CDP endpoint a client attaches to for this session. */
+  cdpTarget(session: string): Promise<string>;
+  /** Close a session's Chrome, keeping its profile, fingerprint and port. */
+  closeSession(session: string): Promise<boolean>;
+  /** Close a session's context and forget its profile, fingerprint and port. */
+  dropSession(session: string): Promise<boolean>;
+  shutdown(): Promise<void>;
+}
+
+interface PersistentSession {
+  context: BrowserContext;
+  debugPort: number;
+  chrome?: ReturnType<typeof spawn>;
+  lastAccess: number;
+}
+
+const GPU_ARGS = ["--use-angle=vulkan", "--enable-features=Vulkan,DefaultANGLEVulkan,VulkanFromANGLE", "--ignore-gpu-blocklist"];
+
+/** OMB_BROWSER_GPU_DIR names a vendor GL/Vulkan userspace (lib/ plus the ICD
+ * manifests in share/) for hosts, like GPU-passthrough containers, that expose
+ * the device but ship only the compute libraries; without it Chrome falls back
+ * to software rendering. */
+export function gpuEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const dir = env.OMB_BROWSER_GPU_DIR;
+  if (!dir) return {};
+  return {
+    LD_LIBRARY_PATH: [join(dir, "lib"), env.LD_LIBRARY_PATH].filter(Boolean).join(":"),
+    VK_ICD_FILENAMES: join(dir, "share", "nvidia_icd.json"),
+    __EGL_VENDOR_LIBRARY_FILENAMES: join(dir, "share", "10_nvidia.json"),
+  };
+}
+
+export function isValidStealthSession(session: string): boolean {
+  return SESSION_NAME.test(session) && !session.includes("..");
+}
+
+function portBusy(port: number, timeoutMs = PORT_PROBE_TIMEOUT_MS): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createServer();
+    socket.once("error", () => resolve(true));
+    socket.once("listening", () => socket.close(() => resolve(false)));
+    try {
+      socket.listen({ port, host: "127.0.0.1" });
+    } catch {
+      resolve(true);
+    }
+    // A listen that neither errors nor binds within the timeout is treated
+    // as busy: refusing a port costs one retry, racing a CDP listener on it
+    // costs a Chrome that starts without a working DevTools endpoint.
+    const timer = setTimeout(() => {
+      socket.close();
+      resolve(true);
+    }, timeoutMs);
+    timer.unref?.();
+  });
+}
+
+/** The context's browser-level CDP endpoint, from the debug port this
+ * runtime launched the browser with. */
+function browserCdpUrl(port: number): Promise<string | null> {
+  return fetch(`http://127.0.0.1:${port}/json/version`)
+    .then((response) => response.json() as Promise<{ webSocketDebuggerUrl?: string }>)
+    .then((body) => body.webSocketDebuggerUrl ?? null)
+    .catch(() => null);
+}
+
+/** Poll the context's CDP endpoint until it answers both /json/version and
+ * /json/list, so the first client to discover it succeeds. */
+async function waitForCdpEndpoint(port: number, session: string, log?: (line: string) => void): Promise<void> {
+  const deadline = Date.now() + 15_000;
+  let lastError: unknown = null;
+  while (Date.now() < deadline) {
+    try {
+      const version = await fetch(`http://127.0.0.1:${port}/json/version`);
+      if (version.ok) {
+        const list = await fetch(`http://127.0.0.1:${port}/json/list`);
+        if (list.ok) return;
+      }
+    } catch (error) { lastError = error; }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  log?.(`stealth-browser: session "${session}" CDP endpoint did not answer in time${lastError ? ` (${(lastError as Error).message})` : ""}`);
+}
+
+/** Register `script` to run before every document in this browser, for
+ * targets created by any CDP client — the automation client attaches to this
+ * browser itself and opens its pages behind our back, so context-level init
+ * scripts never reach them. Discovers page targets on the browser's own
+ * debug endpoint and adds the pre-document script to each. */
+async function attachBrowserLevelInjection(context: BrowserContext, debugPort: number, script: string, session: string, log?: (line: string) => void, onNewPage?: () => void): Promise<void> {
+  if (!context.browser()) return;
+  const wsUrl = await browserCdpUrl(debugPort);
+  if (!wsUrl) {
+    log?.(`stealth-browser: session "${session}" could not reach its CDP endpoint for browser-wide injection`);
+    return;
+  }
+  const socket = new WebSocket(wsUrl);
+  socket.addEventListener("close", () => {
+    // The next sweep re-installs on every page target: a fresh socket knows
+    // nothing about what the old one already registered.
+    installed.clear();
+    log?.(`stealth-browser: session "${session}" identity injection socket closed`);
+  });
+  socket.addEventListener("error", () => log?.(`stealth-browser: session "${session}" identity injection socket errored`));
+  await new Promise<void>((resolve, reject) => {
+    socket.onopen = () => resolve();
+    socket.onerror = () => reject(new Error("the stealth browser's CDP endpoint refused a connection"));
+  });
+  const installed = new Set<string>();
+  // Windows identity: Chrome's own UA override rewrites the request headers, client hints and navigator.* together,
+  // so nothing contradicts (the Linux-vs-Windows split that fingerprint-injector caused). Brands come from the real
+  // browser so the GREASE entry matches this Chrome build.
+  type Brands = Array<{ brand: string; version: string }>;
+  let realBrands: Promise<{ brands: Brands; fullVersionList: Brands; uaFullVersion: string } | undefined> | undefined;
+  const identify = async (sessionId: string): Promise<void> => {
+    realBrands ??= send("Runtime.evaluate", {
+      expression: "navigator.userAgentData.getHighEntropyValues(['fullVersionList','uaFullVersion']).then(h=>({brands:navigator.userAgentData.brands,fullVersionList:h.fullVersionList,uaFullVersion:h.uaFullVersion}))",
+      awaitPromise: true, returnByValue: true,
+    }, sessionId).then((r) => (r as { result?: { value?: { brands: Brands; fullVersionList: Brands; uaFullVersion: string } } } | undefined)?.result?.value);
+    const real = await realBrands;
+    if (real?.uaFullVersion) {
+      const major = real.uaFullVersion.split(".")[0];
+      await send("Emulation.setUserAgentOverride", {
+        userAgent: `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`,
+        acceptLanguage: "en-US,en",
+        platform: "Win32",
+        userAgentMetadata: {
+          brands: real.brands, fullVersionList: real.fullVersionList, fullVersion: real.uaFullVersion,
+          platform: "Windows", platformVersion: "15.0.0", architecture: "x86", model: "", mobile: false, bitness: "64", wow64: false,
+        },
+      }, sessionId).catch(() => {});
+    } else {
+      realBrands = undefined; // page had no userAgentData yet (about:blank race); the next target retries
+      log?.(`stealth-browser: session "${session}" could not read Chrome brands; Windows identity skipped on one target`);
+    }
+    // Pin the viewport to the daemon's expected 1280x720: the Browser
+    // panel's click mapping trusts the stream metadata, and a window-sized
+    // viewport (which varies with browser chrome) desyncs it — clicks land
+    // offset and a person's takeover input appears to do nothing.
+    // The screen reports a common 1080p monitor instead of the Xvfb 2560x1440.
+    await send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false, screenWidth: 1920, screenHeight: 1080 }, sessionId).catch(() => {});
+    // Chrome only runs Page.addScriptToEvaluateOnNewDocument scripts for a session that enabled Page; without it
+    // every evasion silently never ran.
+    await send("Page.enable", {}, sessionId).catch(() => {});
+  };
+  const installOnTarget = async (sessionId: string, targetId: string): Promise<void> => {
+    if (installed.has(targetId)) return;
+    await identify(sessionId);
+    // Chrome's own security-key/passkey dialog never reaches the panel's stream yet swallows every click; a virtual
+    // authenticator domain with none attached fails the request quietly, so "Try another way" stays usable.
+    await send("WebAuthn.enable", { enableUI: false }, sessionId).catch(() => {});
+    const add = await send("Page.addScriptToEvaluateOnNewDocument", { source: script, runImmediately: true }, sessionId);
+    if (add && typeof add === "object" && "error" in (add as Record<string, unknown>)) {
+      log?.(`stealth-browser: identity install rejected on ${targetId.slice(0, 8)}: ${JSON.stringify((add as Record<string, unknown>).error)}`);
+      return; // leave uninstalled; the sweep retries
+    }
+    installed.add(targetId);
+    await send("Runtime.evaluate", { expression: script }, sessionId).catch((error) => log?.(`stealth-browser: identity evaluate failed on ${targetId.slice(0, 8)}: ${(error as Error).message}`));
+  };
+  const sweep = async (): Promise<void> => {
+    try {
+      const targets = await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) => r.json() as Promise<Array<{ type: string; targetId?: string; id: string }>>);
+      for (const target of targets) {
+        if (target.type !== "page") continue;
+        const targetId = target.targetId ?? target.id;
+        if (installed.has(targetId)) continue;
+        installed.add(targetId);
+        const attached = await send("Target.attachToTarget", { targetId, flatten: true }) as { sessionId?: string; error?: unknown } | undefined;
+        if (!attached?.sessionId) {
+          installed.delete(targetId);
+          if (attached && "error" in attached) log?.(`stealth-browser: attach rejected on ${targetId.slice(0, 8)}: ${JSON.stringify(attached.error)}`);
+          continue;
+        }
+        await identify(attached.sessionId);
+        await send("WebAuthn.enable", { enableUI: false }, attached.sessionId).catch(() => {});
+        const add = await send("Page.addScriptToEvaluateOnNewDocument", { source: script, runImmediately: true }, attached.sessionId);
+        if (add && typeof add === "object" && "error" in (add as Record<string, unknown>)) {
+          log?.(`stealth-browser: identity install rejected on ${targetId.slice(0, 8)}: ${JSON.stringify((add as Record<string, unknown>).error)}`);
+          installed.delete(targetId);
+          continue;
+        }
+        installed.add(targetId);
+        await send("Runtime.evaluate", { expression: script }, attached.sessionId).catch((error) => log?.(`stealth-browser: identity evaluate failed on ${targetId.slice(0, 8)}: ${(error as Error).message}`));
+        onNewPage?.();
+      }
+    } catch { /* endpoint hiccup; the next sweep retries */ }
+  };
+  const sweepTimer = setInterval(() => { void sweep(); }, 5_000);
+  sweepTimer.unref?.();
+
+  let nextId = 1;
+  const pending = new Map<number, (value: unknown) => void>();
+  const send = (method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<unknown> => new Promise((resolve) => {
+    const id = nextId++;
+    pending.set(id, resolve);
+    socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+  });
+  socket.onmessage = (event) => {
+    const message = JSON.parse(String(event.data)) as { id?: number; result?: unknown; method?: string; params?: { targetInfo?: { type?: string; targetId?: string }; sessionId?: string } };
+    if (message.id !== undefined && pending.has(message.id)) {
+      pending.get(message.id)?.(message.result);
+      pending.delete(message.id);
+      return;
+    }
+    if (message.method !== "Target.attachedToTarget") return;
+    const info = message.params?.targetInfo;
+    const sessionId = message.params?.sessionId;
+    if (!info?.targetId || !sessionId) return;
+    void (async () => {
+      // No start pause: coexisting automation clients (agent-browser's
+      // playwright, a patchright inspector) close targets they find paused
+      // by someone else. Instead the identity is registered for every future
+      // document AND evaluated into whatever document the page already has.
+      if (info.type === "page" && info.targetId) {
+        await installOnTarget(sessionId, info.targetId);
+        onNewPage?.();
+      }
+    })();
+  };
+  await send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
+  // Self-healing sweep: the attach handler above can silently stop covering
+  // new targets after another client attaches its own browser-level session
+  // (observed with agent-browser's daemon), so every few seconds any page
+  // target this client has not installed the identity on gets it.
+  void sweep();
+}
+
+/** A display for headed Chrome on a host with none. Spawns one Xvfb per
+ * process and returns the DISPLAY to launch the browser with; undefined when
+ * the host already has a display or does not need one. */
+let sharedDisplay: { value: string; child: ReturnType<typeof spawn> } | null = null;
+async function ensureDisplay(env: NodeJS.ProcessEnv, log?: (line: string) => void): Promise<string | undefined> {
+  if (env.DISPLAY || env.WAYLAND_DISPLAY || process.platform !== "linux") return undefined;
+  if (sharedDisplay) return sharedDisplay.value;
+  const child = spawn("Xvfb", ["-displayfd", "1", "-screen", "0", XVFB_SCREEN, "-nolisten", "tcp"], {
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  const number = await new Promise<string>((resolve, reject) => {
+    let output = "";
+    const timer = setTimeout(() => reject(new Error("Xvfb did not report a display number in time")), DISPLAY_WAIT_MS);
+    timer.unref?.();
+    child.stdout?.on("data", (chunk: Buffer) => {
+      output += String(chunk);
+      const line = output.split("\n")[0]?.trim();
+      if (/^[0-9]+$/.test(line ?? "")) {
+        clearTimeout(timer);
+        resolve(line);
+      }
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      const nodeError = error as NodeJS.ErrnoException;
+      reject(new Error(nodeError.code === "ENOENT"
+        ? "the stealth browser needs a display on this Linux host: install Xvfb (e.g. `apt install xvfb`) or set browserEngine.stealth.headed to false to run headless"
+        : `Xvfb could not start: ${nodeError.message}`));
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      reject(new Error(`Xvfb exited before reporting a display (code ${code ?? "signal"})`));
+    });
+  });
+  sharedDisplay = { value: `:${number}`, child };
+  child.on("close", () => { if (sharedDisplay?.child === child) sharedDisplay = null; });
+  log?.(`stealth-browser: Xvfb display ${sharedDisplay.value} for headed Chrome`);
+  return sharedDisplay.value;
+}
+
+const debugPortsFile = (stateDir: string) => join(stateDir, "debug-ports.json");
+const fingerprintFile = (stateDir: string, session: string) => join(stateDir, `${session}-fingerprint.json`);
+export const stealthProfileDir = (profilesDir: string, session: string) => join(profilesDir, session);
+
+function loadDebugPorts(stateDir: string): Record<string, number> {
+  // A corrupt file must not reset the map, or a new session could take a
+  // live context's port; the file is only ever written by us.
+  try { return JSON.parse(readFileSync(debugPortsFile(stateDir), "utf-8")) as Record<string, number>; }
+  catch { return {}; }
+}
+
+function writeDebugPorts(stateDir: string, ports: Record<string, number>): void {
+  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  const temporary = `${debugPortsFile(stateDir)}.${process.pid}.tmp`;
+  writeFileSync(temporary, JSON.stringify(ports, null, 2), { mode: 0o600 });
+  renameSync(temporary, debugPortsFile(stateDir));
+}
+
+/** A session's identity, generated once and then read from disk so every
+ * launch of the same browser session is the same person to the sites it
+ * visits. */
+export async function loadOrCreateFingerprint(stateDir: string, session: string, log?: (line: string) => void): Promise<FingerprintBundle> {
+  try {
+    const data = JSON.parse(readFileSync(fingerprintFile(stateDir, session), "utf-8")) as FingerprintBundle;
+    if (data.fingerprint && data.headers) return data;
+  } catch {
+    // first session, or an unreadable file gets a fresh identity
+  }
+  const { generator } = await loadFingerprintSuite();
+  const generated = generator.getFingerprint();
+  try {
+    mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+    writeFileSync(fingerprintFile(stateDir, session), JSON.stringify(generated, null, 2), { mode: 0o600 });
+  } catch (error) {
+    log?.(`stealth-browser: could not persist the fingerprint for "${session}" (${(error as Error).message}); it regenerates on next launch`);
+  }
+  return generated;
+}
+
+/** Reserve a session's CDP port: its recorded port when still free, else the
+ * first free port at or above the base. The reservation is recorded
+ * immediately so two sessions starting side by side cannot be handed the
+ * same port; a launch that then fails forgets its reservation (below), which
+ * returns the port to the pool. Recorded ports keep a live context
+ * attachable at the same loopback address across restarts. */
+export async function reserveCdpPort(stateDir: string, debugPortBase: number, session: string, log?: (line: string) => void): Promise<number> {
+  const ports = loadDebugPorts(stateDir);
+  const recorded = ports[session];
+  let port: number;
+  if (Number.isInteger(recorded) && !(await portBusy(recorded))) {
+    return recorded; // already recorded; nothing new to persist
+  }
+  const used = new Set(Object.values(ports));
+  port = -1;
+  for (let candidate = debugPortBase; candidate < 65536; candidate++) {
+    if (!used.has(candidate) && !(await portBusy(candidate))) {
+      port = candidate;
+      break;
+    }
+  }
+  if (port === -1) throw new Error(`no free CDP port at or above ${debugPortBase} for the stealth browser`);
+  if (recorded !== undefined) log?.(`stealth-browser: session "${session}" moves from port ${recorded} to ${port}`);
+  ports[session] = port;
+  writeDebugPorts(stateDir, ports);
+  return port;
+}
+
+/** Forget a session's port assignment, so a dropped session cannot reserve
+ * its old port forever. */
+export function forgetCdpPort(stateDir: string, session: string): boolean {
+  const ports = loadDebugPorts(stateDir);
+  if (!Number.isInteger(ports[session])) return false;
+  delete ports[session];
+  try { writeDebugPorts(stateDir, ports); } catch { /* a reused port on next launch is harmless */ }
+  return true;
+}
+
+/** The real Chrome to spawn: explicit override, then the usual system
+ * installs. There is no patchright-chromium fallback here on purpose — the
+ * browser is spawned directly, and a Chromium that was never downloaded
+ * would only produce a confusing ENOENT. */
+function resolveChromeExecutable(preferred?: string): string {
+  const candidates = [
+    preferred,
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/opt/google/chrome/chrome",
+  ].filter(Boolean) as string[];
+  for (const candidate of candidates) {
+    try {
+      accessSync(candidate, constants.X_OK);
+      return candidate;
+    } catch { /* try the next one */ }
+  }
+  throw new Error("the stealth browser found no Google Chrome to launch: install Google Chrome (or set browserEngine.stealth's chromeExecutable once the option exists)");
+}
+
+export function createStealthRuntime(options: StealthRuntimeOptions): StealthRuntime {
+  const env = options.env ?? process.env;
+  const headed = options.headed !== false;
+  const log = options.log;
+  const sessions = new Map<string, PersistentSession>();
+  const launching = new Map<string, Promise<PersistentSession>>();
+
+  async function launchPersistentContext(session: string): Promise<PersistentSession> {
+    const directory = stealthProfileDir(options.profilesDir, session);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    // The identity is the real Chrome build presented as Windows through CDP's
+    // UA override (see attachBrowserLevelInjection), which keeps headers, client
+    // hints and JS in agreement. fingerprint-injector's Windows claim did not —
+    // Cloudflare sealed that headers-vs-JS contradiction into every clearance
+    // token and rejected it.
+    const { fingerprint } = await loadOrCreateFingerprint(options.stateDir, session, log);
+    const debugPort = await reserveCdpPort(options.stateDir, options.debugPortBase, session, log);
+
+    // Chrome is spawned directly, not through patchright's launcher:
+    // patchright always passes --remote-debugging-pipe, and Chrome ignores
+    // --remote-debugging-port when a pipe exists — so the TCP CDP endpoint
+    // the automation client (and our browser-wide identity injection) needs
+    // would never come up.
+    const executable = resolveChromeExecutable(options.chromeExecutable);
+    const launchEnv = { ...env, ...gpuEnv(env) };
+    if (headed) {
+      const display = await ensureDisplay(env, log);
+      if (display) launchEnv.DISPLAY = display;
+    }
+    // The window is sized so the page viewport lands on the daemon's
+    // assumed 1280x720: the Browser panel maps clicks through the stream's
+    // metadata, and a viewport that differs from it (the browser chrome eats
+    // an ~87px band in headed windows) desyncs every click a person makes
+    // during takeover — input appears to do nothing.
+    const chromeArgs = [
+      ...BROWSER_ARGS,
+      `--remote-debugging-port=${debugPort}`,
+      `--user-data-dir=${directory}`,
+      "--window-size=1280,807",
+      "--no-first-run",
+      "--no-default-browser-check",
+      ...(env.OMB_BROWSER_GPU_DIR ? GPU_ARGS : []),
+      ...(headed ? [] : ["--headless=new"]),
+    ];
+    const child = spawn(executable, chromeArgs, {
+      env: launchEnv,
+      stdio: ["ignore", "ignore", "ignore"],
+      windowsHide: true,
+      detached: false,
+    });
+    const childClosed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+    const exitError = new Promise<never>((_, reject) => {
+      child.once("error", (error) => reject(new Error(`the stealth browser could not launch Chrome: ${(error as Error).message}`)));
+    });
+
+    // The DevTools endpoint comes up asynchronously; wait for it.
+    await Promise.race([waitForCdpEndpoint(debugPort, session, log), childClosed.then(() => {
+      throw new Error(`the stealth browser for "${session}" exited during startup`);
+    }), exitError]);
+
+    const { chromium } = await loadPatchright();
+    const browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`).catch((error: Error) => {
+      throw new Error(`the stealth browser started but its CDP endpoint refused the connection: ${error.message}`);
+    });
+    const context = browser.contexts()[0];
+    if (!context) throw new Error(`the stealth browser for "${session}" exposed no default browser context`);
+
+    // Pages opened by the attached automation client are created by a
+    // different CDP client than ours, so context-level init scripts never
+    // reach them. Everything the page must see before its first script runs
+    // is registered browser-wide over CDP instead: the fingerprint overrides
+    // and the evasions in one pre-document script, on every new target.
+    const injectable = buildEvasionScript(fingerprint, session);
+    // The script can run twice on one document (registered for future
+    // documents AND evaluated into the current one); the guard makes the
+    // second run a no-op instead of double-applying the canvas noise.
+    const script = `if(!window.__ombStealthApplied){window.__ombStealthApplied=true;${injectable}}`;
+    await attachBrowserLevelInjection(context, debugPort, script, session, log, () => {
+      // Pages the automation client opens never surface as this context's
+      // "page" events (its client owns them), so arming happens from the
+      // browser-level attach handler instead — idempotent per page.
+      if (options.solveCloudflare !== false) for (const page of context.pages()) armCloudflareSolver(page, { log });
+    });
+    if (options.solveCloudflare !== false) {
+      // Every page in the context gets the challenge watcher — pages the
+      // runtime opened and pages the attached automation client opens behind
+      // our back (both surface as this context's pages).
+      const arm = (page: import("patchright").Page): void => armCloudflareSolver(page, { log });
+      for (const page of context.pages()) arm(page);
+      context.on("page", arm);
+    }
+    // The automation client decides CDP-attach versus launching its own
+    // browser from its first discovery of this endpoint, and never retries,
+    // so the endpoint must verifiably serve before its URL is handed out.
+    await waitForCdpEndpoint(debugPort, session, log);
+
+    log?.(`stealth-browser: context for "${session}" (Chrome, CDP port ${debugPort}, ${headed ? "headed" : "headless"})`);
+    return { context, debugPort, chrome: child, lastAccess: Date.now() };
+  }
+
+  async function closeLaunched(session: string): Promise<boolean> {
+    const launched = sessions.get(session);
+    sessions.delete(session);
+    if (!launched) return false;
+    launched.chrome?.kill("SIGTERM");
+    await launched.context.close().catch(() => {});
+    return true;
+  }
+
+  return {
+    async cdpTarget(session: string): Promise<string> {
+      if (!isValidStealthSession(session)) throw new Error(`Invalid stealth browser session name: ${session}`);
+      const existing = sessions.get(session);
+      if (existing) {
+        existing.lastAccess = Date.now();
+        return `http://127.0.0.1:${existing.debugPort}`;
+      }
+      let pending = launching.get(session);
+      if (!pending) {
+        pending = launchPersistentContext(session).then((launched) => {
+          sessions.set(session, launched);
+          return launched;
+        }).finally(() => launching.delete(session));
+        launching.set(session, pending);
+      }
+      const launched = await pending;
+      return `http://127.0.0.1:${launched.debugPort}`;
+    },
+
+    async closeSession(session: string): Promise<boolean> {
+      return isValidStealthSession(session) && closeLaunched(session);
+    },
+
+    async dropSession(session: string): Promise<boolean> {
+      if (!isValidStealthSession(session)) return false;
+      let touched = await closeLaunched(session);
+      if (forgetCdpPort(options.stateDir, session)) touched = true;
+      try { rmSync(stealthProfileDir(options.profilesDir, session), { recursive: true, force: true }); touched = true; } catch { /* already gone */ }
+      try { rmSync(fingerprintFile(options.stateDir, session), { force: true }); } catch { /* already gone */ }
+      return touched;
+    },
+
+    async shutdown(): Promise<void> {
+      const all = [...sessions.values()];
+      sessions.clear();
+      await Promise.allSettled(all.map(async (launched) => {
+        launched.chrome?.kill("SIGTERM");
+        await launched.context.close().catch(() => {});
+      }));
+      if (sharedDisplay) {
+        sharedDisplay.child.kill("SIGTERM");
+        sharedDisplay = null;
+      }
+    },
+  };
+}

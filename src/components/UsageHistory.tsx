@@ -28,7 +28,7 @@ export interface UsageGroup {
   estimatedUsd?: number | null;
   /** turns on a model with no known price */
   unpriced: number;
-  /** the operator's own price, when a list is set and the server is entitled */
+  /** the operator's own price, when a list is set */
   billableUsd?: number | null;
 }
 

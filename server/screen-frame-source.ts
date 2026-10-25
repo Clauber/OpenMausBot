@@ -3,13 +3,29 @@ import { captureOutsideHumanControl, type PrivateScreenFrame } from "./private-s
 export type ScreenCapture = () => Promise<{ png: string; format: string }>;
 type Surface = "browser" | "computer";
 
-/** One serialized preview source. A cached or in-flight desktop frame must
- * never become the browser's settled picture after the bot switches surfaces. */
+const TURN_FRAME_LIMIT = 64;
+const turnFrames = new Map<string, { frame: PrivateScreenFrame; at: number }>();
+
+/** The newest desktop frame a turn captured, keyed by the computer resource it held (`computer:box:<id>`), so viewers
+ * outside the turn, such as the Team map, reuse it instead of asking the machine again. */
+export function rememberTurnFrame(resource: string | undefined, frame: PrivateScreenFrame, at = Date.now()): void {
+  if (!resource) return;
+  turnFrames.delete(resource);
+  turnFrames.set(resource, { frame, at });
+  if (turnFrames.size > TURN_FRAME_LIMIT) turnFrames.delete(turnFrames.keys().next().value!);
+}
+
+export function latestTurnFrame(resource: string): { frame: PrivateScreenFrame; at: number } | undefined {
+  return turnFrames.get(resource);
+}
+
+/** A cached or in-flight desktop frame must never become the browser's settled picture after a surface switch. */
 export function createScreenFrameSource(input: {
   captures: { computer?: ScreenCapture; browser?: ScreenCapture };
   control: () => { held: boolean; revision: number };
-  onFrame: (frame: PrivateScreenFrame) => void;
+  onFrame: (frame: PrivateScreenFrame, surface: Surface) => void;
   minGapMs: number;
+  watching: (surface: Surface) => boolean;
 }) {
   let current: Promise<void> | null = null;
   let lastAt = 0;
@@ -25,11 +41,10 @@ export function createScreenFrameSource(input: {
       return lastSurface === selectedSurface() ? last : null;
     },
     async capture(fresh = false): Promise<void> {
-      // Wait for the previous source before selecting the next one. A final
-      // capture bypasses the preview throttle, even if a poke just finished.
       while (current) await current;
       if (input.control().held) return;
       const surface = selectedSurface();
+      if (!fresh && !input.watching(surface)) return;
       if (!fresh && attemptedSurface === surface && Date.now() - lastAt < input.minGapMs) return;
       attemptedSurface = surface;
       current = (async () => {
@@ -40,9 +55,8 @@ export function createScreenFrameSource(input: {
           if (!frame || surface !== selectedSurface()) return;
           last = frame;
           lastSurface = surface;
-          input.onFrame(frame);
+          input.onFrame(frame, surface);
         } catch {
-          // A sleeping or mid-command surface is retried by the next tick.
         } finally {
           lastAt = Date.now();
         }

@@ -1,4 +1,4 @@
-// Real model acceptance through the full, isolated OpenMausBot server.
+// Real model acceptance through the full, isolated Legion server.
 // The prompts contain goals only, never tool names or execution advice.
 import { copyFileSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -14,7 +14,7 @@ const models = (process.env.OMB_VERIFY_MODELS ?? "gpt-5.6-luna").split(",").map(
 if (!models.length) throw new Error("Choose at least one acceptance model.");
 if (!cli || !auth || !binaryPath || !executablePath || !output) throw new Error("Set explicit CLI, sign-in, browser binaries and output directory. Uses real model quota.");
 mkdirSync(output, { recursive: true });
-const fixture = await launchVerificationServer({}, undefined, undefined, { binaryPath, executablePath }, undefined, undefined, ["codex"]);
+const fixture = await launchVerificationServer({}, undefined, undefined, { binaryPath, executablePath }, undefined, ["codex"]);
 const api = fixtureApi(fixture.info.url);
 const report: any = { fixture: fixture.info, cases: [] };
 const save = () => writeFileSync(join(output, "acceptance.json"), JSON.stringify(report, null, 2));

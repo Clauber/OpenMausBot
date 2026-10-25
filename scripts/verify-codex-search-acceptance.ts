@@ -1,4 +1,4 @@
-// Real-model search acceptance through an isolated OpenMausBot server.
+// Real-model search acceptance through an isolated Legion server.
 // Existing sign-in is explicitly designated; personal chats/config are not copied.
 import { copyFileSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -13,7 +13,7 @@ const models = (process.env.OMB_VERIFY_MODELS ?? "gpt-5.6-luna").split(",").map(
 if (!models.length) throw new Error("Choose at least one acceptance model.");
 if (!cli || !auth || !output) throw new Error("Supply explicit CLI, sign-in and output. Uses real model quota.");
 mkdirSync(output, { recursive: true });
-const fixture = await launchVerificationServer({}, undefined, undefined, undefined, undefined, undefined, ["codex"]);
+const fixture = await launchVerificationServer({}, undefined, undefined, undefined, undefined, ["codex"]);
 const api = fixtureApi(fixture.info.url);
 const report: any = { fixture: fixture.info, cases: [] };
 const save = () => writeFileSync(join(output, "acceptance.json"), JSON.stringify(report, null, 2));

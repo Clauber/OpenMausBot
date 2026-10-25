@@ -2,11 +2,10 @@
 // blocked run carrying the cap detail — never as a "dispatch failure" the
 // goal loop retries (a cap refusal is deterministic, so the retry would just
 // repeat the same spend-limit activity message and mislabel the run as
-// failed). Driven through the isolated fake-engine fixture booted with a
-// stand-in enterprise layer that grants `budgets` and `billing`, with the
-// coordinator's decision reply scripted; no real licence, engine, or
-// provider is involved; the fixture's home is disposable.
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+// failed). Driven through the isolated fake-engine fixture with the
+// coordinator's decision reply scripted; no real engine or provider is
+// involved; the fixture's home is disposable.
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -19,9 +18,7 @@ describe("spend cap inside a team goal run", () => {
   let layerDir: string;
 
   beforeEach(async () => {
-    layerDir = mkdtempSync(join(tmpdir(), "omb-fake-layer-goal-"));
-    mkdirSync(join(layerDir, "server"));
-    writeFileSync(join(layerDir, "server", "index.js"), 'export async function register() { return { customer: "Fixture Co", features: ["budgets", "billing"], expiresAt: "2099-01-01" }; }\n');
+    layerDir = mkdtempSync(join(tmpdir(), "omb-spend-cap-goal-"));
     session = await launchVerificationServer({
       ...process.env,
       // The coordinator's first (and only) goal turn: hand off to the worker.
@@ -31,7 +28,7 @@ describe("spend cap inside a team goal run", () => {
       FAKE_CLAUDE_REPLIES: JSON.stringify([
         'The plan is ready.\n<openmaus-goal>{"status":"continue","next":"Worker","instruction":"Do the thing","detail":"Plan ready"}</openmaus-goal>',
       ]),
-    }, undefined, undefined, undefined, { dir: layerDir, licenseKey: "fixture-key" });
+    });
   }, 60_000);
 
   afterEach(async () => {
@@ -45,8 +42,6 @@ describe("spend cap inside a team goal run", () => {
   const put = (body: unknown) => api("/api/config", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
   it("ends a capped goal as a blocked run with the cap detail, without retrying the refusal", async () => {
-    expect((await (await api("/api/edition")).json())).toMatchObject({ edition: "enterprise", features: ["billing", "budgets"] });
-
     // The fake engine reports $0.01 per turn: a $0.01 cap lets the
     // coordinator's goal turn complete, then blocks the next turn at
     // execution time inside runGroupMemberTurn.

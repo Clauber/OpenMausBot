@@ -3,10 +3,16 @@ import { z } from "zod";
 
 import { parseJson, type JsonValue } from "./schema.ts";
 import type { WebhookManager } from "./webhooks.ts";
+import type { GithubIngress } from "./github-webhook.ts";
 
 export const MAX_WEBHOOK_BODY_BYTES = 256 * 1024;
 const statusErrorSchema = z.object({ status: z.number().int().optional() });
 const serverAddressSchema = z.object({ port: z.number().int().min(1).max(65_535) });
+
+/** Telegram's webhook calls, handled by server/messaging/telegram-service.ts. */
+export interface TelegramIngress {
+  receive(bindingId: string, secretHeader: string | undefined, payload: unknown): { status: number; body: Record<string, JsonValue> };
+}
 
 export interface WebhookIngress {
   server: Server;
@@ -24,7 +30,7 @@ function json(res: ServerResponse, status: number, body: JsonValue): void {
   res.end(JSON.stringify(body));
 }
 
-async function readRawBody(req: IncomingMessage): Promise<string> {
+async function readRawBody(req: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let bytes = 0;
   try {
@@ -41,7 +47,7 @@ async function readRawBody(req: IncomingMessage): Promise<string> {
     if (parsed.success && parsed.data.status === 413) throw error;
     throw Object.assign(new Error("Could not read webhook body"), { status: 400 });
   }
-  return Buffer.concat(chunks, bytes).toString("utf8");
+  return Buffer.concat(chunks, bytes);
 }
 
 function parsePayload(raw: string, contentType: string): JsonValue {
@@ -88,11 +94,44 @@ function eventName(req: IncomingMessage): string | undefined {
   )?.trim() || undefined;
 }
 
-export function createWebhookIngressHandler(manager: WebhookManager, claimRequest?: () => () => void) {
+export function createWebhookIngressHandler(manager: WebhookManager, claimRequest?: () => () => void, telegram?: TelegramIngress, github?: GithubIngress) {
   return async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (req.method === "GET" && url.pathname === "/health") {
       return json(res, 200, { app: "openmausbot-webhooks", ready: true });
+    }
+    const githubMatch = github ? url.pathname.match(/^\/hooks\/github\/([A-Za-z0-9_-]+)$/) : null;
+    if (github && githubMatch) {
+      if (req.method !== "POST") return json(res, 405, { error: "GitHub webhooks accept POST requests" });
+      const headers = { signature: header(req, "x-hub-signature-256"), event: header(req, "x-github-event"), deliveryId: header(req, "x-github-delivery") };
+      let release: (() => void) | undefined;
+      try {
+        release = claimRequest?.();
+        const result = github.receive(githubMatch[1]!, await readRawBody(req), headers);
+        return json(res, result.status, result.body);
+      } catch (error) {
+        const parsed = statusErrorSchema.safeParse(error);
+        const status = parsed.success ? parsed.data.status ?? 500 : 500;
+        const reason = error instanceof Error ? error.message : "GitHub delivery failed";
+        github.reject(githubMatch[1]!, status, reason, headers);
+        return json(res, status, { error: reason });
+      } finally { release?.(); }
+    }
+    const telegramMatch = telegram ? url.pathname.match(/^\/hooks\/telegram\/(tg_[A-Za-z0-9_-]+)$/) : null;
+    if (telegram && telegramMatch) {
+      if (req.method !== "POST") return json(res, 405, { error: "Telegram webhooks accept POST requests" });
+      let release: (() => void) | undefined;
+      try {
+        release = claimRequest?.();
+        const payload = parsePayload((await readRawBody(req)).toString("utf8"), "application/json");
+        const result = telegram.receive(telegramMatch[1]!, header(req, "x-telegram-bot-api-secret-token"), payload);
+        return json(res, result.status, result.body);
+      } catch (error) {
+        const parsedError = statusErrorSchema.safeParse(error);
+        return json(res, parsedError.success ? parsedError.data.status ?? 500 : 500, { error: error instanceof Error ? error.message : String(error) });
+      } finally {
+        release?.();
+      }
     }
     const match = url.pathname.match(/^\/hooks\/(wh_[A-Za-z0-9_-]+)(?:\/([^/]+))?$/);
     if (!match) return json(res, 404, { error: "Unknown webhook endpoint" });
@@ -101,11 +140,14 @@ export function createWebhookIngressHandler(manager: WebhookManager, claimReques
     let release: (() => void) | undefined;
     try {
       release = claimRequest?.();
-      const pathSecret = match[2] ? decodeURIComponent(match[2]) : "";
-      const secret = pathSecret || bearerSecret(req);
+      let secret = "";
+      try {
+        secret = (match[2] ? decodeURIComponent(match[2]) : "") || bearerSecret(req);
+      } catch {
+      }
       // Reject bad capability URLs before buffering or parsing attacker input.
       if (!manager.authorize(match[1], secret)) {
-        manager.recordRejected(match[1], 401, "Invalid webhook URL or secret", {
+        manager.recordUnauthorized(match[1], {
           contentType: header(req, "content-type"),
           eventName: eventName(req),
           deliveryId: deliveryId(req),
@@ -114,8 +156,8 @@ export function createWebhookIngressHandler(manager: WebhookManager, claimReques
       }
       const raw = await readRawBody(req);
       const contentType = header(req, "content-type")?.split(";")[0]?.trim().toLowerCase() ?? "text/plain";
-      const payload = parsePayload(raw, contentType);
-      const result = manager.receive(match[1], secret, {
+      const payload = parsePayload(raw.toString("utf8"), contentType);
+      const result = await manager.receive(match[1], secret, {
         payload,
         contentType,
         eventName: eventName(req),
@@ -127,9 +169,6 @@ export function createWebhookIngressHandler(manager: WebhookManager, claimReques
       const parsedError = statusErrorSchema.safeParse(error);
       const status = parsedError.success ? parsedError.data.status ?? 500 : 500;
       const message = error instanceof Error ? error.message : String(error);
-      // Manager-level validation records its own rejection with the parsed
-      // payload. Receiver-level failures happen earlier, so record metadata
-      // here without buffering untrusted data a second time.
       if (status === 400 || status === 413) {
         manager.recordRejected(match[1], status, message, {
           contentType: header(req, "content-type"),
@@ -144,9 +183,6 @@ export function createWebhookIngressHandler(manager: WebhookManager, claimReques
   };
 }
 
-/** The base senders are told to use. Behind a proxy or tunnel the listening
- * address is unreachable from outside, so the operator supplies the public
- * one; a trailing slash is tolerated because every hook path adds its own. */
 export function advertisedWebhookBase(raw: string): string {
   let parsed: URL | undefined;
   try {
@@ -164,11 +200,11 @@ export function advertisedWebhookBase(raw: string): string {
 
 export async function listenWebhookIngress(
   manager: WebhookManager,
-  options: { host?: string; port: number; publicBaseUrl?: string; claimRequest?: () => () => void },
+  options: { host?: string; port: number; publicBaseUrl?: string; claimRequest?: () => () => void; telegram?: TelegramIngress; github?: GithubIngress },
 ): Promise<WebhookIngress> {
   const host = options.host ?? "127.0.0.1";
   const advertised = options.publicBaseUrl === undefined ? undefined : advertisedWebhookBase(options.publicBaseUrl);
-  const server = createServer(createWebhookIngressHandler(manager, options.claimRequest));
+  const server = createServer(createWebhookIngressHandler(manager, options.claimRequest, options.telegram, options.github));
   await new Promise<void>((resolve, reject) => {
     const onError = (error: Error) => reject(error);
     server.once("error", onError);

@@ -483,7 +483,7 @@ export function createCloudMove({ localRequest, fetchImpl = fetch, tempRoot, ava
         // The Cloud's launcher always starts it again; a server's does when
         // it is one of ours (server/restart.ts), and otherwise it installs at its next start.
         fail("restart_timeout", target?.kind === "cloud" ? "Your Cloud is taking longer than usual to restart. Check it again in a few minutes."
-          : `${There()} hasn't come back yet. If it doesn't start again on its own, start OpenMausBot there; it finishes installing the copy when it starts.`);
+          : `${There()} hasn't come back yet. If it doesn't start again on its own, start Legion there; it finishes installing the copy when it starts.`);
       }
     }
   }

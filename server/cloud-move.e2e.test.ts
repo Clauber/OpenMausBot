@@ -41,7 +41,9 @@ const SERVER_KEY = unique("sk-ant-server");
 // The servers never reach the network.
 const OFFLINE = `data:text/javascript,${encodeURIComponent('globalThis.fetch = async () => new Response("offline fixture", { status: 503 });')}`;
 
-interface Fixture { name: string; host: string; home: string; dataDir: string; base: string; env: NodeJS.ProcessEnv; child?: ChildProcess; log: string; closing: boolean; boots: number }
+interface Fixture { name: string; host: string; home: string; dataDir: string; base: string; env: NodeJS.ProcessEnv; child?: ChildProcess; log: string; closing: boolean; boots: number;
+  /** A relaunch (exit 75) that failed: thrown by the next request to this server, or by teardown, with its cause. */
+  failure?: Error }
 let source: Fixture;
 let cloud: Fixture;
 let server: Fixture;
@@ -60,9 +62,13 @@ async function boot(fixture: Fixture): Promise<void> {
   child.stdout?.on("data", (chunk) => { fixture.log += chunk; });
   child.stderr?.on("data", (chunk) => { fixture.log += chunk; });
   // The server's launcher: start it again when it asks to (server/restart.ts).
-  child.once("exit", (code) => { if (code === RESTART_EXIT_CODE && !fixture.closing && fixture.child === child) void boot(fixture); });
+  // A relaunch is nobody's await, so its failure is kept for the next request (api) or teardown to throw,
+  // never left as an unhandled rejection.
+  child.once("exit", (code) => { if (code === RESTART_EXIT_CODE && !fixture.closing && fixture.child === child) boot(fixture).catch((error: Error) => { fixture.failure = error; }); });
   const deadline = Date.now() + 30_000;
   for (;;) {
+    // Stopped on purpose (a test or teardown) or already replaced: nothing to report.
+    if (fixture.closing || fixture.child !== child) return;
     if (child.exitCode !== null) throw new Error(`the ${fixture.name} server exited:\n${fixture.log}`);
     try {
       const health = await (await fetch(`${fixture.base}/api/health`)).json() as { pid?: number };
@@ -135,6 +141,7 @@ function viaEdge(url: string, init: RequestInit = {}): Promise<Response> {
   });
 }
 async function api(fixture: Fixture, method: string, path: string, options: { body?: unknown; token?: string; cookie?: string; remote?: boolean; raw?: Buffer } = {}) {
+  if (fixture.failure) throw fixture.failure;
   const response = await (options.cookie ? viaEdge : fetch)(`${fixture.base}${path}`, {
     method,
     headers: {
@@ -151,7 +158,7 @@ async function api(fixture: Fixture, method: string, path: string, options: { bo
 
 /** The Admin's signed request: one single-use pairing window on the Cloud. */
 async function cloudGrant(): Promise<{ origin: string; code: string; expiresAt: number }> {
-  const body = JSON.stringify({ label: "OpenMausBot app (Cloud)", ttlSeconds: 300 });
+  const body = JSON.stringify({ label: "Legion app (Cloud)", ttlSeconds: 300 });
   const timestamp = String(Math.floor(Date.now() / 1000)), nonce = randomBytes(16).toString("base64url");
   const response = await fetch(`${cloud.base}/api/cloud/pairing`, { method: "POST", body, headers: {
     ...forwarded, "content-type": "application/json", "x-omb-cloud-timestamp": timestamp, "x-omb-cloud-nonce": nonce,
@@ -235,7 +242,7 @@ beforeAll(async () => {
   const owner = await api(server, "POST", "/api/auth/pairing", { body: { scopes: ["admin", "client"], label: "Owner code" } });
   expect(owner.status, JSON.stringify(owner.body)).toBe(200);
   const pairPage = await viaEdge(`${server.base}/api/auth/pair`, { method: "POST", headers: { ...edge(server), "content-type": "application/json", origin: SERVER_ORIGIN },
-    body: JSON.stringify({ code: owner.body.code, cookie: true, label: "OpenMausBot desktop" }) });
+    body: JSON.stringify({ code: owner.body.code, cookie: true, label: "Legion desktop" }) });
   expect(pairPage.status).toBe(200);
   serverCookie = (pairPage.headers.get("set-cookie") ?? "").split(";")[0]!;
   expect(serverCookie).toMatch(/^omb_session_\d+_\w+=omb_sess_/);
@@ -266,6 +273,8 @@ afterAll(async () => {
     await waitForExit(fixture.child, { signal: "SIGTERM" });
   }
   for (const directory of [source?.home, cloud?.home, server?.home, scratch]) if (directory) await removeTempDir(directory);
+  const failed = [source, cloud, server].find((fixture) => fixture?.failure);
+  if (failed) throw failed.failure;
 });
 
 it("moves this computer's bots, chats and rooms to an empty Cloud, which keeps its own sign-ins, sessions and switches", async () => {

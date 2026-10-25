@@ -1,8 +1,3 @@
-// A bot's activity log: what it did, in plain words, with the outcome. Two
-// logs already on disk feed it — the per-thread runtime events (what ran,
-// did it finish) and the fleet-wide decision log (what was asked, with
-// which arguments, and who said yes). These tests pin the merge: one row
-// per thing that happened, never one per log that saw it.
 import { appendFileSync, mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { describeTool, readBotActivity, type ActivityRow } from "./activity.ts";
 import type { DecisionRow } from "./decision-log.ts";
+import type { WireMessage } from "../shared/wire.ts";
 import { removeTempDir } from "./testing/cleanup.ts";
 
 describe("describeTool", () => {
@@ -31,11 +27,34 @@ describe("describeTool", () => {
     expect(describeTool("GMAIL_SEND_EMAIL")).toEqual({ app: "Gmail", label: "Send email" });
     expect(describeTool("mcp__composio__GITHUB_CREATE_AN_ISSUE")).toEqual({ app: "GitHub", label: "Create an issue" });
     expect(describeTool("GOOGLESHEETS_BATCH_UPDATE")).toEqual({ app: "Google Sheets", label: "Batch update" });
+    expect(describeTool("mcp__highlevel__HIGHLEVEL_ADD_NOTE")).toEqual({ app: "HighLevel", label: "Add note" });
+    expect(describeTool("HIGHLEVEL_UPDATE_CONTACT")).toEqual({ app: "HighLevel", label: "Update contact" });
   });
 
   it("treats the bot's computer and its teammates as apps too", () => {
     expect(describeTool("mcp__computer__click")).toEqual({ app: "Computer", label: "Click" });
     expect(describeTool("mcp__agents__delegate_bot")).toEqual({ app: "Team", label: "Delegate bot" });
+  });
+
+  it("files the X research tools under X, not Team", () => {
+    expect(describeTool("mcp__agents__x_search")).toEqual({ app: "X", label: "Searched X" });
+    expect(describeTool("mcp__agents__x_user_posts")).toEqual({ app: "X", label: "Read X posts" });
+    expect(describeTool("mcp__agents__x_post")).toEqual({ app: "X", label: "Read an X post" });
+    expect(describeTool("mcp__agents__x_profile")).toEqual({ app: "X", label: "Looked up an X profile" });
+    expect(describeTool("mcp__agents__delegate_bot")).toEqual({ app: "Team", label: "Delegate bot" });
+  });
+
+  it("files research under Research, a call by the kind of thing it looked up and never the vendor", () => {
+    expect(describeTool("mcp__agents__research_search")).toEqual({ app: "Research", label: "Searched research tools" });
+    expect(describeTool("mcp__agents__research_endpoint")).toEqual({ app: "Research", label: "Read a research tool" });
+    const call = (input: unknown) => describeTool("mcp__agents__research_call", input);
+    expect(call({ id: "apollo.people.search" })).toEqual({ app: "Research", label: "Looked up people" });
+    expect(call('{"id":"crunchbase.companies.lookup","params":{}}')).toEqual({ app: "Research", label: "Looked up companies" });
+    expect(call({ name: "research_call", arguments: { id: "tikhub.tiktok.user.profile" } })).toEqual({ app: "Research", label: "Looked up social data" });
+    expect(call({ id: "anyapi.x.search.posts" })).toEqual({ app: "X", label: "Searched X" });
+    expect(call({ id: "newsapi.news.everything" })).toEqual({ app: "Research", label: "Read the news" });
+    expect(call({ id: "people.vendor.thing" })).toEqual({ app: "Research", label: "Ran a research call" });
+    expect(call(undefined)).toEqual({ app: "Research", label: "Ran a research call" });
   });
 
   it("falls back to spacing out an unknown name rather than showing it raw", () => {
@@ -91,8 +110,13 @@ const toolRun = (threadId: string, itemId: string, tool: string, startedAt: stri
   }
 };
 
+let stored: WireMessage[] = [];
+beforeEach(() => { stored = []; });
+const toolMessage = (itemId: string, turnId: string | undefined, tool: Partial<NonNullable<WireMessage["tool"]>> = {}) =>
+  stored.push({ id: `m-${itemId}-${turnId}`, at: 0, role: "bot", kind: "activity", ...(turnId ? { turnId } : {}), tool: { name: "Bash", itemId, ...tool } });
+
 const read = (overrides: Partial<Parameters<typeof readBotActivity>[0]> = {}): ActivityRow[] =>
-  readBotActivity({ dataDir, eventsDir, botId: "b1", threadIds: ["t1"], limit: 50, ...overrides });
+  readBotActivity({ dataDir, eventsDir, botId: "b1", threadIds: ["t1"], limit: 50, messagesFor: (threadId) => threadId === "t1" ? stored : [], ...overrides });
 
 describe("readBotActivity", () => {
   it("turns a finished tool item into one row that says it ran", () => {
@@ -171,6 +195,59 @@ describe("readBotActivity", () => {
       "2026-09-07T09:04:00.000Z",
       "2026-09-07T09:03:00.000Z",
     ]);
+  });
+
+  it("carries the chat message's tool details for the same turn and item, running or finished", () => {
+    toolRun("t1", "i1", "Bash", "2026-09-07T09:00:00.000Z", false);
+    toolRun("t1", "i2", "Bash", "2026-09-07T09:01:00.000Z", null);
+    toolMessage("i1", "turn-1", { input: "npm test", output: "1 failed", ok: false });
+    toolMessage("i2", "turn-1", { input: "sleep 60" });
+    expect(read().map((row) => [row.outcome, row.detail])).toEqual([
+      ["running", { name: "Bash", itemId: "i2", input: "sleep 60" }],
+      ["failed", { name: "Bash", itemId: "i1", input: "npm test", output: "1 failed", ok: false }],
+    ]);
+  });
+
+  it("never borrows another turn's message for a reused item ID, and skips an ambiguous legacy run", () => {
+    for (const [turnId, minute] of [["turn-one", "00"], ["turn-two", "01"], [undefined, "02"]] as const) {
+      event("t1", `2026-09-07T09:${minute}:00.000Z`, { type: "item.started", itemType: "tool", itemId: "item_0", turnId, title: "Bash" });
+    }
+    toolMessage("item_0", "turn-one", { input: "first" });
+    toolMessage("item_0", "turn-three", { input: "elsewhere" });
+    expect(read().map((row) => [row.turnId, row.detail?.input])).toEqual([
+      [undefined, undefined], ["turn-two", undefined], ["turn-one", "first"],
+    ]);
+  });
+
+  it("keeps identical turn and item IDs isolated by thread", () => {
+    toolRun("t1", "same", "Bash", "2026-09-07T09:00:00.000Z", true);
+    toolRun("t2", "same", "Bash", "2026-09-07T09:01:00.000Z", true);
+    toolMessage("same", "turn-1", { input: "first thread" });
+    const calls: string[] = [];
+    const rows = read({
+      threadIds: ["t1", "t2"],
+      messagesFor: (threadId) => {
+        calls.push(threadId);
+        return threadId === "t1" ? stored : [{ ...stored[0], tool: { ...stored[0].tool!, input: "second thread" } }];
+      },
+    });
+    expect(rows.map((row) => [row.threadId, row.detail?.input])).toEqual([
+      ["t2", "second thread"], ["t1", "first thread"],
+    ]);
+    expect(calls).toEqual(["t1", "t2"]);
+  });
+
+  it("omits details when multiple messages carry the exact same identity", () => {
+    toolRun("t1", "same", "Bash", "2026-09-07T09:00:00.000Z", true);
+    toolMessage("same", "turn-1", { input: "first" });
+    toolMessage("same", "turn-1", { input: "second" });
+    expect(read()[0].detail).toBeUndefined();
+  });
+
+  it("gives a legacy run without a turn the one message that carries its item ID", () => {
+    event("t1", "2026-09-07T09:00:00.000Z", { type: "item.started", itemType: "tool", itemId: "solo", turnId: undefined, title: "Bash" });
+    toolMessage("solo", "turn-9", { input: "ls" });
+    expect(read()[0].detail?.input).toBe("ls");
   });
 
   it("is empty, not an error, when no log exists yet", () => {

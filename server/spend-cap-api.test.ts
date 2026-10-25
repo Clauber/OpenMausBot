@@ -1,9 +1,8 @@
 // The monthly spend cap and sell prices through real turns: the isolated
-// fake-engine fixture booted with a stand-in enterprise layer that grants
-// `budgets` and `billing`, the shared control surface for sends and waits,
-// and the cap read back from /api/usage. No real licence, engine, or
+// fake-engine fixture, the shared control surface for sends and waits,
+// and the cap read back from /api/usage. No real engine or
 // provider is involved; the fixture's home is disposable.
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -21,11 +20,8 @@ describe("spend cap and prices through real turns", () => {
   let layerDir: string;
 
   beforeEach(async () => {
-    // The folder shape core looks for: <dir>/server/index.js exporting register().
-    layerDir = mkdtempSync(join(tmpdir(), "omb-fake-layer-"));
-    mkdirSync(join(layerDir, "server"));
-    writeFileSync(join(layerDir, "server", "index.js"), 'export async function register() { return { customer: "Fixture Co", features: ["budgets", "billing"], expiresAt: "2099-01-01" }; }\n');
-    session = await launchVerificationServer(process.env, undefined, undefined, undefined, { dir: layerDir, licenseKey: "fixture-key" });
+    layerDir = mkdtempSync(join(tmpdir(), "omb-spend-cap-"));
+    session = await launchVerificationServer(process.env);
   }, 60_000);
 
   afterEach(async () => {
@@ -48,8 +44,7 @@ describe("spend cap and prices through real turns", () => {
       [ORGANIZE_MARKER]: '{"moves":[]}',
       [TIDY_MARKER]: '{"pairs":[]}',
     }));
-    session = await launchVerificationServer({ ...process.env, FAKE_CLAUDE_TEXT_ROUTES: routes, FAKE_CLAUDE_TEXT_DUMP: dump },
-      undefined, undefined, undefined, { dir: layerDir, licenseKey: "fixture-key" });
+    session = await launchVerificationServer({ ...process.env, FAKE_CLAUDE_TEXT_ROUTES: routes, FAKE_CLAUDE_TEXT_DUMP: dump },);
     const created = await api("/api/bots", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Budgeted memory" }) });
     expect(created.status).toBe(201);
     const { bot } = await created.json() as any;
@@ -131,7 +126,7 @@ describe("spend cap and prices through real turns", () => {
     await session.close();
     session = await launchVerificationServer({ ...process.env,
       FAKE_CLAUDE_TEXT_RESULT: JSON.stringify({ type: "result", result: '{"moves":[]}', ...metadata }),
-    }, undefined, undefined, undefined, { dir: layerDir, licenseKey: "fixture-key" });
+    });
     const { bot } = await control(["new-bot", "--name", "Helper usage"]);
     expect((await api(`/api/bots/${bot.id}/memory/file`, {
       method: "PUT", headers: { "content-type": "application/json" },
@@ -145,9 +140,6 @@ describe("spend cap and prices through real turns", () => {
   }, 60_000);
 
   it("refuses the next turn once the month reaches the cap, prices turns, and lets a raised cap through", async () => {
-    const edition = (await (await api("/api/edition")).json()) as { edition: string; features: string[] };
-    expect(edition).toMatchObject({ edition: "enterprise", features: ["billing", "budgets"] });
-
     // The fake engine reports $0.01 per turn: a $0.015 cap allows two turns and refuses the third.
     expect((await put({ budgets: { monthlyUsd: 0.015, warnAtPercent: 50 }, billing: { currency: "USD", prices: { default: { inputPerMillion: 1000, outputPerMillion: 2000 } } } })).status).toBe(200);
     const created = await control(["new-bot", "--name", "Cap probe"]);
@@ -214,7 +206,7 @@ describe("spend cap and prices through real turns", () => {
         "The draft has been checked.",
       ]),
       FAKE_CLAUDE_REPLY_STATE: replyState,
-    }, undefined, undefined, undefined, { dir: layerDir, licenseKey: "fixture-key" });
+    });
     expect((await put({ budgets: { monthlyUsd: allowedTurns * 0.01 } })).status).toBe(200);
     const lead = (await control(["new-bot", "--name", "Lead"])).bot;
     const worker = (await control(["new-bot", "--name", "Worker"])).bot;
@@ -249,9 +241,6 @@ describe("spend cap and prices through real turns", () => {
   }, 150_000);
 
   it("refuses the next room member at execution time once the cap is reached", async () => {
-    const edition = (await (await api("/api/edition")).json()) as { edition: string; features: string[] };
-    expect(edition).toMatchObject({ edition: "enterprise", features: ["billing", "budgets"] });
-
     // The fake engine reports $0.01 per turn. A $0.01 cap lets the first room
     // member complete its turn, then blocks the second member inside
     // runGroupMemberTurn before it can dispatch another provider turn.

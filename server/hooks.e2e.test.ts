@@ -1,11 +1,4 @@
-// Engine hooks, end to end (Phase 0, item 0.2): the real harness server with
-// the fake Claude CLI honouring the hooks block of its private --settings
-// file. A PostToolUse hook delivers the full tool result to the harness,
-// which spills it to a private file, attaches it to the tool's activity row,
-// and lets the turn's digest claim full evidence. A forged bearer is refused.
-// With OMB_HOOKS=0 the driver registers nothing and the digest says so.
-//
-// Same POSIX gating as branching.test.ts (the fake CLI is a shebang script).
+// POSIX-gated: the fake CLI is a shebang script.
 import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
+import { freePortBlock } from "./testing/ports.ts";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const FAKE_CLAUDE = join(SERVER_DIR, "testing", "fake-claude-cli.ts");
@@ -31,8 +25,8 @@ interface Msg {
 const BIG = `line ${"x".repeat(80)}\n`.repeat(200); // ~17 KB: past the 6 KB preview
 
 function harness(label: string, serverEnv: Record<string, string>, instanceEnv: Record<string, string> = {}) {
-  const PORT = 18800 + Math.floor(Math.random() * 10_000);
-  const BASE = `http://127.0.0.1:${PORT}`;
+  let PORT: number;
+  let BASE: string;
   let child: ChildProcess;
   let home: string;
   let stderr = "";
@@ -53,6 +47,8 @@ function harness(label: string, serverEnv: Record<string, string>, instanceEnv: 
     }
   };
   beforeAll(async () => {
+    PORT = await freePortBlock([0, 1], 18800, 10_000);
+    BASE = `http://127.0.0.1:${PORT}`;
     chmodSync(FAKE_CLAUDE, 0o755);
     home = mkdtempSync(join(tmpdir(), `omb-hooks-${label}-`));
     mkdirSync(join(home, ".openmausbot"), { recursive: true });
@@ -61,7 +57,6 @@ function harness(label: string, serverEnv: Record<string, string>, instanceEnv: 
         claude: {
           driver: "claudeAgent",
           environment: {
-            ...instanceEnv,
             FAKE_CLAUDE_TURN_STATE: join(home, "turns"),
             FAKE_CLAUDE_PROMPTS: join(home, "prompts.ndjson"),
             FAKE_CLAUDE_HOOKS: "1",
@@ -69,6 +64,7 @@ function harness(label: string, serverEnv: Record<string, string>, instanceEnv: 
               { name: "Bash", input: { command: "cat big.log" }, ok: true, output: BIG },
               { name: "Read", input: { file_path: "a.ts" }, ok: true, output: "const a = 1;" },
             ]),
+            ...instanceEnv,
           },
           config: { cli: FAKE_CLAUDE },
         },
@@ -134,7 +130,6 @@ posixOnly("engine hooks e2e (fake Claude honouring the settings hooks)", () => {
     const spilled = files.map((file) => readFileSync(file, "utf8")).find((text) => text.startsWith("line "))!;
     expect(spilled.length).toBeGreaterThan(10_000);
     expect(spilled).toContain(BIG.slice(0, 200));
-    // the row's own preview stays bounded; the file has the rest
     expect((bash.output ?? "").length).toBeLessThan(7_000);
     const digest: Msg = bot.messages.find((m: Msg) => m.kind === "digest");
     expect(digest.digest?.hookCoverage).toBe("full");
@@ -152,8 +147,7 @@ posixOnly("engine hooks e2e: compaction", () => {
 
   it("records the compaction in the transcript and hands the latest digests back to the engine as plain-text context", async () => {
     const bot = await h.runTurn();
-    // the fake ran PreCompact then SessionStart(compact) at the start of its
-    // SECOND turn; run one more turn so the first turn's digest exists first
+    // The fake runs PreCompact then SessionStart(compact) at the start of its second turn, so run one more turn.
     expect((await h.api("POST", `/api/bots/${bot.id}/messages`, { text: "and again, after compaction" })).status).toBe(202);
     await h.waitFor(async () => {
       const b = await h.getBot(bot.id);
@@ -165,13 +159,40 @@ posixOnly("engine hooks e2e: compaction", () => {
       "context compaction started (auto)",
       "context compacted — re-sent the last 1 digest",
     ]);
-    // the fake echoes what SessionStart's stdout gave it, which must be the
-    // first turn's digest line
+    // The fake echoes what SessionStart's stdout gave it: the first turn's digest line.
     const replies: Msg[] = after.messages.filter((m: Msg) => m.role === "bot" && m.kind === "text" && m.text);
     expect(replies.at(-1)!.text).toContain("[What ");
     expect(replies.at(-1)!.text).toContain("did in an earlier turn");
     expect(replies.at(-1)!.text).toContain("Bash ×1");
   }, 90_000);
+});
+
+posixOnly("engine hooks e2e: a shell call that hit its time limit", () => {
+  const dumpDir = mkdtempSync(join(tmpdir(), "omb-hooks-timeout-dump-"));
+  const dump = join(dumpDir, "turn.json");
+  afterAll(() => removeTempDir(dumpDir));
+  const h = harness("timeout", {}, {
+    FAKE_CLAUDE_DUMP: dump,
+    FAKE_CLAUDE_TOOL_CALLS: JSON.stringify([
+      { name: "Bash", input: { command: "ffmpeg -i talk.mp3 -ar 16000 talk.wav" }, ok: false, output: "Exit code 143\nCommand timed out after 2m 0s" },
+      { name: "Bash", input: { command: "find / -iname 'ggml-*.bin'" }, ok: false, output: "Exit code 143\nCommand timed out after 2m 0s" },
+      { name: "Bash", input: { command: "false" }, ok: false, output: "Exit code 1" },
+    ]),
+  });
+
+  it("tells the engine how to rerun it, and the prompt said so up front", async () => {
+    const bot = await h.runTurn();
+    const reply: Msg = bot.messages.filter((m: Msg) => m.role === "bot" && m.kind === "text" && m.text).at(-1);
+    expect(reply.text!.match(/hit the shell time limit/g)).toHaveLength(2);
+    expect(reply.text).toContain("up to 600000");
+    expect(reply.text).toContain("mdfind -name");
+    const preview = await h.api("GET", `/api/bots/${bot.id}/system-prompt`);
+    const shell = preview.body.sections.find((s: { id: string }) => s.id === "shell");
+    expect(shell?.text).toContain("Long-running shell commands");
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.systemPrompt).toContain(shell.text.trim());
+    expect(seen.env.BASH_MAX_TIMEOUT_MS).toBe("600000");
+  }, 60_000);
 });
 
 posixOnly("engine hooks e2e with OMB_HOOKS=0", () => {

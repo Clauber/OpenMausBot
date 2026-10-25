@@ -1,11 +1,4 @@
-// The full server with Cloud Pro's included decision model, over its real
-// HTTP boundary, against one stub that plays Jev (/jev, the person's own
-// decider.baseUrl) and the Admin's relay (/relay). With no key to paste,
-// rooms start on Auto and ask the relay; an own key wins and goes only to
-// Jev; clearing it falls back; an explicit off wins. The included token goes
-// only to <OMB_CLOUD_DECIDER_URL>/v1/systemone, only with the two requests
-// the relay accepts, and is never saved, shown, logged or handed to a child.
-// Disposable home; no network.
+// One stub plays Jev (/jev, the person's own decider.baseUrl) and the Admin's relay (/relay). Disposable home; no network.
 import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type Server } from "node:http";
@@ -26,11 +19,21 @@ const RELAY_PATH = "/relay/api/cloud/services/decider";
 const ROOM_INSTRUCTIONS = "Which bot in this room should answer `new_message`? Choose __everyone__ only when the message needs several members to answer.";
 const ROOM_STATE_KEYS = ["room", "humans_in_room", "bots_in_room", "recent_messages", "new_message"];
 const KEY_CHECK = {
-  state: { purpose: "OpenMausBot is checking that a decision-model key works." },
+  state: { purpose: "Legion is checking that a decision-model key works." },
   questions: { answer: { type: "noul", instructions: "Is this a connection check?" } },
 };
+const EXTRACT_KEY_CHECK = {
+  seam: "keyCheck",
+  fields: { ok: { type: "boolean", description: "Is this a connection check?" } },
+  input: { text: "Legion is checking that an extraction-model key works." },
+};
 
-/** The relay's own check of a request body. */
+/** The relay's own check of an extraction body: the key check is the only extraction this test makes. */
+function relayExtracts(body: unknown): boolean {
+  return JSON.stringify(body) === JSON.stringify(EXTRACT_KEY_CHECK);
+}
+
+/** The relay's own check of a decision body. */
 function relayTakes(raw: string, body: any): boolean {
   if (Buffer.byteLength(raw) > 64 * 1024 || Buffer.byteLength(JSON.stringify(body.state)) > 24_000) return false;
   if (JSON.stringify({ state: body.state, questions: body.questions }) === JSON.stringify(KEY_CHECK)) return true;
@@ -72,19 +75,21 @@ beforeAll(async () => {
       const url = new URL(req.url ?? "/", "http://stub.test");
       const side = url.pathname.startsWith("/relay/") ? "relay" : url.pathname.startsWith("/jev/") ? "jev" : "";
       const body = JSON.parse(raw || "{}");
+      const extracting = url.pathname === `${RELAY_PATH}/v1/extract`;
       const question = body.questions?.answer;
       const auth = String(req.headers.authorization ?? "");
-      const refused = side === "relay" && !relayTakes(raw, body);
-      requests.push({ side, path: url.pathname, auth, type: question?.type, ...(refused ? { refused } : {}) });
+      const refused = side === "relay" && !(extracting ? relayExtracts(body) : relayTakes(raw, body));
+      requests.push({ side, path: url.pathname, auth, type: extracting ? "extract" : question?.type, ...(refused ? { refused } : {}) });
       const send = (status: number, payload: unknown) => {
         res.writeHead(status, { "content-type": "application/json" });
         res.end(JSON.stringify(payload));
       };
-      // Each side knows only its own account, and serves only its one route.
-      const route = side === "relay" ? `${RELAY_PATH}/v1/systemone` : "/jev/v1/systemone";
-      if (!side || req.method !== "POST" || url.pathname !== route) return send(404, { error: { type: "not_found" } });
+      // Each side knows only its own account and routes: the relay decides and extracts, Jev only decides.
+      const routes = side === "relay" ? [`${RELAY_PATH}/v1/systemone`, `${RELAY_PATH}/v1/extract`] : ["/jev/v1/systemone"];
+      if (!side || req.method !== "POST" || !routes.includes(url.pathname)) return send(404, { error: { type: "not_found" } });
       if (auth !== (side === "relay" ? `Bearer ${INCLUDED}` : `Bearer ${OWN}`)) return send(401, { error: { type: "invalid_api_key" } });
       if (refused) return send(400, { error: { type: "invalid_request" } });
+      if (extracting) return send(200, { values: { ok: true }, model: "clairic" });
       if (question?.type === "noul") return send(200, { answers: { answer: { type: "noul", noul: 0.97 } } });
       const other = Object.keys(question.criteria).find((key) => key !== pick)!;
       send(200, { answers: { answer: { type: "choice", choice: pick, probabilities: { [pick]: 0.95, [other]: 0.05 } } } });
@@ -127,7 +132,7 @@ beforeAll(async () => {
   const deadline = Date.now() + 20_000;
   for (;;) {
     if (child.exitCode !== null) throw new Error(`the server exited:\n${log}`);
-    try { if ((await api("GET", "/api/health")).body?.pid === child.pid) break; } catch { /* starting */ }
+    try { if ((await api("GET", "/api/health")).body?.pid === child.pid) break; } catch {}
     if (Date.now() > deadline) throw new Error(`the server did not start:\n${log}`);
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -146,7 +151,6 @@ async function roomMessages(roomId: string): Promise<{ working: boolean; message
   return { working: Boolean(room?.working), messages: room?.messages ?? [] };
 }
 
-/** Send one message and wait for the round to settle; who spoke first. */
 async function round(roomId: string, text: string): Promise<RoomMessage> {
   const before = new Set((await roomMessages(roomId)).messages.map((message) => message.id));
   expect((await api("POST", `/api/groups/${roomId}/messages`, { text })).status).toBe(202);
@@ -160,7 +164,6 @@ async function round(roomId: string, text: string): Promise<RoomMessage> {
 }
 
 const routed = () => requests.filter((request) => request.type === "choice");
-/** A credential on the side that does not know it. */
 const crossed = () => requests.filter((request) =>
   (request.side === "jev" && request.auth.includes(INCLUDED)) || (request.side === "relay" && !request.auth.includes(INCLUDED)));
 
@@ -170,7 +173,7 @@ describe("Cloud Pro's included decision model", { timeout: 90_000 }, () => {
 
   it("works with no key: Settings sees it included and on, and a new room starts on Auto", async () => {
     const config = await api("GET", "/api/config");
-    expect(config.body.decider).toEqual({ provider: "jev", configured: true, included: true, enabled: true, jobs: { roomRouting: true } });
+    expect(config.body.decider).toEqual({ provider: "jev", configured: true, included: true, enabled: true, jobs: expect.objectContaining({ roomRouting: true }) });
     expect(config.text).not.toContain(INCLUDED);
     for (const name of ["Maya", "Theo"]) {
       bots[name] = (await api("POST", "/api/bots", {
@@ -192,10 +195,10 @@ describe("Cloud Pro's included decision model", { timeout: 90_000 }, () => {
     expect(routed().at(-1)).not.toHaveProperty("refused");
   });
 
-  it("Test checks the relay with one tiny call; a pasted draft is tested at Jev", async () => {
+  it("Test checks the relay with one tiny decision and one tiny extraction; a pasted draft is tested at Jev", async () => {
     const included = await api("POST", "/api/decider/test", {});
-    expect(included.body).toMatchObject({ ok: true });
-    expect(requests.at(-1)).toMatchObject({ side: "relay", type: "noul" });
+    expect(included.body).toMatchObject({ ok: true, extraction: { ok: true } });
+    expect(requests.slice(-2)).toMatchObject([{ side: "relay", type: "noul" }, { side: "relay", type: "extract", auth: `Bearer ${INCLUDED}` }]);
     const draft = await api("POST", "/api/decider/test", { key: "tsk_draft_not_known" });
     expect(draft.body).toEqual({ ok: false, reason: "rejected", status: 401 });
     expect(requests.at(-1)).toMatchObject({ side: "jev", auth: "Bearer tsk_draft_not_known" });
@@ -205,14 +208,14 @@ describe("Cloud Pro's included decision model", { timeout: 90_000 }, () => {
   it("an own key wins and goes only to Jev; clearing it falls back to the included decisions", async () => {
     const saved = await api("PUT", "/api/config", { decider: { key: OWN } });
     expect(saved.status, saved.text).toBe(200);
-    expect(saved.body.decider).toEqual({ provider: "jev", configured: true, enabled: true, jobs: { roomRouting: true } });
+    expect(saved.body.decider).toEqual({ provider: "jev", configured: true, enabled: true, jobs: expect.objectContaining({ roomRouting: true }) });
     pick = bots.Maya!.id;
     expect((await round(room.id, "Can someone redo the pricing page copy?")).from!.name).toBe("Maya");
     expect(routed().at(-1)).toMatchObject({ side: "jev", auth: `Bearer ${OWN}` });
 
     const cleared = await api("PUT", "/api/config", { decider: { key: "" } });
     expect(cleared.status, cleared.text).toBe(200);
-    expect(cleared.body.decider).toEqual({ provider: "jev", configured: true, included: true, enabled: true, jobs: { roomRouting: true } });
+    expect(cleared.body.decider).toEqual({ provider: "jev", configured: true, included: true, enabled: true, jobs: expect.objectContaining({ roomRouting: true }) });
     pick = bots.Theo!.id;
     expect((await round(room.id, "The navbar flickers on scroll.")).from!.name).toBe("Theo");
     expect(routed().at(-1)).toMatchObject({ side: "relay", auth: `Bearer ${INCLUDED}` });
@@ -221,7 +224,7 @@ describe("Cloud Pro's included decision model", { timeout: 90_000 }, () => {
   it("an explicit off wins: no call, the room's lead answers, new rooms keep a lead", async () => {
     const off = await api("PUT", "/api/config", { decider: { enabled: false } });
     expect(off.status, off.text).toBe(200);
-    expect(off.body.decider).toEqual({ provider: "jev", configured: true, included: true, enabled: false, jobs: { roomRouting: true } });
+    expect(off.body.decider).toEqual({ provider: "jev", configured: true, included: true, enabled: false, jobs: expect.objectContaining({ roomRouting: true }) });
     const asked = routed().length;
     pick = bots.Theo!.id;
     const reply = await round(room.id, "Who can look at the webhook retries?");
@@ -230,7 +233,6 @@ describe("Cloud Pro's included decision model", { timeout: 90_000 }, () => {
     expect(routed().length).toBe(asked);
     const another = await api("POST", "/api/groups", { name: "Quiet", memberIds: [bots.Maya!.id, bots.Theo!.id] });
     expect(another.body.group.defaultResponder).not.toEqual({ kind: "auto" });
-    // switching back on needs no key of the person's own
     const on = await api("PUT", "/api/config", { decider: { enabled: true } });
     expect(on.status, on.text).toBe(200);
     expect(on.body.decider).toMatchObject({ included: true, enabled: true });
@@ -238,8 +240,7 @@ describe("Cloud Pro's included decision model", { timeout: 90_000 }, () => {
 
   it("never sends a credential to the other side, nor the relay a request it refuses, and never saves, logs or hands on the included token", async () => {
     expect(crossed()).toEqual([]);
-    // two room decisions and one key check, and nothing else
-    expect(requests.filter((request) => request.side === "relay").map((request) => request.type)).toEqual(["choice", "noul", "choice"]);
+    expect(requests.filter((request) => request.side === "relay").map((request) => request.type)).toEqual(["choice", "noul", "extract", "choice"]);
     expect(requests.filter((request) => request.refused)).toEqual([]);
     expect(readFileSync(join(data, "config.json"), "utf8")).not.toContain(INCLUDED);
     const decisions = join(data, "decider-log");
@@ -247,7 +248,6 @@ describe("Cloud Pro's included decision model", { timeout: 90_000 }, () => {
     expect(rows).toContain('"seam":"roomRouting"');
     expect(rows).not.toContain(INCLUDED);
     expect(log).not.toContain(INCLUDED);
-    // An engine's environment.
     expect(existsSync(engineDump)).toBe(true);
     const engine = JSON.parse(readFileSync(engineDump, "utf8")).env;
     expect(engine).not.toHaveProperty("OMB_CLOUD_DECIDER_TOKEN");
@@ -264,8 +264,7 @@ console.log("dump-env 1.0.0");
     const probe = await api("POST", "/api/cli-test", { cli });
     expect(probe.body, probe.text).toMatchObject({ ok: true, version: "dump-env 1.0.0" });
     const raw = JSON.parse(readFileSync(dump, "utf8"));
-    // Proves the dump is the server's environment, not an empty one. Every
-    // OMB_CLOUD_* value, the relay URL included, is stripped from a probed CLI.
+    // Proves the dump is the server's environment, not an empty one; every OMB_CLOUD_* value is stripped from a probed CLI.
     expect(raw.HOME).toBe(home);
     expect(raw).not.toHaveProperty("OMB_CLOUD_DECIDER_URL");
     expect(raw).not.toHaveProperty("OMB_CLOUD_DECIDER_TOKEN");

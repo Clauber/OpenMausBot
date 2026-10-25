@@ -15,8 +15,8 @@ URLs. Open **only** the printed preview URL. Ctrl-C closes its native browsers,
 UI and harness, then removes its temporary data; the server log remains.
 
 1. The panel contains two browser-chrome rows and a live blank page. There is
-   no “coming next” card and no Take control button. While the bot has the
-   browser, nothing is sent until you interact; hovering never takes it.
+   no “coming next” card. While the bot has the browser, nothing is sent until
+   you interact or press **Take control**; hovering never takes it.
 2. Enter the printed test-page URL and press Enter. That first interaction
    takes the browser from the bot (a pill over the top of the page reads
    “You’re using the browser”, at every panel width), then navigates; it is
@@ -36,7 +36,11 @@ UI and harness, then removes its temporary data; the server log remains.
    only clicking or typing in the page sends Tab there.
 3. Stop for 8 seconds: control returns to the bot and the pill disappears.
    A Cmd shortcut such as Cmd+C must not delay that. Keep **Type or paste
-   text…** open past 8 seconds: control stays yours until it closes.
+   text…** open past 8 seconds: control stays yours until it closes. Press
+   **Take control**, then wait a minute: it stays yours until **Hand back**,
+   which returns it at once. **Type a password or code…** shows a masked
+   field; its text reaches the selected page field and appears in no log,
+   response or other view.
    Holding a mouse button or key down must never hand back. Reconnect the
    view, then leave it connected for at least 30 seconds on the same static
    image. It must not stall waiting for an ACK. The page remains intact and
@@ -60,16 +64,51 @@ UI and harness, then removes its temporary data; the server log remains.
 7. Reconnect while a restart is still finishing, or change profiles before an
    earlier command finishes. A late response must not disconnect the new view,
    change its error state, or acknowledge an old frame as the new viewer.
+8. Sign-in requests: script Pepper's turn to call `request_sign_in` for the
+   test page (the e2e below does this with the fake engine). One **Sign in
+   needed** card and one notification arrive. **Open** selects the Browser tab
+   already in your control; the page stays the bot's, or opens the site when
+   the bot left it blank, and the banner above it offers Done and Cancel. Idle
+   time never hands it back while the request is open. **Done** on the card
+   (or from a second window) hands the browser back and resumes Pepper with
+   “the person finished signing in”; **Cancel** resumes it with “declined”.
+9. Saved logins: on the same card choose **Save a login** and save a test
+   account (fake values) for the test page's site. Pepper resumes and calls
+   `fill_login`; the page's username and password boxes fill, the form is
+   submitted, the tool result names only what was filled and where the page
+   went, and **Settings → Logins** lists the login by site without its
+   password. Open the same page under a subdomain: `fill_login` fills it
+   too. Under another site, or plain http on a non-local address, it refuses
+   and types nothing. Call `fill_login` with `submit: false`, then ask Pepper
+   to `eval` the password box's value: the browser refuses eval on that page
+   for a minute, and the password is cleared from the box after it. A
+   snapshot shows `••••••`.
+10. 1Password (only with a test account and a test vault, never a real one):
+   connect a service account limited to one vault holding a test Login item
+   for the test page's site. Its row appears read-only, marked From
+   1Password; `fill_login` fills it like a saved login. Pick another bot for
+   the vault under 1Password in Settings → Logins: Pepper no longer lists or
+   fills it. Unit tests use a fake SDK and reach no network.
+
+11. Page dialogs: give the test page a button that calls `confirm()`, take control and press it. The question shows over
+   the page within a second, with Dismiss and Accept, only in the view that holds the browser. Answering lets the click
+   finish, and typing goes on. Answer after more than 30 seconds: the click still finishes, with no restart. A page
+   that hangs (`while (true) {}`) is restarted for you after about 35 seconds. The panel reconnects, and sign-ins
+   are kept.
 
 Focused automated coverage:
 
 ```sh
 pnpm exec vitest run server/browser-engine.test.ts server/browser-runtime.test.ts \
-  server/harness-mcp-proxy.test.ts server/browser-live.test.ts \
+  server/harness-mcp-proxy.test.ts server/browser-live.test.ts server/browser-dialogs.test.ts \
   server/browser-live-routes.test.ts server/browser-codex-path.integration.test.ts \
-  src/lib/browser-input-queue.test.ts src/lib/browser-control.test.ts src/lib/browser-profiles.test.ts \
-  src/components/BrowserProfilesManager.test.ts src/components/BrowserViewport.test.ts \
-  src/components/BrowserPanel.test.ts
+  src/lib/browser-stream-v1.test.ts src/lib/browser-stream-client.test.ts src/lib/browser-control.test.ts \
+  src/lib/browser-profiles.test.ts src/components/BrowserProfilesManager.test.ts \
+  src/components/browser/StreamSurface.test.ts server/routes/browser-viewers.test.ts \
+  src/components/BrowserPanel.test.ts src/components/SignInRequestCard.test.ts \
+  server/sign-in-request.e2e.test.ts server/login-fill.test.ts server/login-store.test.ts \
+  server/totp.test.ts server/routes/logins.test.ts src/components/LoginsSettings.test.ts \
+  server/saved-login.e2e.test.ts server/onepassword.test.ts scripts/prepare-duckdb.test.mjs
 ```
 
 Those tests cover native transport lifecycle, owner/session scoping, gate races,
@@ -77,6 +116,40 @@ stale list/stream events, native key routing, bounded input/backpressure,
 revoked capabilities, and exact saved-state cleanup. Native workflow testing
 is still required: a green mocked
 frame test alone does not prove browser input or restoration works.
+
+## Unwatched turn previews
+
+The per-turn preview source asks `LiveRouter.watching(session)` before each
+periodic or tool-triggered browser capture, so a bot's browser is not captured
+while no Browser panel views that session. The final conversation screenshot
+still runs, and computer previews keep their existing behavior. The router checks
+agent-browser and stealth viewers through `BrowserLive`, and Chrome viewers
+through both `LiveV1` and `StreamV2`.
+
+```sh
+OMB_VERIFY_BROWSER_BINARY=/absolute/path/to/agent-browser \
+OMB_VERIFY_BROWSER_CHROME=/absolute/path/to/chrome-headless-shell \
+node --experimental-strip-types scripts/verify-browser-preview-watchers.ts
+```
+
+The recipe launches the isolated fixture with a slow fake turn on the
+`browser` surface. The fake engine reports one browser tool call. The recipe
+makes that call itself through the turn's own browser MCP server (read from
+the fixture's `--mcp-config` dump), the same way the model CLI does. It counts
+`screen` events on `/api/events` while it opens and closes
+`/api/bots/:id/browser/live`, the stream the Browser panel opens. It expects
+no captures for 31 seconds with no viewer, new captures with one open, none
+for 31 seconds after the last viewer closes, and new captures on reopening.
+Then it settles the turn with no viewer and fetches the final screenshot's
+image endpoint. It exits non-zero when any check fails.
+
+Verified on Linux arm64 with Node 24.22.1, agent-browser 0.37.0 and Chrome
+Headless Shell 153.0.8010.47 on 2026-10-24. This host disables unprivileged
+user namespaces, so `OMB_VERIFY_BROWSER_CHROME` was a wrapper that adds
+`--no-sandbox`. With the fix, capture counts were 0 to 0 with no viewer for
+31 seconds, 0 to 2 while open, 2 to 2 after closing for 31 seconds and 2 to 4
+on reopening. The final screenshot returned HTTP 200 (4,254-byte PNG). Without
+the fix the same run failed: 0 to 5 with no viewer and 7 to 12 after closing.
 
 ## Native mobile control
 
@@ -191,6 +264,4 @@ Ctrl-C closes the exact fixture and removes the copied sign-in and browser
 data. VM/cloud transport and turn-bound switching are separately covered by
 `server/group-local-vm.e2e.test.ts`, `server/vps-routing.test.ts` and
 `server/index.test.ts` with
-isolated providers. These are not evidence of real cloud provisioning. The
-Computer engine (Boat's native runner) does not expose the agents selector
-tool, so switching it away from Cloud still requires the composer selector.
+isolated providers. These are not evidence of real cloud provisioning.

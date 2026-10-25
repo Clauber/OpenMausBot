@@ -31,11 +31,12 @@ checks server persistence, and sends a message through the composer.
 
 The header starts at **Only this thread**; **Thread + bot default** explicitly
 includes group turns and future threads. The desktop model-switch recipe uses
-the real picker and private approval channel against offline providers. It
-checks Cancel, the 390px confirmation layout, switching a Custom Codex thread
-to Claude with Ask in one confirmed operation, then updating a mismatched bot
-default without changing another existing Custom thread. HTTP cannot bypass
-Custom; ordinary Full switches may use the atomic HTTP downgrade. A fresh
+the real picker and private approval channel against offline providers. A
+switch never asks for confirmation: a level the new provider runs carries over,
+and one it can't (Custom off Codex) drops to Ask in the same operation. It
+checks switching a Custom Codex thread to Claude, then updating a mismatched
+bot default without changing another existing Custom thread. HTTP cannot
+bypass Custom. A fresh
 thread adopts the new default, and a sample engineering-handoff request sent
 through the composer completes with the fake provider reply. Screenshots stay
 in `.omb-scratch/verify-evidence/model-switch/`. This proves settings and turn

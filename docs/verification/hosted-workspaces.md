@@ -2,7 +2,7 @@
 
 This repository ships the workspace-side protocol adapter, not a hosted
 administration console. The adapter is optional, belongs to the licensed
-`enterprise/` layer, and does not add dependencies to the desktop or ordinary
+former `enterprise/` layer (removed from this fork), and does not add dependencies to the desktop or ordinary
 self-hosted server. An independently deployed identity service owns its own
 accounts, invitations and provider gateway.
 
@@ -20,10 +20,10 @@ every admin change needs a session. For recovery an operator restarts with
 The `identity.example.test` URLs below illustrate external identity-service
 endpoints; requests use the configured `OMB_ADMIN_URL`, not the tenant origin.
 
-1. The workspace's `/api/auth/hosted/start` creates bounded, expiring state
+1. The workspace's hosted start route creates bounded, expiring state
    and a secure host-only handoff cookie. It redirects to the identity
    service's `/connect` with workspace, state and a SHA-256 PKCE challenge.
-2. The service returns a one-use code to `/api/auth/hosted/callback`.
+2. The service returns a one-use code to the hosted callback route.
    State and cookie must match. The workspace consumes local state before
    awaiting `POST https://identity.example.test/api/handoff/consume` with
    workspace, code, verifier and `contractVersion: 1`.
@@ -111,7 +111,7 @@ service.
 ```sh
 pnpm typecheck
 pnpm lint
-pnpm exec vitest run server/hosted-access.test.ts enterprise/server/workspace-access.test.ts server/email-signin.test.ts server/sessions.test.ts server/request-auth.test.ts server/enterprise.test.ts server/browser-live.test.ts server/fleet.test.ts server/fleet-cli.test.ts server/fleet-agent.test.ts server/fleet-cli-filesystem.test.ts src/components/WorkspacesSection.test.ts
+pnpm exec vitest run server/hosted-access.test.ts server/email-signin.test.ts server/sessions.test.ts server/request-auth.test.ts server/enterprise.test.ts server/browser-live.test.ts server/fleet.test.ts server/fleet-cli.test.ts server/fleet-agent.test.ts server/fleet-cli-filesystem.test.ts src/components/WorkspacesSection.test.ts
 pnpm test:packaged-server
 ```
 

@@ -1,4 +1,4 @@
-# Computer use & browser use in OpenMausBot
+# Computer use & browser use in Legion
 
 Decision doc, 2026-08-12. How bots in OpenMausBot get local computer use and
 browser use. macOS and packaged Ubuntu x64 builds use an out-of-the-box,

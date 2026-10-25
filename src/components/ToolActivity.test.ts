@@ -1,7 +1,9 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
-import { ToolActivity } from "./ToolActivity";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("@/lib/interface-mode", () => ({ useAdvancedMode: () => true }));
+const { ToolActivity } = await import("./ToolActivity");
 
 describe("ToolActivity", () => {
   it("starts collapsed with an accessible status and escaped input/output", () => {
@@ -21,5 +23,13 @@ describe("ToolActivity", () => {
     expect(render(false)).toContain("Failed");
     expect(render(false)).toContain("No output was recorded");
     expect(render(true)).toContain("No output was recorded");
+  });
+  it("shows the thought before a step as readable text, clamped until opened", () => {
+    const html = renderToStaticMarkup(createElement(ToolActivity, { tool: { name: "Bash", ok: true, summary: "ls", thought: "Check what is in <tmp> first." } }));
+    expect(html).toContain('data-testid="tool-thought"');
+    expect(html).toContain("Check what is in &lt;tmp&gt; first.");
+    expect(html).toContain("line-clamp-3");
+    expect(html.indexOf("tool-thought")).toBeLessThan(html.indexOf("<details"));
+    expect(renderToStaticMarkup(createElement(ToolActivity, { tool: { name: "Bash", ok: true } }))).not.toContain("tool-thought");
   });
 });

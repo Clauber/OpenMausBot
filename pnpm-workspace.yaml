@@ -13,9 +13,14 @@ supportedArchitectures:
     - arm64
     - x64
 allowBuilds:
+  node-pty: true # optional server terminal backend
   electron: true # postinstall downloads the Electron dist
   esbuild: true # postinstall validates the platform binary
   electron-winstaller: false # unused — Windows builds ship NSIS
 onlyBuiltDependencies:
+  - node-pty
   - electron
   - esbuild
+# mermaid 12.1 still allows dompurify 3.4.13. Force the patched release.
+overrides:
+  dompurify: 3.4.16

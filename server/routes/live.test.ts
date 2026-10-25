@@ -1,6 +1,3 @@
-// The Live call routes, the way a request reaches them: through the table,
-// on a real HTTP server, with a stand-in for index.ts's inline routes behind
-// it. The controller and the config are stand-ins; their own tests cover them.
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -8,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LiveCallState, LiveSettings } from "../../shared/wire.ts";
 import { json, readBody } from "../harness/http.ts";
 import { LiveCallBusyError, LiveCallSignedOutError } from "../live-call-controller.ts";
-import { LiveSessionError } from "../live-call.ts";
+import { LIVE_NEEDS_KEY, LiveSessionError } from "../live-call.ts";
 import { requiredScope } from "../request-auth.ts";
 import { createLiveRoutes, type LiveRouteDeps } from "./live.ts";
 import { dispatchRoutes } from "./table.ts";
@@ -45,7 +42,6 @@ async function request(deps: LiveRouteDeps, method: string, path: string, body?:
   return { status: response.status, body: await response.json() };
 }
 
-/** What the companion adds to a paired phone's request (companion/src/proxy.ts). */
 const fromPhone = (device = "phone-1") => ({ "x-openmausbot-companion": "1", "x-openmausbot-companion-device": device });
 
 function deps(overrides: Partial<LiveRouteDeps> = {}): LiveRouteDeps & { saved: SettingsPatch[] } {
@@ -60,10 +56,10 @@ function deps(overrides: Partial<LiveRouteDeps> = {}): LiveRouteDeps & { saved: 
       deviceRevoked: vi.fn((device: string) => (device === "phone-1" ? { ...call, client: "ios" as const, status: "ending" as const } : null)),
     },
     resolveTarget: (botId, threadId) => (botId === "bot1" && (threadId ?? "t1") === "t1" ? { botId, botName: "Ada", threadId: threadId ?? "t1" } : null),
-    settings: () => ({ configured: true, voice: "marin", readTypedReplies: true, idleMinutes: 5 }),
+    settings: () => ({ configured: true, provider: "openai", codexConfigured: false, voice: "marin", readTypedReplies: true, idleMinutes: 5 }),
     saveSettings: vi.fn(async (patch: SettingsPatch): Promise<LiveSettings> => {
       saved.push(patch);
-      return { configured: true, voice: "marin", readTypedReplies: true, idleMinutes: 5, ...patch };
+      return { configured: true, provider: "openai", codexConfigured: false, voice: "marin", readTypedReplies: true, idleMinutes: 5, ...patch };
     }),
     ...overrides,
   };
@@ -81,6 +77,11 @@ describe("live routes", () => {
     const d = deps();
     await request(d, "POST", "/api/live/session", { botId: "bot1", threadId: "t1", sdp: "v=0\r\n", client: "android" });
     expect(d.calls.start).toHaveBeenCalledWith(expect.objectContaining({ auth: { kind: "loopback", scopes: ["admin", "client"] }, threadId: "t1", client: "android" }));
+  });
+  it("starts a call from a web browser", async () => {
+    const d = deps();
+    expect((await request(d, "POST", "/api/live/session", { botId: "bot1", sdp: "v=0\r\n", client: "web" })).status).toBe(201);
+    expect(d.calls.start).toHaveBeenCalledWith(expect.objectContaining({ client: "web" }));
   });
   it("keeps the SDP byte for byte", async () => {
     const d = deps();
@@ -104,8 +105,11 @@ describe("live routes", () => {
     expect(d.calls.start).not.toHaveBeenCalled();
   });
   it("says when a key is needed and when a call is already running", async () => {
-    const noKey = deps({ calls: { ...deps().calls, start: vi.fn(async () => { throw new LiveSessionError("Add an OpenAI API key to use Live calls.", 409); }) } });
-    expect(await request(noKey, "POST", "/api/live/session", { botId: "bot1", sdp: "v=0", client: "ios" })).toMatchObject({ status: 409, body: { needsKey: true } });
+    const noKey = deps({ calls: { ...deps().calls, start: vi.fn(async () => { throw new LiveSessionError(LIVE_NEEDS_KEY, 409); }) } });
+    for (const headers of [{}, fromPhone()]) {
+      expect(await request(noKey, "POST", "/api/live/session", { botId: "bot1", sdp: "v=0", client: "ios" }, headers))
+        .toEqual({ status: 409, body: { error: LIVE_NEEDS_KEY, needsKey: true } });
+    }
     const active = { callId: "c0", botId: "bot2", threadId: "t2", client: "android", voice: "marin", startedAt: 1, status: "live" } as const;
     const busy = deps({ calls: { ...deps().calls, start: vi.fn(async () => { throw new LiveCallBusyError(active); }) } });
     const refused = await request(busy, "POST", "/api/live/session", { botId: "bot1", sdp: "v=0", client: "ios" });
@@ -129,7 +133,7 @@ describe("live routes", () => {
   it("saves non-secret settings and refuses the key", async () => {
     const d = deps();
     expect(await request(d, "PATCH", "/api/live/settings", { idleMinutes: 10, readTypedReplies: false })).toMatchObject({ status: 200, body: { live: { idleMinutes: 10, readTypedReplies: false } } });
-    expect((await request(d, "PATCH", "/api/live/settings", { key: "sk-x" })).status).toBe(400);
+    expect(await request(d, "PATCH", "/api/live/settings", { key: "sk-x" })).toEqual({ status: 400, body: { error: "Those Live settings are not valid." } });
     expect((await request(d, "PATCH", "/api/live/settings", { idleMinutes: 0 })).status).toBe(400);
     expect((await request(d, "PATCH", "/api/live/settings", { idleMinutes: 61 })).status).toBe(400);
     expect((await request(d, "PATCH", "/api/live/settings", { voice: "Marin!" })).status).toBe(400);
@@ -142,7 +146,7 @@ describe("live routes", () => {
   });
   it("never answers with the key", async () => {
     const res = await request(deps(), "PATCH", "/api/live/settings", { voice: "cedar" });
-    expect(res).toEqual({ status: 200, body: { live: { configured: true, voice: "cedar", readTypedReplies: true, idleMinutes: 5 } } });
+    expect(res).toEqual({ status: 200, body: { live: { configured: true, provider: "openai", codexConfigured: false, voice: "cedar", readTypedReplies: true, idleMinutes: 5 } } });
   });
   it("passes other paths and methods", async () => {
     expect(await request(deps(), "GET", "/api/live/summary")).toEqual({ status: 404, body: { from: "inline routes" } });

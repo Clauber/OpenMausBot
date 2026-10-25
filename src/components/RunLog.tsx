@@ -2,8 +2,10 @@ import { useState } from "react";
 import { Check, CheckCircle2, Circle, Copy, Loader2, XCircle } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
+import { copyText } from "@/lib/copy-text";
 import { runLogText, type TimelineEvent } from "@/lib/taskTimeline";
 import { formatTime } from "@/state/store";
+import { ArtifactsList } from "./ArtifactsList";
 
 const STATUS = {
   running: "inspector.run.running",
@@ -12,17 +14,12 @@ const STATUS = {
   observed: "inspector.run.observed",
 } as const;
 
-export function RunLog({ events }: { events: TimelineEvent[] }) {
+export function RunLog({ events, threadId }: { events: TimelineEvent[]; threadId?: string }) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
-  // The full conversation remains in chat. Keep the debugging view bounded.
   const recent = events.slice(-200);
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(runLogText(recent));
-      setCopyState("copied");
-    } catch {
-      setCopyState("failed");
-    }
+    const result = await copyText(runLogText(recent));
+    if (result !== "empty") setCopyState(result);
   };
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
@@ -61,6 +58,7 @@ export function RunLog({ events }: { events: TimelineEvent[] }) {
           })}
         </ol>
       )}
+      {threadId && <ArtifactsList threadId={threadId} />}
     </div>
   );
 }

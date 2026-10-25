@@ -1,19 +1,3 @@
-// A pass-through MCP server that keeps one tool result from eating a
-// conversation.
-//
-// The provider CLI mounts this instead of the bot's real MCP server. Every
-// JSON-RPC frame is relayed in both directions. With a tool selection, discovery
-// is filtered and excluded calls are rejected before upstream execution.
-// An oversized `tools/call` result is cut to a budget (mcp-trim.ts), the
-// untrimmed text is written to a file, and the model is told in the result
-// where that file is so it can read or grep the rest with its ordinary tools.
-//
-// Why here and not in the driver: on every vendor-CLI engine the tool call and
-// its result never pass through the harness at all. The CLI runs the server
-// itself and appends the raw answer to the session it owns. Standing between
-// the two processes is the only place the harness can see, or shrink, what a
-// tool puts into the model's context.
-//
 // stdout is the MCP transport. Never log there.
 import { spawn } from "node:child_process";
 import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -21,14 +5,21 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { allowsTool, parseToolScope, type ToolScope } from "../shared/tool-scope.ts";
 
+import { bridgedCallTarget } from "./drivers/agents-bridge.ts";
 import { resolveCliSpawn } from "./env-path.ts";
-import { DEFAULT_RESULT_BUDGET, trimResultText, trimStructured } from "./mcp-trim.ts";
+import { APP_ONLY_REFUSAL, AppObserver, GATE_APPS_ENV, modelVisible, parseAppMount, withUiExtension } from "./mcp-app-observer.ts";
+import { directoryCallTarget, isDirectoryTool } from "./mcp-directory.ts";
+import { QUERY_TOOL, QUERY_TOOL_NAME, ResultStore, answerQuery, describeShape, exampleQuery } from "./mcp-shape.ts";
+import { fitToolList } from "./mcp-tool-schema.ts";
+import { DEFAULT_RESULT_BUDGET, type HeldResult, trimResultText, trimStructured } from "./mcp-trim.ts";
 import { killCliTree } from "./procs.ts";
+import { catalogPage, DISCOVERY_TOOLS, searchTools } from "./mcp-tool-discovery.ts";
+import { toolSchemaProfileFromEnv } from "./tool-schema-profile.ts";
+import { capToolListResult, toolLimitFromEnv } from "./tool-count-limit.ts";
 
 type Json = Record<string, unknown>;
 
-/** Codex imports env variables from one shared app-server environment. Each
- * mount names its own private record; only the variable name reaches argv. */
+/** Codex imports env from one shared app-server environment: each mount names its own record, and only that name reaches argv. */
 function gateEnvironment(): NodeJS.ProcessEnv {
   if (process.argv.length === 2) return process.env;
   try {
@@ -36,7 +27,8 @@ function gateEnvironment(): NodeJS.ProcessEnv {
     if (process.argv.length !== 4 || process.argv[2] !== "--config-env" || !key || !/^OMB_GATE_CONFIG_[a-f0-9]{64}$/.test(key)) throw new Error();
     const value = JSON.parse(process.env[key] ?? "");
     if (!value || typeof value !== "object" || Array.isArray(value)
-      || !["OMB_GATE_NAME", "OMB_GATE_UPSTREAM", "OMB_GATE_TOOL_SCOPE"].every(name => typeof value[name] === "string")
+      || !["OMB_GATE_NAME", "OMB_GATE_UPSTREAM"].every(name => typeof value[name] === "string")
+      || (typeof value.OMB_GATE_TOOL_SCOPE !== "string" && typeof value[GATE_APPS_ENV] !== "string" && value.OMB_GATE_DISCOVERY !== "1")
       || !Object.entries(value).every(([name, setting]) => GATE_ENV_KEYS.includes(name) && typeof setting === "string")) throw new Error();
     return value;
   } catch {
@@ -44,19 +36,17 @@ function gateEnvironment(): NodeJS.ProcessEnv {
   }
 }
 /** The gate's own settings never reach the upstream server's environment. */
-const GATE_ENV_KEYS = ["OMB_GATE_NAME", "OMB_GATE_SPILL_DIR", "OMB_GATE_BUDGET", "OMB_GATE_UPSTREAM", "OMB_GATE_SPILL_HINT", "OMB_GATE_TOOL_SCOPE"];
+const GATE_ENV_KEYS = ["OMB_GATE_NAME", "OMB_GATE_SPILL_DIR", "OMB_GATE_BUDGET", "OMB_GATE_UPSTREAM", "OMB_GATE_SPILL_HINT", "OMB_GATE_TOOL_SCOPE", "OMB_GATE_DIRECTORY", "OMB_GATE_DISCOVERY", GATE_APPS_ENV];
 const gateEnv = gateEnvironment();
 const NAME = gateEnv.OMB_GATE_NAME || "mcp";
 const SPILL_DIR = gateEnv.OMB_GATE_SPILL_DIR || "";
 const rawBudget = Number(gateEnv.OMB_GATE_BUDGET);
 const BUDGET = Number.isFinite(rawBudget) && rawBudget >= 0 ? rawBudget : DEFAULT_RESULT_BUDGET;
-/** Spilled results older than this are swept at startup: they exist for the
- * turn that produced them, not forever. */
 const SPILL_MAX_AGE_MS = 24 * 60 * 60_000;
-/** Whether the model is told where the untrimmed result was saved. Off by
- * default: offering the path measured WORSE than no trimming, because the
- * model reads the file back in. See TrimInput.spillHint. */
 const SPILL_HINT = gateEnv.OMB_GATE_SPILL_HINT === "1";
+const DIRECTORY = gateEnv.OMB_GATE_DIRECTORY === "1";
+const SCHEMA_PROFILE = toolSchemaProfileFromEnv(process.env);
+const TOOL_LIMIT = toolLimitFromEnv(process.env);
 
 function fail(message: string): never {
   process.stderr.write(`mcp-gate(${NAME}): ${message}\n`);
@@ -107,8 +97,6 @@ function upstreamSpec(): Upstream {
   return spec;
 }
 
-/** Delete spilled results older than SPILL_MAX_AGE_MS. Best effort: a sweep
- * that fails must never stop the bot's tools from working. */
 function sweepSpill(dir: string): void {
   let entries: string[];
   try {
@@ -122,16 +110,27 @@ function sweepSpill(dir: string): void {
       const path = join(dir, entry);
       if (statSync(path).mtimeMs < cutoff) rmSync(path, { force: true });
     } catch {
-      /* another gate may be sweeping the same directory */
     }
   }
 }
 
 let spilled = 0;
+/** Whole results the model can query instead of re-reading: one gate, one MCP connection, one session. */
+const store = new ResultStore();
 
-/** Save the untrimmed text and return its path, or undefined when there is
- * nowhere to put it — the trim still happens, the model is just told the rest
- * was discarded rather than where to find it. */
+/** Keep the parsed payload for query_result; only a JSON result can be queried, text is cut as before. */
+function hold(tool: string, text: string): HeldResult | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (value === null || typeof value !== "object") return undefined;
+  const handle = store.put(tool, value, text.length);
+  return { handle, shape: describeShape(value), example: exampleQuery(value) };
+}
+
 function spill(tool: string, text: string): string | undefined {
   if (!SPILL_DIR) return undefined;
   const safeTool = tool.replace(/[^A-Za-z0-9_.-]/g, "-").slice(0, 60) || "tool";
@@ -146,16 +145,33 @@ function spill(tool: string, text: string): string | undefined {
   }
 }
 
-/** Rewrite one `tools/call` result in place. Returns true when anything was
- * actually trimmed, so the caller can report it on stderr. */
+/** Object key order aside (a server may build the two copies differently); array order counts. */
+function sameJson(text: string, value: unknown): boolean {
+  try {
+    return sameValue(JSON.parse(text), value, 0);
+  } catch {
+    return false;
+  }
+}
+
+function sameValue(a: unknown, b: unknown, depth: number): boolean {
+  if (a === b) return true;
+  if (depth > 200 || !a || !b || typeof a !== "object" || typeof b !== "object") return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((item, i) => sameValue(item, b[i], depth + 1));
+  }
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length
+    && keys.every((key) => Object.hasOwn(right, key) && sameValue(left[key], right[key], depth + 1));
+}
+
 function trimCallResult(result: Json, tool: string): boolean {
   if (BUDGET === 0) return false;
   const content = result.content;
   if (!Array.isArray(content)) return false;
 
-  // The text blocks are what a provider puts in the model's context, and a
-  // server that answers with several is answering with one payload split up,
-  // so they share the budget rather than each getting it.
   const textBlocks = content.filter(
     (block): block is Json & { text: string } =>
       Boolean(block) && typeof block === "object" && (block as Json).type === "text" && typeof (block as Json).text === "string",
@@ -165,39 +181,50 @@ function trimCallResult(result: Json, tool: string): boolean {
 
   const share = Math.floor(BUDGET / textBlocks.length);
   const path = spill(tool, textBlocks.map((block) => block.text).join("\n"));
+  const held = textBlocks.length === 1 ? hold(tool, textBlocks[0]!.text) : undefined;
+  const structuredIsText = textBlocks.length === 1 && Boolean(result.structuredContent) && typeof result.structuredContent === "object"
+    && sameJson(textBlocks[0]!.text, result.structuredContent);
   let trimmed = false;
+  let keptValue: unknown;
   for (const block of textBlocks) {
-    const outcome = trimResultText({ text: block.text, budget: share, spillPath: path, spillHint: SPILL_HINT, toolName: tool });
+    const outcome = trimResultText({ text: block.text, budget: share, spillPath: path, spillHint: SPILL_HINT, toolName: tool, held });
     if (!outcome.trimmed) continue;
     block.text = outcome.text;
+    keptValue = outcome.value;
     trimmed = true;
   }
 
-  // A tool that also answers with structuredContent would otherwise hand the
-  // provider a second, full copy of everything just cut. Trim it the same way
-  // — structurally only, so it stays valid against the tool's output schema —
-  // and leave it untouched when it cannot be cut without mangling it.
+  // Trim structuredContent too, or the provider gets a second full copy; structurally only, so it stays valid against the output schema.
   if (trimmed && result.structuredContent && typeof result.structuredContent === "object") {
-    const structured = trimStructured(result.structuredContent, BUDGET);
-    if (structured) result.structuredContent = structured.value as Json;
+    if (structuredIsText && keptValue && typeof keptValue === "object") {
+      result.structuredContent = keptValue as Json;
+    } else {
+      const structured = trimStructured(result.structuredContent, BUDGET);
+      if (structured) result.structuredContent = structured.value as Json;
+    }
   }
   return trimmed;
 }
 
 // Validate before starting a process: corrupt policy must never become pass-through.
 const scope = toolScope();
+if (gateEnv.OMB_GATE_DISCOVERY !== undefined && gateEnv.OMB_GATE_DISCOVERY !== "1") fail("invalid tool discovery setting");
+const discovery = gateEnv.OMB_GATE_DISCOVERY === "1";
+const restricted = scope !== undefined || discovery;
+const observer = (() => {
+  try {
+    const mount = parseAppMount(gateEnv[GATE_APPS_ENV]);
+    return mount ? new AppObserver(mount, { log: (line) => process.stderr.write(`mcp-gate(${NAME}): ${line}\n`) }) : undefined;
+  } catch { return fail("invalid MCP apps configuration"); }
+})();
+const appOnly = new Set<string>();
 const spec = upstreamSpec();
 if (SPILL_DIR) sweepSpill(SPILL_DIR);
 
 const childEnv: NodeJS.ProcessEnv = { ...process.env, ...spec.env };
 for (const key of Object.keys(childEnv)) if (key.startsWith("OMB_GATE_")) delete childEnv[key];
 
-// The CLI used to spawn this server itself, on every platform, so the gate
-// has to spawn it exactly as well. On Windows CreateProcess cannot exec an
-// npm .cmd shim or a node-shebang script, which is what `npx -y mcp-remote`
-// is — resolveCliSpawn rewrites it to the real executable without a shell, so
-// quoting-sensitive JSON argv survives. A shell here would re-interpret the
-// server's own arguments.
+// CreateProcess cannot exec an npm .cmd shim or a node-shebang script, and a shell would re-interpret JSON argv.
 const resolved = resolveCliSpawn(spec.command, spec.args ?? []);
 const child = spawn(resolved.command, resolved.args, {
   stdio: ["pipe", "pipe", "pipe"],
@@ -207,9 +234,7 @@ const child = spawn(resolved.command, resolved.args, {
   ...(process.platform === "win32" ? { windowsHide: true } : {}),
 });
 
-// The gate owns this process. If the gate is killed rather than closed —
-// the CLI reaping its MCP servers at the end of a turn — the real server
-// must not be left behind, and on Windows only taskkill /T reaps a tree.
+// The real server must not outlive a killed gate, and on Windows only taskkill /T reaps a tree.
 let reaping = false;
 const reapChild = () => {
   if (reaping) return;
@@ -232,11 +257,19 @@ child.on("error", (error) => {
 });
 child.stderr.pipe(process.stderr);
 
-type Pending = { kind: "call"; tool: string } | { kind: "list" | "other" };
+type Pending =
+  | { kind: "call"; tool: string; trim: boolean; params?: Json }
+  | { kind: "list" | "other" }
+  | { kind: "initialize"; original?: string }
+  | { kind: "catalog"; tools: ReturnType<typeof catalogPage>["tools"]; cursors: Set<string>; params: Json };
+let catalog: ReturnType<typeof catalogPage>["tools"] | undefined;
+
+function callTarget(name: string, args: unknown): string | undefined {
+  return DIRECTORY ? directoryCallTarget(name, args) : name;
+}
 /** JSON-RPC string and numeric IDs are separate, even when their text is equal. */
 const pending = new Map<string, Pending>();
 
-// client -> server: verbatim, but remember which ids are tool calls
 createInterface({ input: process.stdin }).on("line", (line) => {
   let message: Json | undefined;
   if (line.trim()) {
@@ -244,29 +277,80 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       const parsed: unknown = JSON.parse(line);
       if (isRecord(parsed)) message = parsed;
     } catch {
-      if (scope) return rejectRequest(null, -32700, "Invalid JSON-RPC frame");
+      if (restricted) return rejectRequest(null, -32700, "Invalid JSON-RPC frame");
     }
-    if (scope && (!message || message.jsonrpc !== "2.0")) return rejectRequest(message?.id, -32600, "Invalid JSON-RPC frame");
+    if (restricted && (!message || message.jsonrpc !== "2.0")) return rejectRequest(message?.id, -32600, "Invalid JSON-RPC frame");
   }
   const id = requestKey(message?.id);
-  const params = isRecord(message?.params) ? message.params : undefined;
+  let params = isRecord(message?.params) ? message.params : undefined;
+  if (id && typeof message?.method === "string" && restricted && pending.has(id)) fail("duplicate request ID on a restricted connection");
+  if (discovery && message?.method === "tools/call") {
+    if (!id || typeof params?.name !== "string" || (params.arguments !== undefined && !isRecord(params.arguments))) {
+      return rejectRequest(message.id, -32602, "Invalid tool call");
+    }
+    if (params.name === "search_tools") {
+      if (!catalog) return rejectRequest(message.id, -32603, "Load tools/list before searching tools");
+      try {
+        const result = searchTools(catalog, params.arguments);
+        process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: JSON.stringify(result) }] } })}\n`);
+      } catch (error) {
+        rejectRequest(message.id, -32602, (error as Error).message);
+      }
+      return;
+    }
+    if (params.name === "call_tool") {
+      const args = params.arguments;
+      if (!isRecord(args) || typeof args.name !== "string" || !args.name.trim() || !isRecord(args.arguments)) {
+        return rejectRequest(message.id, -32602, "Expected a tool name and arguments object");
+      }
+      params = { ...params, name: args.name, arguments: args.arguments };
+      message.params = params;
+      line = JSON.stringify(message);
+    }
+  }
+  // The gate's own read-only tool: it reads a held result and never reaches upstream, so no selection or app rule applies.
+  if (BUDGET > 0 && message?.method === "tools/call" && params?.name === QUERY_TOOL_NAME) {
+    if (!id) return;
+    process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: message.id, result: answerQuery(store, params.arguments, BUDGET) })}\n`);
+    return;
+  }
   if (scope && message?.method === "tools/call") {
     if (!id || typeof params?.name !== "string"
       || (params.arguments !== undefined && !isRecord(params.arguments))) {
       return rejectRequest(message.id, -32602, "Invalid tool call");
     }
-    if (!allowsTool(scope, { kind: "mcp", server: NAME, name: params.name })) {
+    // Security: should a bridged agents server answer here, use_tool is also judged by the tool it names.
+    const targets = [callTarget(params.name, params.arguments), ...(NAME === "agents" ? [bridgedCallTarget(params.name, params.arguments)] : [])];
+    if (targets.some((target) => target !== undefined && !allowsTool(scope, { kind: "mcp", server: NAME, name: target }))) {
       return rejectRequest(message.id, -32602, "Tool selection excludes this tool. Check the bot's Access settings.");
     }
   }
-  if (scope && message?.method === "tools/list" && !id) {
+  if (message?.method === "tools/call" && typeof params?.name === "string") {
+    const target = callTarget(params.name, params.arguments);
+    if (target !== undefined && appOnly.has(target)) return rejectRequest(message.id, -32602, APP_ONLY_REFUSAL);
+  }
+  if (restricted && message?.method === "tools/list" && !id) {
     return rejectRequest(message.id, -32600, "Tool listing needs a request ID");
   }
   if (id && typeof message?.method === "string") {
-    if (scope && pending.has(id)) fail("duplicate request ID on a restricted connection");
+    if (discovery && message.method === "tools/list") {
+      if (params?.cursor !== undefined) return rejectRequest(message.id, -32602, "The discovery listing has no cursor");
+      catalog = undefined;
+      pending.set(id, { kind: "catalog", tools: [], cursors: new Set(), params: params ?? {} });
+      child.stdin.write(`${line}\n`);
+      return;
+    }
     if (message.method === "tools/call") {
-      pending.set(id, { kind: "call", tool: typeof params?.name === "string" ? params.name : "tool" });
-    } else if (scope) {
+      const name = typeof params?.name === "string" ? params.name : "tool";
+      const target = callTarget(name, params?.arguments);
+      pending.set(id, { kind: "call", tool: target ?? name, trim: target !== undefined, ...(observer && params ? { params } : {}) });
+    } else if (message.method === "initialize" && observer) {
+      if (observer.mount.extension) {
+        pending.set(id, { kind: "initialize", original: line });
+        return child.stdin.write(`${JSON.stringify({ ...message, params: withUiExtension(message.params) })}\n`);
+      }
+      pending.set(id, { kind: "initialize" });
+    } else if (message.method === "tools/list" || restricted) {
       pending.set(id, { kind: message.method === "tools/list" ? "list" : "other" });
     }
   }
@@ -274,7 +358,6 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 });
 process.stdin.on("end", () => child.stdin.end());
 
-// server -> client: the one direction that gets rewritten
 createInterface({ input: child.stdout }).on("line", (line) => {
   if (!line.trim()) return;
   let message: Json | undefined;
@@ -282,36 +365,84 @@ createInterface({ input: child.stdout }).on("line", (line) => {
     const parsed: unknown = JSON.parse(line);
     if (isRecord(parsed)) message = parsed;
   } catch {
-    // Not JSON the gate understands. Relay it exactly as it came: a frame the
-    // gate cannot read is still the upstream server's answer to give.
-    if (scope) fail("unreadable upstream frame on a restricted connection");
+    if (restricted) fail("unreadable upstream frame on a restricted connection");
   }
-  if (!message || (scope && message.jsonrpc !== "2.0")) {
-    if (scope) fail("invalid upstream frame on a restricted connection");
+  if (!message || (restricted && message.jsonrpc !== "2.0")) {
+    if (restricted) fail("invalid upstream frame on a restricted connection");
     process.stdout.write(`${line}\n`);
     return;
   }
   const id = typeof message.method === "string" ? undefined : requestKey(message.id);
   const request = id === undefined ? undefined : pending.get(id);
-  if (scope && id !== undefined && !request) fail("unrequested upstream response on a restricted connection");
+  if (restricted && id !== undefined && !request) fail("unrequested upstream response on a restricted connection");
+  if (request?.kind === "initialize" && request.original && message.error !== undefined && id !== undefined) {
+    pending.set(id, { kind: "initialize" });
+    process.stderr.write(`mcp-gate(${NAME}): the server refused the MCP Apps extension; connecting without it\n`);
+    child.stdin.write(`${request.original}\n`);
+    return;
+  }
   if (id !== undefined) pending.delete(id);
   const result = message.result;
+  if (request?.kind === "initialize") observer?.initialized(result);
+  if (request?.kind === "catalog" && message.error === undefined) {
+    try {
+      const page = catalogPage(result);
+      observer?.listed(result);
+      for (const tool of page.tools) if (!modelVisible(tool)) appOnly.add(tool.name);
+      request.tools.push(...page.tools.filter(tool => modelVisible(tool) && (!scope || allowsTool(scope, { kind: "mcp", server: NAME, name: tool.name }))));
+      if (page.nextCursor !== undefined) {
+        if (request.cursors.has(page.nextCursor) || request.cursors.size >= 1000) throw new Error("Invalid upstream catalog pagination");
+        request.cursors.add(page.nextCursor);
+        pending.set(id!, request);
+        child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: message.id, method: "tools/list", params: { ...request.params, cursor: page.nextCursor } })}\n`);
+        return;
+      }
+      catalog = request.tools;
+      const listing: Json = { ...(result as Json), tools: BUDGET > 0 ? [...DISCOVERY_TOOLS, QUERY_TOOL] : DISCOVERY_TOOLS };
+      delete listing.nextCursor;
+      process.stdout.write(`${JSON.stringify({ ...message, result: listing })}\n`);
+    } catch (error) {
+      catalog = undefined;
+      rejectRequest(message.id, -32603, (error as Error).message);
+    }
+    return;
+  }
+  if (discovery && message.method === "notifications/tools/list_changed") catalog = undefined;
+  // A tool only an MCP app's view may call is never listed to the model, and a call to it is refused.
+  if (request?.kind === "list" && message.error === undefined && isRecord(result) && Array.isArray(result.tools)) {
+    observer?.listed(result);
+    for (const tool of result.tools) {
+      if (!isRecord(tool) || typeof tool.name !== "string") continue;
+      if (modelVisible(tool)) appOnly.delete(tool.name);
+      else appOnly.add(tool.name);
+    }
+    result.tools = result.tools.filter(modelVisible);
+  }
   if (scope && request?.kind === "list" && message.error === undefined) {
     if (!isRecord(result) || !Array.isArray(result.tools)
       || !result.tools.every((tool: unknown) => isRecord(tool) && typeof tool.name === "string" && tool.name.trim().length > 0)
       || (result.nextCursor !== undefined && typeof result.nextCursor !== "string")) {
       return rejectRequest(message.id, -32603, "Invalid tool catalog on a restricted connection");
     }
-    result.tools = result.tools.filter((tool: Json) => allowsTool(scope, { kind: "mcp", server: NAME, name: tool.name as string }));
+    result.tools = result.tools.filter((tool: Json) => (DIRECTORY && isDirectoryTool(tool.name))
+      || allowsTool(scope, { kind: "mcp", server: NAME, name: tool.name as string }));
   }
-  if (request?.kind === "call" && isRecord(result)) {
+  if (SCHEMA_PROFILE && request?.kind === "list" && message.error === undefined && isRecord(result) && Array.isArray(result.tools)) {
+    result.tools = fitToolList(result.tools, SCHEMA_PROFILE, (note) => process.stderr.write(`mcp-gate(${NAME}): ${note}\n`));
+  }
+  if (BUDGET > 0 && request?.kind === "list" && message.error === undefined && isRecord(result) && Array.isArray(result.tools) && result.nextCursor === undefined) {
+    result.tools = [...result.tools.filter((tool: unknown) => !isRecord(tool) || tool.name !== QUERY_TOOL_NAME), QUERY_TOOL];
+  }
+  if (TOOL_LIMIT !== undefined && request?.kind === "list" && message.error === undefined && isRecord(result)) {
+    message.result = capToolListResult(result, TOOL_LIMIT, (note) => process.stderr.write(`mcp-gate(${NAME}): ${note}\n`));
+  }
+  if (request?.kind === "call" && observer && message.error === undefined) observer.returned(request.params, result);
+  if (request?.kind === "call" && request.trim && isRecord(result)) {
     try {
       if (trimCallResult(result, request.tool)) {
         process.stderr.write(`mcp-gate(${NAME}): trimmed ${request.tool} to ${BUDGET} chars\n`);
       }
     } catch (error) {
-      // A result the trimmer chokes on is relayed whole. Costing context is
-      // recoverable; dropping a tool answer is not.
       process.stderr.write(`mcp-gate(${NAME}): could not trim ${request.tool}: ${String(error)}\n`);
       process.stdout.write(`${line}\n`);
       return;

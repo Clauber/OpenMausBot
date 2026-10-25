@@ -1,5 +1,4 @@
-// Optional phone onboarding only chooses a route. The caller owns starting,
-// verifying and stopping that route, and minting/cancelling its pairing code.
+// Phone onboarding only chooses a route; the caller starts, verifies and stops it, and mints or cancels its pairing code.
 import type { CliOptions } from "./cli.ts";
 import { SetupCancelled, type SetupIo } from "./cli-prompts.ts";
 
@@ -11,12 +10,10 @@ export interface PhoneSetupResult {
 export interface PhoneSetupDependencies {
   /** May read saved tunnel credentials, but must not sign in or start a tunnel. */
   accountReady?(options: CliOptions): boolean | Promise<boolean>;
-  /** The caller supplies account sign-in; email uses ask, the emailed code secret. */
   login(options: CliOptions, io: SetupIo): Promise<number>;
 }
 
-/** A configured HTTPS origin, not proof that a phone can reach it. Never accept
- * a pasted invitation, password, query token, localhost or unspecified bind. */
+/** An HTTPS origin, not proof a phone can reach it; never a pasted invitation, password, query token, localhost or unspecified bind. */
 export function normalizePhoneOrigin(raw: string): string | null {
   const value = raw.trim();
   // Reject control characters before URL parsing can silently remove them.
@@ -46,21 +43,20 @@ export async function runPhoneSetup(
   const signIn = async (): Promise<boolean> => {
     try {
       if (await deps.accountReady?.(options)) {
-        io.log("Your saved OpenMausBot account can be reused. The connection will be checked when the server starts.");
+        io.log("Your saved Legion account can be reused. The connection will be checked when the server starts.");
         return true;
       }
-      io.log("Sign in to an OpenMausBot account using an emailed code. This is separate from your AI provider account.");
+      io.log("Sign in to an Legion account using an emailed code. This is separate from your AI provider account.");
       if (await deps.login(options, io) === 0) return true;
     } catch (error) {
       if (error instanceof SetupCancelled) throw error;
-      // Account errors can contain credentials or URLs. Leave details to the
-      // account UI rather than echoing an arbitrary error into terminal logs.
+      // Account errors can carry credentials or URLs: never echo them into terminal logs.
     }
     io.log("Phone access could not be prepared. Your AI provider setup is still saved; you can try phone setup later.");
     return false;
   };
   for (;;) {
-    const device = await io.choose("Use OpenMausBot on your phone?", [
+    const device = await io.choose("Use Legion on your phone?", [
       "Skip for now",
       "iPhone / iPad — native app or Safari",
       "Android — app or browser",
@@ -91,14 +87,14 @@ export async function runPhoneSetup(
       if (route === 3) { back = true; continue; }
       if (route === 0) {
         io.log("This creates a public HTTPS endpoint through Cloudflare. Chat and settings require device pairing; the sign-in page and basic server identity are public.");
-        io.log("Starting it may download the Cloudflare connector. It stays active while OpenMausBot runs; stop OpenMausBot to close the connection.");
+        io.log("Starting it may download the Cloudflare connector. It stays active while Legion runs; stop Legion to close the connection.");
         if (!await io.confirm("Allow this managed public endpoint and connector download?", false)) continue;
         if (!await signIn()) return skip();
         return selected(phone, { tunnel: true, tailscale: false, publicUrl: undefined });
       }
       if (route === 1) {
         io.log("Tailscale must already be installed and signed in on this computer and phone, with HTTPS certificates enabled for the tailnet.");
-        if (!await io.confirm("Allow OpenMausBot to serve HTTPS to your tailnet while it runs?", false)) continue;
+        if (!await io.confirm("Allow Legion to serve HTTPS to your tailnet while it runs?", false)) continue;
         return selected(phone, { tailscale: true, tunnel: false, publicUrl: undefined });
       }
       io.log("Use an HTTPS reverse proxy you already configured for this server. Enter only its origin, without a password, pairing code, path, query or fragment.");
@@ -115,8 +111,7 @@ export async function runPhoneSetup(
   }
 }
 
-/** Call after route verification, beside the separately minted QR. The URL
- * here is an origin, never the invitation containing its one-time credential. */
+/** The URL is an origin, never the invitation carrying its one-time credential. */
 export function phonePairingInstructions(
   phone: PhoneKind,
   input: { origin: string | null; ready: boolean },
@@ -124,12 +119,12 @@ export function phonePairingInstructions(
   const origin = input.origin ? normalizePhoneOrigin(input.origin) : null;
   if (!input.ready || !origin) {
     return ["Phone access is not ready yet. No phone QR should be shown until the HTTPS connection is verified.",
-      "Your local OpenMausBot can still be used on this computer."];
+      "Your local Legion can still be used on this computer."];
   }
   return [
     phone === "ios"
-      ? "On iPhone or iPad, scan the QR with Camera to open Safari. If you already have the OpenMausBot iOS app, use its pairing scanner or paste the full pairing link there."
-      : "On Android, open the OpenMausBot app and scan the QR with its pairing scanner. The QR is an app link, so Camera will not open it in a browser.",
+      ? "On iPhone or iPad, scan the QR with Camera to open Safari. If you already have the Legion iOS app, use its pairing scanner or paste the full pairing link there."
+      : "On Android, open the Legion app and scan the QR with its pairing scanner. The QR is an app link, so Camera will not open it in a browser.",
     `Or open ${origin}/pair on your phone and enter the code.`,
     "Choose Connect on the phone. Scanning a QR does not mean the phone is paired.",
     "The code works once and expires after five minutes. This phone receives client access: chat and approvals, not settings or pairing administration.",

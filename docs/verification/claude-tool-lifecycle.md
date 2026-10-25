@@ -6,9 +6,10 @@ ends; “unauthorized” after that boundary must not be repaired by giving a
 worker permanent browser credentials.
 
 The Claude driver keeps native background tasks disabled. Native subagents
-can still work within the active turn; asynchronous work across bots uses
-OpenMausBot's `delegate_bot` path, which owns each recipient's turn, approvals,
-and completion receipt. Long-running native Bash commands can no longer
+can still work within the active turn; asynchronous work across bots is a
+`coordinate_bots` assignment on OpenMausBot's job runtime
+(docs/runtime-contract.md), which owns each recipient's turn, approvals,
+and the report that resumes the requester. Long-running native Bash commands can no longer
 auto-background past the owning turn. This does not change approval modes or
 disable sandbox protections.
 
@@ -41,6 +42,23 @@ is refused with 401 even when its request body arrives late — is covered by
 thread and rechecks late bodies"); every internal capability, the browser's
 included, passes through that same gate.
 
+A thread keeps its integration credentials from one turn to the next, so its
+engine stays warm instead of relaunching every turn. The same bot on the same
+thread, with the same grants and approval level, holds the same bearer, and
+the harness honours it only while one of that thread's turns runs. Stop, a
+stall, a deleted bot or thread, a changed grant or approval level, or a
+provider reload gives the next turn a new bearer. The computer gets a new
+bearer every turn: its tools bridge into a machine that can stop between
+turns (an idle Local VM, a VPS that Auto starts), and a warm engine would not
+restart a bridge whose machine went away. The per-turn limits (bots
+created, threads opened, room posts, and not checking a delegation in the
+turn that made it) are counted by the harness for each turn, not by the
+proxy, which a warm engine keeps across turns.
+
+```sh
+pnpm exec vitest run server/session-credentials.e2e.test.ts server/post-to-room.test.ts server/vps-routing.test.ts
+```
+
 A message steered into a running Claude turn is folded in only before a
 model call that has not started yet. Words that land during the turn's last
 call are queued and run as the CLI's next native turn, in the same process
@@ -58,10 +76,11 @@ waiting on stdin, so 0 decides nothing). On an older CLI nothing says whether
 a steer was folded in, so every steer since the previous hold holds the
 result, and a folded one costs the grace below. A held result stands as the
 turn's if no `init` follows within 2 s (the words were folded after all), or
-if the continuation's `init` is followed by 30 s of silence. Peer asides and
-the queue-steer
-buttons go through the same `steer()`, so an aside landing in the last
-model call extends the turn into its continuation the same way. The CLI's
+if the continuation's `init` is followed by 30 s of silence. The queue-steer
+buttons go through the same `steer()`, so a steer landing in the last
+model call extends the turn into its continuation the same way. (A teammate's
+question no longer lands in a running turn: it is a `coordinate_bots`
+consultation on the job runtime, answered in a work thread of its own.) The CLI's
 `total_cost_usd` is a running total, so the turn's cost is the latest
 figure; per-turn token usage adds up.
 

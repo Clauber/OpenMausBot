@@ -3,10 +3,12 @@ import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import type { Routine, RoutineRun } from "@/lib/routines";
 import { scheduleLabel } from "@/lib/schedule-label";
-import { latestRoutineRun, routineDateTime, routineNextLabel, routineRunLabel, routineRunTone, routineScheduleState } from "@/lib/routine-display";
+import { executionBadge } from "./ExecutionPlanPanel";
+import { latestRoutineRun, routineDateTime, routineFinished, routineNextLabel, routineRunLabel, routineRunTone, routineScheduleState } from "@/lib/routine-display";
 import type { Bot } from "@/state/store";
+import { Switch } from "../SettingsPrimitives";
 
-export function RoutineList({ routines, runs, bots, loading, error, onOpen, onLogs }: {
+export function RoutineList({ routines, runs, bots, loading, error, onOpen, onLogs, onToggle }: {
   routines: Routine[];
   runs: RoutineRun[];
   bots?: Bot[];
@@ -14,6 +16,7 @@ export function RoutineList({ routines, runs, bots, loading, error, onOpen, onLo
   error?: boolean;
   onOpen: (routine: Routine) => void;
   onLogs: (routine: Routine) => void;
+  onToggle?: (routine: Routine) => void;
 }) {
   const sorted = [...routines].sort((a, b) => Number(b.enabled) - Number(a.enabled) || (a.nextRunAt ?? Infinity) - (b.nextRunAt ?? Infinity) || a.name.localeCompare(b.name));
   return <div className="space-y-3" aria-label={t("routines.list")}>
@@ -23,15 +26,19 @@ export function RoutineList({ routines, runs, bots, loading, error, onOpen, onLo
     {sorted.map((routine) => {
       const latest = latestRoutineRun(routine.id, runs);
       const bot = bots?.find((candidate) => candidate.id === routine.botId);
+      const switched = onToggle !== undefined && !routineFinished(routine);
       return <article key={routine.id} className="rounded-xl border border-hairline/40 bg-card p-3.5" aria-label={routine.name}>
         <div className="flex items-start gap-2">
           <button type="button" onClick={() => onOpen(routine)} className="min-w-0 flex-1 text-left hover:text-accent">
             <span className="block truncate text-[13px] font-semibold text-ink">{routine.name}</span>
-            <span className="mt-1 block text-[11.5px] leading-relaxed text-ink-secondary">{bot && `${bot.name} · `}{scheduleLabel(routine.schedule)}</span>
+            <span className="mt-1 block text-[11.5px] leading-relaxed text-ink-secondary">{bot && `${bot.name} · `}{routine.github ? `GitHub · ${routine.github.repo} · ${routine.github.events.join(", ")}` : scheduleLabel(routine.schedule)}</span>
           </button>
-          <span className={cn("shrink-0 rounded-full bg-inset px-2 py-0.5 text-[10px]", routine.enabled && routine.nextRunAt != null ? "text-accent" : "text-ink-secondary")}>{routineScheduleState(routine)}</span>
+          {executionBadge(routine) && <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[10px]", routine.execution?.status === "proposed" ? "bg-accent/15 text-accent" : "bg-inset text-ink-secondary")}>{executionBadge(routine)}</span>}
+          {switched
+            ? <Switch checked={routine.enabled} aria-label={t("routines.toggle", { name: routine.name })} onClick={() => onToggle(routine)} />
+            : <span className={cn("shrink-0 rounded-full bg-inset px-2 py-0.5 text-[10px]", routine.enabled && routine.nextRunAt != null ? "text-accent" : "text-ink-secondary")}>{routineScheduleState(routine)}</span>}
         </div>
-        {routineNextLabel(routine) !== routineScheduleState(routine) && <div className="mt-2 text-[11.5px] text-ink-secondary">{routineNextLabel(routine)}</div>}
+        {(switched || routineNextLabel(routine) !== routineScheduleState(routine)) && <div className="mt-2 text-[11.5px] text-ink-secondary">{routineNextLabel(routine)}</div>}
         <div className="mt-1 flex items-start justify-between gap-2">
           <div className="min-w-0 text-[11.5px]">
             {latest ? <><span className={routineRunTone(latest)}>{t("routines.latestRun", { status: routineRunLabel(latest) })}</span><span className="block text-[10.5px] text-ink-secondary">{routineDateTime(latest.finishedAt ?? latest.startedAt ?? latest.scheduledFor)}</span></> : <span className="text-ink-secondary">{t("routines.neverRun")}</span>}
@@ -40,6 +47,8 @@ export function RoutineList({ routines, runs, bots, loading, error, onOpen, onLo
         </div>
         {latest && (latest.attention || latest.error || latest.output) && <p className={cn("mt-2 line-clamp-2 whitespace-pre-wrap text-[11.5px] leading-relaxed", latest.error ? "text-danger" : "text-ink-secondary")}>{latest.attention || latest.error || latest.output}</p>}
         {!!routine.failureStreak && <p className="mt-2 text-[11.5px] text-danger">{t("routines.failureStreak", { count: routine.failureStreak })}</p>}
+        {routine.weekRuns && <p className="mt-2 text-[11.5px] text-ink-secondary">{t("routines.weekRuns", routine.weekRuns)}</p>}
+        {routine.warning && <p className="mt-2 text-[11.5px] leading-relaxed text-warning">{routine.warning}</p>}
         {!!routine.skippedRuns && <p className="mt-2 text-[11.5px] text-ink-secondary">
           {t("routines.skippedRuns", { count: routine.skippedRuns })}
           {routine.lastSkippedAt != null && <> · {t("routines.lastSkipped", { date: routineDateTime(routine.lastSkippedAt) })}</>}

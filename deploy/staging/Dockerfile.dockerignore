@@ -1,0 +1,8 @@
+**
+!dist/
+!dist/**
+!dist-server/
+!dist-server/**
+!skills/
+!skills/**
+!package.json

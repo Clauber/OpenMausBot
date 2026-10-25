@@ -1,11 +1,6 @@
-// Pure pieces of a Live (GPT-Live) call, kept out of the component so they
-// can be tested without WebRTC.
-//
-// With client delegation GPT-Live says *that* it wants help, never *what*:
-// `session.delegation.created` carries an id and a timeline offset, and the
-// request has to be rebuilt from the input transcript. That reconstruction,
-// and the shaping of the bot's answer into the 500-token appends GPT-Live
-// accepts, live here.
+// Pure pieces of a Live (GPT-Live) call. With client delegation GPT-Live says
+// *that* it wants help, never *what*: `session.delegation.created` carries an id
+// and a timeline offset, so the request is rebuilt from the input transcript.
 
 export interface TranscriptSegment {
   text: string;
@@ -182,3 +177,47 @@ export const LIVE_VOICE_OPTIONS: ReadonlyArray<{ id: string; label: string }> = 
   { id: "bossa", label: "Bossa — Brazilian Portuguese, feminine" },
   { id: "tempo", label: "Tempo — Brazilian Portuguese, masculine" },
 ];
+
+/** The gpt-live (V3) voices the codex engine's voice session accepts (as the
+ * probes observed; cove is what the ChatGPT app itself asks for). Mixing in
+ * a GPT-Live-only name is rejected as a 403 that looks like an entitlement
+ * problem, so the pickers keep the sets apart. */
+export const CODEX_LIVE_VOICE_OPTIONS: ReadonlyArray<{ id: string; label: string }> = [
+  { id: "cove", label: "Cove (default)" },
+  { id: "juniper", label: "Juniper" },
+  { id: "maple", label: "Maple" },
+  { id: "spruce", label: "Spruce" },
+  { id: "ember", label: "Ember" },
+  { id: "vale", label: "Vale" },
+  { id: "breeze", label: "Breeze" },
+  { id: "arbor", label: "Arbor" },
+  { id: "sol", label: "Sol" },
+];
+
+/** The engine a Live call uses, once the bot's own choice is folded in:
+ * the bot's explicit pick wins, "default" (or absent) follows the global
+ * Live provider, and anything unrecognized falls back to the key engine. */
+export function liveEngineFor(
+  globalProvider: string | undefined,
+  botEngine: string | undefined | null,
+): "openai" | "codex" | "none" {
+  const chosen = botEngine && botEngine !== "default" ? botEngine : globalProvider ?? "openai";
+  return chosen === "codex" || chosen === "none" ? chosen : "openai";
+}
+
+/** A call's length as a clock: m:ss under an hour ("0:07", "1:42"),
+ * h:mm:ss from an hour on ("1:02:05"). Whole seconds; a value that is not a
+ * length reads as 0:00. */
+export function formatCallDuration(seconds: number): string {
+  const total = Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
+  const hours = Math.floor(total / 3_600);
+  const minutes = Math.floor((total % 3_600) / 60);
+  const rest = String(total % 60).padStart(2, "0");
+  return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${rest}` : `${minutes}:${rest}`;
+}
+
+/** A Live call row's text: what a client that does not know kind "call"
+ * shows as a plain line ("Call with Ada · 1:42"). */
+export function liveCallRowText(botName: string, seconds: number): string {
+  return `Call with ${botName} · ${formatCallDuration(seconds)}`;
+}
