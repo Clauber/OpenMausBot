@@ -41,6 +41,13 @@ import { gateServer } from "../mcp-gate-config.ts";
 import { canUseMcpServer } from "../../shared/tool-scope.ts";
 import { assertToolScopeSupported } from "../../shared/tool-scope-support.ts";
 import { announcesAction, CONTINUATION_NUDGE } from "./announced-action.ts";
+import {
+  isTransientZcodeFailure,
+  zcodeFailureReason,
+  zcodeResumeDelayMs,
+  ZCODE_MAX_TURN_RESUMES,
+  ZCODE_RESUME_PROMPT,
+} from "./zcode-turn-recovery.ts";
 import type { ApprovalMode } from "../../shared/approval-mode.ts";
 
 // session/create alone takes 7–9 s on a healthy host, longer while other
@@ -703,6 +710,7 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
       if (disposed) throw new Error("This provider was removed. Select an engine and send again.");
       if (active.has(turn.threadId)) throw new Error("a turn is already running on this thread");
       const approvalMode: ApprovalMode = turn.approvalMode ?? "ask";
+      const retryScale = Number(process.env.FAKE_ZCODE_RETRY_SCALE ?? "1");
       const turnId = newId();
       const { threadId } = turn;
       const cwd = turn.cwd ?? homedir();
@@ -773,6 +781,8 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
         sawStreamDelta: false,
         nudged: false,
         stopRequested: false,
+        resumes: 0,
+        resumeTimer: null as ReturnType<typeof setTimeout> | null,
         usage: undefined as { input: number; output: number; cachedInput?: number } | undefined,
         toolInputs: new Map<string, unknown>(),
         startedTools: new Set<string>(),
@@ -810,6 +820,8 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
       const settle = async (ok: boolean, stopReason: string | null) => {
         if (state.settled) return;
         state.settled = true;
+        if (state.resumeTimer) clearTimeout(state.resumeTimer);
+        state.resumeTimer = null;
         for (const finish of Array.from(asks.values())) finish("deny", "Legion: the turn ended", "system");
         for (const p of rpcPending.values()) p.reject(new Error("turn settled"));
         rpcPending.clear();
@@ -829,6 +841,11 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
 
       const stop = async (): Promise<boolean> => {
         state.stopRequested = true;
+        // While a resume waits no zcode turn runs, so nothing would answer a stop.
+        if (state.resumeTimer) {
+          await settle(true, "interrupted");
+          return true;
+        }
         if (!state.settled && sessionId && child.exitCode === null && child.signalCode === null) {
           try {
             await request("session/stop", { sessionId }, 3_000);
@@ -912,6 +929,28 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
           return;
         }
         send({ id: msg.id, error: { code: -32601, message: `Unsupported server request: ${method}` } });
+      };
+
+      // A turn zcode gave up on after its own stream recoveries leaves its
+      // session intact: continue the same session after a backoff instead of
+      // failing a long task on a flaky provider connection.
+      const beginResume = (reason: string) => {
+        state.resumes += 1;
+        const nominalMs = zcodeResumeDelayMs(state.resumes);
+        emit({
+          ...base(threadId, turnId),
+          type: "runtime.notice",
+          message: `ZCode lost its provider connection (${reason}). Resuming in ${Math.round(nominalMs / 1000)}s (resume ${state.resumes} of ${ZCODE_MAX_TURN_RESUMES}).`,
+        });
+        state.resumeTimer = setTimeout(() => {
+          state.resumeTimer = null;
+          if (state.settled || state.stopRequested || abandoned) return;
+          request("session/send", { sessionId, content: ZCODE_RESUME_PROMPT }).catch((error) => {
+            if (state.settled || state.stopRequested || abandoned) return;
+            emit({ ...base(threadId, turnId), type: "runtime.error", message: `zcode could not resume after a network failure: ${String(error)}` });
+            void settle(false, "resume_failed");
+          });
+        }, Math.max(1, Math.round(nominalMs * retryScale)));
       };
 
       // A session/event's discriminator is `params.type`; the member data is
@@ -1022,6 +1061,10 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
           }
           case "turn.failed": {
             const error = payload.error && typeof payload.error === "object" ? payload.error as Record<string, unknown> : null;
+            if (sessionId && !state.stopRequested && !abandoned && state.resumes < ZCODE_MAX_TURN_RESUMES && isTransientZcodeFailure(error)) {
+              beginResume(zcodeFailureReason(error) ?? "provider error");
+              break;
+            }
             const message = typeof error?.message === "string" && error.message ? error.message : "zcode turn failed";
             emit({ ...base(threadId, turnId), type: "runtime.error", message });
             void settle(false, classifyError({ text: message }).reason === "provider_safety" ? "provider_safety" : "failed");

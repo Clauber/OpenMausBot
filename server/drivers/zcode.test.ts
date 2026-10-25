@@ -20,6 +20,7 @@ import { recordEvents, type EventRecorder } from "../testing/events.ts";
 import { ZcodeDriver, zcodeAllowOption, zcodeBotHomeEnv, zcodeCatalogFromSnapshot, zcodeConfigModels, zcodeMergePersonalConfigs, zcodeMcpServerParam, zcodeModelId, zcodeParseModelId, zcodePermissionMode, zcodeRequestSummary, zcodeWorkspaceRef } from "./zcode.ts";
 import { removeTempDir } from "../testing/cleanup.ts";
 import { CONTINUATION_NUDGE } from "./announced-action.ts";
+import { ZCODE_MAX_TURN_RESUMES, ZCODE_RESUME_PROMPT } from "./zcode-turn-recovery.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-zcode-app-server.ts");
 
@@ -535,6 +536,68 @@ describe("ZcodeDriver turns (fake app-server)", () => {
     expect(completed).toMatchObject({ ok: false });
     expect(recorder.events.some((event) => event.type === "runtime.error" && /exited 1/.test(event.message))).toBe(true);
   });
+  describe("transient provider failures", () => {
+    const sendsOf = (dump: string) =>
+      (JSON.parse(readFileSync(dump, "utf8")).calls as Array<{ method: string; params: { sessionId?: string; content?: string } }>)
+        .filter((call) => call.method === "session/send");
+    const notices = () => recorder.events.filter((event) => event.type === "runtime.notice");
+
+    afterEach(() => {
+      delete process.env.FAKE_ZCODE_RETRY_SCALE;
+    });
+
+    it("resumes the same session after a dropped provider connection and says so in the thread", async () => {
+      process.env.FAKE_ZCODE_RETRY_SCALE = "0.01";
+      const dump = newDump();
+      await create({ mode: "network-flaky" });
+      const { turnId } = await instance.adapter.sendTurn({ threadId: "flaky", text: "Fixture" });
+      const completed = await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
+      expect(completed).toMatchObject({ ok: true });
+      const sends = sendsOf(dump);
+      expect(sends).toHaveLength(2);
+      expect(sends[1]!.params).toEqual({ sessionId: sends[0]!.params.sessionId, content: ZCODE_RESUME_PROMPT });
+      expect(notices()).toHaveLength(1);
+      expect(notices()[0]).toMatchObject({ message: expect.stringMatching(/network_error.*resume 1 of 5/) });
+      expect(recorder.events.some((event) => event.type === "runtime.error")).toBe(false);
+      expect(recorder.events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+    });
+
+    it("gives up after the resume budget and fails the turn with zcode's error", async () => {
+      process.env.FAKE_ZCODE_RETRY_SCALE = "0.001";
+      const dump = newDump();
+      await create({ mode: "network-always" });
+      const { turnId } = await instance.adapter.sendTurn({ threadId: "always", text: "Fixture" });
+      const completed = await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
+      expect(completed).toMatchObject({ ok: false, stopReason: "failed" });
+      expect(sendsOf(dump)).toHaveLength(1 + ZCODE_MAX_TURN_RESUMES);
+      expect(notices()).toHaveLength(ZCODE_MAX_TURN_RESUMES);
+      expect(recorder.events.some((event) => event.type === "runtime.error" && event.message === "model request failed")).toBe(true);
+    });
+
+    it("does not resume a request the provider refused", async () => {
+      process.env.FAKE_ZCODE_RETRY_SCALE = "0.001";
+      const dump = newDump();
+      await create({ mode: "refused-401" });
+      const { turnId } = await instance.adapter.sendTurn({ threadId: "refused", text: "Fixture" });
+      const completed = await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
+      expect(completed).toMatchObject({ ok: false });
+      expect(sendsOf(dump)).toHaveLength(1);
+      expect(notices()).toHaveLength(0);
+    });
+
+    it("cancels the wait when the turn is stopped", async () => {
+      const dump = newDump();
+      await create({ mode: "network-flaky" });
+      const { turnId } = await instance.adapter.sendTurn({ threadId: "stopped-wait", text: "Fixture" });
+      await recorder.until((event) => event.type === "runtime.notice");
+      await instance.adapter.interruptTurn("stopped-wait", turnId);
+      const completed = await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
+      expect(completed).toMatchObject({ ok: true, stopReason: "interrupted" });
+      expect(sendsOf(dump)).toHaveLength(1);
+      expect(recorder.events.some((event) => event.type === "runtime.error")).toBe(false);
+    });
+  });
+
   describe.skipIf(process.platform === "win32")("bot home", () => {
     // The real `zcode` launcher is a shell script that runs `$HOME/.zcode/server/...`.
     const launchThroughWrapper = async (sourceHome: string, environment: Record<string, string>, instanceId: string) => {

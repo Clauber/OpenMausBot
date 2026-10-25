@@ -7,7 +7,9 @@
 // it never exits on its own; the driver kills it.
 //
 //   FAKE_ZCODE_MODE  happy (default) | approval | approval-no-allow |
-//                    question | resume-refused | exit-mid-turn
+//                    question | resume-refused | exit-mid-turn |
+//                    network-flaky (first send fails on a dropped provider
+//                    stream) | network-always | refused-401
 //   FAKE_ZCODE_DUMP  path to write {pid, calls, answers, env} as JSON
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
@@ -85,6 +87,13 @@ const completionTail = () => {
     resultType: "success",
   });
 };
+
+// zcode gives up on a dropped model stream after its own recoveries and ends
+// the turn with turn.failed; the session itself stays usable.
+const failedTurn = (attribution: Record<string, unknown>) =>
+  event("turn.failed", {
+    error: { type: "model_request_failed", message: "model request failed", code: "model_request_failed", attribution },
+  });
 
 const scriptedTurn = () => {
   event("model.streaming", { kind: "reasoning_delta", delta: "thinking ", done: false, assistantMessageId: "m1" });
@@ -254,6 +263,14 @@ process.stdin.on("data", (chunk) => {
             response, resultType,
             usage: { inputTokens: 100, outputTokens: 7, cacheReadTokens: 40 },
           }), 20);
+          break;
+        }
+        if (mode === "network-always" || (mode === "network-flaky" && sentTurns === 1)) {
+          setTimeout(() => failedTurn({ reason: "network_error" }), 20);
+          break;
+        }
+        if (mode === "refused-401") {
+          setTimeout(() => failedTurn({ reason: "unauthorized", statusCode: 401 }), 20);
           break;
         }
         if (mode === "exit-mid-turn") {
