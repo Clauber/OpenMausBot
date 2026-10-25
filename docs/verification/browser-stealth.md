@@ -2,9 +2,10 @@
 
 Bots' browsers can run as LEGION's own fingerprinted Chrome instead of
 agent-browser's plain one. This recipe proves the stealth path end to end in
-a disposable fixture: a real bot turn drives the `agent_browser` tools, and
-the page itself reports an identity that is the session's fingerprint, not
-this host's Chrome.
+a disposable fixture. Each of the fake engine's scripted `agent_browser_*`
+calls carries `"server": "browser"`, so it really runs on the turn's browser
+MCP server and reaches `/api/internal/browser/mcp`. Every proof reads the
+results the bot itself got back.
 
 ## Driving it
 
@@ -17,9 +18,12 @@ OMB_VERIFY_BROWSER_CHROME=/usr/bin/google-chrome \
   node --experimental-strip-types scripts/verify-browser-stealth.ts
 ```
 
-It prints the page-reported identity, the session's CDP port record, and the
-persisted fingerprint file, and fails closed if the browser the bot drove
-reports this host's platform.
+It prints each tool result, the session's CDP port record and fingerprint
+files. It fails if any call failed, if the page script's `#ua` text or the
+bot's `navigator` eval shows anything but the session's Windows Chrome
+identity, or if an agent-browser process ran with the fixture's HOME or the
+server log mentions agent-browser. The launcher adds only the Chrome's
+directory and the one holding `Xvfb` to the fixture's sealed PATH.
 
 ## What it proves
 
@@ -31,12 +35,15 @@ reports this host's platform.
   port and that port serves Chrome DevTools.
 - The fingerprint is generated once and persisted per session
   (`state/<session>-fingerprint.json`), and the page the bot read back
-  reports the fingerprint's user agent — headed, on this Linux host, with no
-  display, which also proves the automatic Xvfb path.
+  reports the session's identity, both from its own load-time script and
+  from a later eval. Headed, on this Linux host, with no display, which also
+  proves the automatic Xvfb path.
+- The in-process stealth engine served every call: no agent-browser daemon
+  or CLI ran for the session.
 - The Cloudflare auto-clicker (`browserEngine.stealth.cloudflare`, on by
   default) clears a locally-mocked "verify you are human" interstitial — a
   widget iframe whose URL contains challenges.cloudflare.com plus a checkbox
-  — without a bot tool call. No real Cloudflare traffic is involved.
+  while the bot only waits. No real Cloudflare traffic is involved.
 
 ## What it does not prove
 
