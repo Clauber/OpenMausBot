@@ -29,7 +29,7 @@ function engines(options: RuntimeRouterOptions = {}) {
     close: vi.fn(async () => undefined),
     closeAll: vi.fn(async () => undefined),
   };
-  const oldLive = { open: vi.fn(async () => undefined), action: vi.fn(async () => "agent-browser"), handBack: vi.fn(), closeForSession: vi.fn(), closeForOwner: vi.fn(), closeForBot: vi.fn(), closeAll: vi.fn() };
+  const oldLive = { watching: vi.fn(() => false), open: vi.fn(async () => undefined), action: vi.fn(async () => "agent-browser"), handBack: vi.fn(), closeForSession: vi.fn(), closeForOwner: vi.fn(), closeForBot: vi.fn(), closeAll: vi.fn() };
   const chrome = {
     service: {
       agentRpc: vi.fn(async () => "chrome"),
@@ -43,14 +43,25 @@ function engines(options: RuntimeRouterOptions = {}) {
       answerFileChooser: vi.fn(async () => true),
       download: vi.fn(() => ({ id: "d1" })),
     },
-    live: { open: vi.fn(async () => undefined), action: vi.fn(async () => "chrome"), has: vi.fn((viewerId: string) => viewerId === "v-chrome"), handBack: vi.fn(), closeForSession: vi.fn(), closeForOwner: vi.fn(), closeForBot: vi.fn(), closeAll: vi.fn() },
-    stream: { open: vi.fn(), closeForSession: vi.fn(), closeForOwner: vi.fn(), closeForBot: vi.fn(), closeAll: vi.fn(), recheck: vi.fn() },
+    live: { watching: vi.fn(() => false), open: vi.fn(async () => undefined), action: vi.fn(async () => "chrome"), has: vi.fn((viewerId: string) => viewerId === "v-chrome"), handBack: vi.fn(), closeForSession: vi.fn(), closeForOwner: vi.fn(), closeForBot: vi.fn(), closeAll: vi.fn() },
+    stream: { watching: vi.fn(() => false), open: vi.fn(), closeForSession: vi.fn(), closeForOwner: vi.fn(), closeForBot: vi.fn(), closeAll: vi.fn(), recheck: vi.fn() },
     close: vi.fn(async () => undefined),
   };
   const runtime = new RuntimeRouter(old as unknown as BrowserRuntime, chrome as unknown as ChromeEngine, options);
   const live = new LiveRouter(oldLive as unknown as BrowserLive, chrome as unknown as ChromeEngine);
   return { old, oldLive, chrome, runtime, live };
 }
+
+it("reports viewers through either browser engine and either Chrome protocol", () => {
+  const { oldLive, chrome, live } = engines();
+  expect(live.watching("unwatched")).toBe(false);
+  for (const source of [oldLive, chrome.live, chrome.stream]) {
+    source.watching.mockImplementation((session?: string) => session === "watched");
+    expect(live.watching("watched")).toBe(true);
+    expect(live.watching("other")).toBe(false);
+    source.watching.mockReturnValue(false);
+  }
+});
 
 describe("which engine runs a session", () => {
   it("is the new engine only for a spec that names a profile key", () => {

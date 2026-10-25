@@ -12,6 +12,7 @@ import { readHandoffs } from "./testing/handoff-rows.ts";
 
 it("applies requested Full Access workflows through MCP without duplicate approvals, and the same changes apply in an Ask task with Undo", async () => {
   const fixture = await launchVerificationServer({}, undefined, undefined, undefined, { scripted: true });
+  const { url, dataDir, logPath } = fixture.info;
   const planPath = join(dataDir, "room-plan.json");
   const plans: Record<string, { turns: any[] }> = {};
   const evidence: unknown[] = [];

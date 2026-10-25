@@ -266,6 +266,33 @@ describe("deleting one browser session's saved logins", () => {
     expect(await closeBrowserSession("fixture-browser", { ...options.env, AGENT_BROWSER_SESSION: "work" })).toBe(false);
   });
 
+  /** A stand-in for a daemon stuck on a page that stopped answering: it runs as the engine binary with the session's daemon environment and never answers close. */
+  async function stuckDaemon(home: string, session: string) {
+    const { spawn: realSpawn } = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    const sockets = join(home, "run");
+    mkdirSync(sockets, { recursive: true });
+    const daemon = realSpawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { env: { PATH: process.env.PATH, AGENT_BROWSER_DAEMON: "1", AGENT_BROWSER_SESSION: session }, detached: true, stdio: "ignore" });
+    const exited = new Promise<void>((resolve) => daemon.once("exit", () => resolve()));
+    writeFileSync(join(sockets, "work.pid"), String(daemon.pid));
+    return { daemon, exited, sockets };
+  }
+
+  it.runIf(posix)("stops this session's daemon when close cannot finish, so a restart is not blocked by a stuck page", async () => {
+    const { home, options } = fixture(1);
+    const { exited, sockets } = await stuckDaemon(home, "work");
+    expect(await closeBrowserSession(process.execPath, { ...options.env, AGENT_BROWSER_SOCKET_DIR: sockets, AGENT_BROWSER_SESSION: "work" })).toBe(true);
+    await exited;
+  });
+
+  it.runIf(posix)("never stops a process its pid file names when that process is not this session's daemon", async () => {
+    const { home, options } = fixture(1);
+    const { daemon, sockets } = await stuckDaemon(home, "another-session");
+    try {
+      expect(await closeBrowserSession(process.execPath, { ...options.env, AGENT_BROWSER_SOCKET_DIR: sockets, AGENT_BROWSER_SESSION: "work" })).toBe(false);
+      expect(daemon.exitCode).toBeNull();
+    } finally { daemon.kill("SIGKILL"); }
+  });
+
   it("keeps saved state when the daemon remains alive past the close deadline", async () => {
     const { directory, options } = fixture();
     writeFileSync(join(directory, "work-work.json.enc"), "saved login");

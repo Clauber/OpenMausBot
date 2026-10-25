@@ -66,7 +66,9 @@ export class LiveSessionError extends Error {
   }
 }
 
-export function liveInstructions(bot: LiveBot, { cloudHome = false }: { cloudHome?: boolean } = {}): string {
+export function liveInstructions(bot: LiveBot, options: { cloudHome?: boolean; compute?: boolean } = {}): string {
+  const { cloudHome = false } = options;
+  const name = oneLine(bot.name) || "the agent";
   const title = oneLine(bot.title ?? "");
   const description = oneLine(bot.description ?? "").slice(0, 400);
   const where = cloudHome ? `runs on ${CLOUD_HOME_PLACE}` : "runs in Legion on the user's own computer";
@@ -165,7 +167,7 @@ export async function createLiveSession(input: CreateLiveSessionInput): Promise<
   const body = {
     session: {
       model: LIVE_MODEL,
-      instructions: liveInstructions(input.bot, { cloudHome: input.cloudHome }),
+      instructions: liveInstructions(input.bot, { cloudHome: input.cloudHome, compute: input.compute }),
       audio: { output: { voice: liveVoice(input.voice) } },
       client: { data_channel: LIVE_DATA_CHANNEL },
       ...(input.compute ? { tools: [ASK_COMPUTE_DEFINITION] } : {}),

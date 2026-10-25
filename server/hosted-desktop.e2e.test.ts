@@ -89,6 +89,9 @@ it("keeps the bot's own engine on the cloud computer, and a failed place never b
   const gate = join(await import("node:os").then(os => os.tmpdir()), `omb-hosted-desktop-gate-${process.pid}-${Date.now()}`);
   // Each turn uses the cloud computer as a real model would: its first computer call creates or wakes the Boat.
   const fixture = await launchVerificationServer({ FAKE_CLAUDE_MODE: "slow", FAKE_CLAUDE_SLOW_FINISH_GATE: gate, FAKE_CLAUDE_USES_CLOUD_COMPUTER: "1" }, undefined, undefined, undefined, undefined, [], origin).catch(async error => {
+    upstream.closeAllConnections();
+    await new Promise<void>(resolve => upstream.close(() => resolve()));
+    throw error;
   });
   const api = async (method: string, path: string, body?: unknown) => {
     const response = await fetch(fixture.info.url + path, { method, headers: { "content-type": "application/json", origin: fixture.info.url }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });

@@ -6,6 +6,7 @@ import { nextCronRuns } from "../shared/routine-schedule.ts";
 
 it("takes cron through the real routine tools, applying the bot's own routine at once, preserving its zone and rejecting invalid API input", async () => {
   const fixture = await launchVerificationServer(process.env, undefined, undefined, undefined, { scripted: true });
+  const evidence: unknown[] = [{ fixture: fixture.info }];
   const planPath = join(fixture.info.dataDir, "room-plan.json");
   const providerEvidence = () => existsSync(`${planPath}.evidence.jsonl`)
     ? readFileSync(`${planPath}.evidence.jsonl`, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line))

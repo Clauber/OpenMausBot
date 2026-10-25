@@ -112,6 +112,7 @@ it("Clive sets up multi-provider teams at Ask with no card, keeps existing threa
     expect(await decisionReplies(picked.requestId)).toBe(0);
     expect(await api("POST", `/api/threads/${chief.threadId}/undo`, { requestId: picked.requestId })).toEqual({ ok: true, undone: true });
     expect((await state()).some((bot: any) => bot.name === "Scout")).toBe(false);
+    const room = (await control("new-channel", "--name", "Chief review", "--members", chief.id)).channel;
     unlinkSync(gate);
     await control("send-channel", "--channel", room.id, "--task", room.activeTaskId, "--text", "@Clive Add a helper for this room.");
     await expect.poll(() => JSON.parse(readFileSync(fixture.fixtureDumpPath, "utf8")).pid, { timeout: 15_000 }).not.toBe(previousPid);

@@ -100,6 +100,7 @@ const JOB_TEXT: Record<DeciderJob, { title: LocaleKey; detail: LocaleKey }> = {
   routineWake: { title: "decider.jobs.routineWake", detail: "decider.jobs.routineWakeDetail" },
   routineGate: { title: "decider.jobs.routineGate", detail: "decider.jobs.routineGateDetail" },
   browserClick: { title: "decider.jobs.browserClick", detail: "decider.jobs.browserClickDetail" },
+  inboxTriage: { title: "decider.jobs.inboxTriage", detail: "decider.jobs.inboxTriageDetail" },
 };
 
 export function DecisionModelSettings() {

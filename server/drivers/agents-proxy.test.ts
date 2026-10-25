@@ -44,6 +44,7 @@ const DONE_ASSIGNMENT = {
 let lastAssignmentStatusUrl: string | null = null;
 let assignmentStatusResponse: unknown = DONE_ASSIGNMENT;
 let assignmentStatusCode = 200;
+let lastThreadBody: Record<string, any> | null = null;
 let threadCalls = 0;
 let threadResponse: unknown = { threadId: "thread-new", title: "QA: PR #1", botId: "bot-asker", botName: "Asker", self: true, state: "running", limit: 3 };
 let computerRequests: { method: string; url: string; body: unknown }[] = [];
@@ -255,6 +256,7 @@ beforeAll(async () => {
       lastAssignmentStatusUrl = req.url;
       res.writeHead(assignmentStatusCode, { "content-type": "application/json" });
       res.end(JSON.stringify(assignmentStatusResponse));
+      return;
     }
     if (req.method === "POST" && req.url === "/api/internal/threads") {
       let data = "";
@@ -949,6 +951,7 @@ describe("agents-proxy MCP surface", () => {
   });
 
   it("start_thread: a job on yourself, with the one bot_id it accepts, and the teammate case pointed at coordinate_bots", async () => {
+    const list = await rpc("tools/list");
     const start = list.result.tools.find((tool: { name: string }) => tool.name === "start_thread");
     expect(start.inputSchema.required).toEqual(["title", "message"]);
     expect(Object.keys(start.inputSchema.properties)).toEqual(["title", "message", "bot_id", "folder"]);
@@ -996,8 +999,8 @@ describe("agents-proxy MCP surface", () => {
     const queued = await callTool("start_thread", { title: "QA: PR #2", message: "Review the signup fix.", folder: "QA" });
     expect(queued.result.content[0].text).toContain("2nd in line");
     expect(queued.result.content[0].text).toContain("limit of 3 threads");
-    expect(lastThreadBody.folder).toBe("QA");
-    expect(lastThreadBody.toBotId).toBeUndefined();
+    expect(lastThreadBody?.folder).toBe("QA");
+    expect(lastThreadBody?.toBotId).toBeUndefined();
     threadResponse = { threadId: "thread-three", title: "QA: PR #3", botId: "bot-asker", botName: "Asker", self: true, state: "failed", error: "provider unavailable" };
     const failed = await callTool("start_thread", { title: "QA: PR #3", message: "Review the reset fix." });
     expect(failed.result.isError).toBe(true);
@@ -1154,6 +1157,7 @@ describe("agents-proxy MCP surface", () => {
   });
 
   it("assignment_status keeps a flat schema", async () => {
+    const list = await rpc("tools/list");
     const tool = list.result.tools.find((t: { name: string }) => t.name === "assignment_status");
     expect(JSON.stringify(tool.inputSchema)).not.toMatch(/"(oneOf|anyOf|allOf|const|format)":/);
   });

@@ -23,7 +23,7 @@
 import type { DeciderJob } from "./types.ts";
 
 interface ContractBase {
-  job: Exclude<DeciderJob, "roomRouting" | "autoReview" | "routineGate">;
+  job: Exclude<DeciderJob, "roomRouting" | "autoReview" | "routineGate" | "inboxTriage">;
   /** The state keys a request may carry; `required` must all be present. */
   stateKeys: readonly string[];
   required: readonly string[];
@@ -117,7 +117,7 @@ export const ROUTINE_WAKE: SingleContract = {
   timeoutMs: 1_500,
 };
 
-export const JOB_CONTRACTS: Readonly<Record<Exclude<DeciderJob, "roomRouting" | "autoReview" | "routineGate">, JobContract>> = {
+export const JOB_CONTRACTS: Readonly<Record<Exclude<DeciderJob, "roomRouting" | "autoReview" | "routineGate" | "inboxTriage">, JobContract>> = {
   toolPick: TOOL_PICK,
   workPlace: WORK_PLACE,
   browserClick: BROWSER_CLICK,
@@ -126,7 +126,7 @@ export const JOB_CONTRACTS: Readonly<Record<Exclude<DeciderJob, "roomRouting" | 
 
 /** Whether a job is on before its switch is touched. */
 export function jobDefaultOn(job: DeciderJob): boolean {
-  if (job === "roomRouting" || job === "autoReview" || job === "routineGate") return true;
+  if (job === "roomRouting" || job === "autoReview" || job === "routineGate" || job === "inboxTriage") return true;
   return (JOB_CONTRACTS as Partial<Record<string, JobContract>>)[job]?.defaultOn ?? false;
 }
 

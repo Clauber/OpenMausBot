@@ -304,6 +304,10 @@ export class LiveV1 {
     }
   }
 
+  watching(session: string): boolean {
+    return [...this.#viewers.values()].some((viewer) => viewer.session === session && this.#current(viewer));
+  }
+
   has(viewerId: string): boolean {
     return this.#viewers.has(viewerId);
   }

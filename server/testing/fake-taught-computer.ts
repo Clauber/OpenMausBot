@@ -11,7 +11,7 @@ export async function startFakeTaughtComputer() {
   };
   const fake = await startFakeHttpMcp({
     tools: Object.entries(properties).map(([name, props]) => ({ name, inputSchema: providerSafeInputSchema({ type: "object", properties: props, required: Object.keys(props) }) })),
-    onCall: params => {
+    callResult: params => {
       const { name } = params as { name: string };
       if (name === "click" && failClick) return { isError: true, content: [{ type: "text", text: "element-not-found: #name" }] };
       return { content: [{ type: "text", text: `Executed ${name}` }, { type: "image", mimeType: "image/png", data: differentScreenshot ? Buffer.from("different fixture image").toString("base64") : png }] };

@@ -835,7 +835,7 @@ export class WebhookManager {
   }
 
   private buildAttempt(
-    trigger: StoredWebhookTrigger,
+    trigger: Pick<StoredWebhookTrigger, "id">,
     event: Partial<WebhookEvent>,
     details: AttemptDetails,
     id: string = randomUUID(),

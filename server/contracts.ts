@@ -109,7 +109,9 @@ export interface SendTurnInput {
   toolScope?: ToolScope;
   /** A guest turn: no shell or command execution, no reads outside its folder. Sent only to drivers whose guestTurns is "confined". */
   guestConfined?: boolean;
+  restrictedThread?: boolean;
   /** Why this turn is confined, in the owner's words, for a refusal to end with. */
+  confinedWhy?: string;
   /** Images for this user turn only; kept out of replay transcripts. */
   images?: TurnImageInput[];
   model?: string;
@@ -177,12 +179,14 @@ export interface SendTurnInput {
   };
   cwd?: string;
   /** Also load the person's own CLI MCP setup (Claude Code user scope, claude.ai connectors). */
+  mcpFromUserConfig?: boolean;
   /** Claude Code loads the person's own `~/.claude/skills` from this folder's `.claude/skills` (`--add-dir`). */
   userSkillsDir?: string;
   /** Per-call ceiling (ms) for this turn's MCP tools; absent is the driver's default (10 min). */
   mcpCallTimeoutMs?: number;
   /** Times an API-model turn that answers after a failed tool call is sent back to re-run it (`loopGuard.correctiveRounds`); never after a denial. */
   toolErrorCorrectiveRounds?: number;
+  pickTools?: (tools: ReadonlyArray<{ name: string; description: string }>, signal?: AbortSignal) => Promise<ReadonlySet<string> | null>;
 }
 
 /** An MCP server this machine starts and talks to over stdio. */

@@ -294,6 +294,10 @@ export class StreamV2 {
     }
   }
 
+  watching(session: string): boolean {
+    return [...this.#sessions].some((viewer) => viewer.request.target.session === session && viewer.request.isCurrent());
+  }
+
   get size(): number {
     return this.#sessions.size;
   }

@@ -144,6 +144,31 @@ describe("browser viewer protocol boundary", () => {
 });
 
 describe("authenticated browser viewer relay", () => {
+  it("counts only current viewers of the requested session until its last view closes", async () => {
+    expect(live.watching("profile-a")).toBe(false);
+    const first = await open();
+    const second = await open({ owner: "admin-b" });
+    const other = await open({ session: "profile-b", botId: "bot-b" });
+    expect(live.watching("profile-a")).toBe(true);
+    first.res.destroy();
+    expect(live.watching("profile-a")).toBe(true);
+    second.res.destroy();
+    expect(live.watching("profile-a")).toBe(false);
+    expect(live.watching("profile-b")).toBe(true);
+    other.res.destroy();
+    expect(live.watching("profile-b")).toBe(false);
+    const reopened = await open();
+    expect(live.watching("profile-a")).toBe(true);
+    reopened.res.destroy();
+    expect(live.watching("profile-a")).toBe(false);
+  });
+
+  it("does not count a revoked viewer even before heartbeat cleanup", async () => {
+    let current = true;
+    await open({ current: () => current });
+    current = false;
+    expect(live.watching("profile-a")).toBe(false);
+  });
   it("fences a late stream startup when that owner is closed during discovery", async () => {
     let finish!: (value: ReturnType<typeof output>) => void;
     execute.mockImplementationOnce(() => new Promise((resolve) => finish = resolve));
@@ -911,6 +936,17 @@ describe("authenticated browser viewer relay", () => {
     await a.action({ type: "restart" });
     expect(a.res.writableEnded).toBe(true); expect(b.res.writableEnded).toBe(true);
     await expect(runtime.withAgentAction("profile-a", async () => true)).resolves.toBe(true);
+  });
+  it("restarts through the server's own browser close, which also stops a stealth Chrome", async () => {
+    const closeBrowser = vi.fn(async () => true);
+    runtime = new BrowserRuntime(); live = new BrowserLive({ runtime, closeBrowser });
+    const a = await open();
+    await a.action({ type: "restart" });
+    expect(closeBrowser).toHaveBeenCalledWith("profile-a", expect.objectContaining({ command: "/trusted/agent-browser" }));
+    expect(nativeClose).not.toHaveBeenCalled();
+    closeBrowser.mockResolvedValueOnce(false);
+    const b = await open();
+    await expect(b.action({ type: "restart" })).rejects.toThrow("could not restart");
   });
   it("does not clear uncertain input or other owners when native restart fails", async () => {
     runtime = new BrowserRuntime(); live = new BrowserLive({ runtime });

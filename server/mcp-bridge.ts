@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createTeachCaptureClient } from "./teach-capture-client.ts";
 import { StringDecoder } from "node:string_decoder";
 
 import { CONTROL_ACT_WITHIN_MS, CONTROL_UNCONFIRMED, CONTROL_WAITED, controlRefusal, createControlClient, type ControlState } from "./control-client.ts";

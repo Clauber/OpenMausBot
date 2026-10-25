@@ -11,13 +11,11 @@
 // "available: false" and the panel explains itself; the packaged desktop app
 // is the expected case.
 import { existsSync } from "node:fs";
-import type { IncomingMessage, Server } from "node:http";
-import { ServerResponse } from "node:http";
 import { homedir } from "node:os";
-import { Socket } from "node:net";
 import { WebSocket, WebSocketServer } from "ws";
 import { isSameOrigin } from "../request-auth.ts";
-import { PASS, UPGRADE_CLAIMED, type RouteHandler } from "./table.ts";
+import { PASS, type RouteHandler } from "./table.ts";
+import { createUpgrades, type Upgrades } from "./upgrades.ts";
 
 const ROUTE = /^\/api\/terminal\/?$/;
 /** Hard cap on live shells per server process, whatever the session count. */
@@ -51,6 +49,7 @@ export function createTerminalRoutes(deps: {
   shell?: () => string;
   cwd?: () => string;
   maxSessions?: number;
+  upgrades?: Upgrades;
 } = {}) {
   const load = deps.loadPty ?? loadPty;
   const shell = deps.shell ?? pickShell;
@@ -59,41 +58,12 @@ export function createTerminalRoutes(deps: {
 
   interface Session { pty: IPty; socket: WebSocket; owner: string }
   const sessions = new Set<Session>();
-  const upgrades = new Map<IncomingMessage, { socket: Socket; head: Buffer; release: () => void; close: () => void }>();
+  const upgrades = deps.upgrades ?? createUpgrades();
+  const ownGate = deps.upgrades === undefined;
+  upgrades.route((path) => Boolean(ROUTE.exec(path)));
   const relay = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 });
   let stopped = false;
 
-  /** Intercept `upgrade` on the shared server: buffer eager WebSocket bytes
-   * and route the request through handleRequest so auth, hosted-workspace and
-   * maintenance gates all apply before this route sees the socket. */
-  function attach(server: Server, handle: (req: IncomingMessage, res: ServerResponse) => Promise<unknown>): void {
-    server.on("upgrade", (req, socket, head) => {
-      let path: string;
-      try { path = new URL(req.url ?? "", "http://localhost").pathname; }
-      catch { return; }
-      if (stopped || !ROUTE.exec(path) || !(socket instanceof Socket)) return;
-      (req as { [UPGRADE_CLAIMED]?: boolean })[UPGRADE_CLAIMED] = true;
-      const res = new ServerResponse(req);
-      res.assignSocket(socket);
-      res.setHeader("connection", "close");
-      socket.on("error", () => socket.destroy());
-      res.once("finish", () => socket.end(() => socket.destroy()));
-      const upgrade = { socket, head, release: () => socket.off("data", buffer), close: () => socket.destroy() };
-      const buffer = (data: Buffer) => {
-        if (upgrade.head.length + data.length > 64 * 1024) socket.destroy();
-        else upgrade.head = Buffer.concat([upgrade.head, data]);
-      };
-      socket.on("data", buffer);
-      const endWhileWaiting = () => socket.destroy();
-      socket.once("end", endWhileWaiting);
-      socket.once("close", () => { upgrade.release(); socket.off("end", endWhileWaiting); upgrades.delete(req); });
-      upgrades.set(req, upgrade);
-      void handle(req, res).catch(() => {
-        if (!res.headersSent) res.writeHead(500).end();
-        else socket.destroy();
-      });
-    });
-  }
 
   function forget(session: Session): void {
     sessions.delete(session);
@@ -159,7 +129,8 @@ export function createTerminalRoutes(deps: {
     // so only admin-scope, same-origin callers get past here.
     if (!auth.scopes.includes("admin") || !isSameOrigin(req)) return json(res, 403, { error: "forbidden" });
 
-    if (req.headers.upgrade?.toLowerCase() !== "websocket" || !upgrades.get(req)) {
+    if (stopped) return json(res, 503, { error: "The terminal is shutting down." });
+    if (req.headers.upgrade?.toLowerCase() !== "websocket" || !upgrades.pending(req)) {
       // The capability probe the panel uses before showing anything.
       return json(res, 200, { available: (await load()) !== null, shell: shell() });
     }
@@ -168,8 +139,7 @@ export function createTerminalRoutes(deps: {
     if (!pty) return json(res, 501, { error: "The server has no terminal backend installed (node-pty is missing)." });
     if (sessions.size >= maxSessions) return json(res, 429, { error: "Too many terminals are open on this server." });
 
-    const upgrade = upgrades.get(req)!;
-    upgrades.delete(req);
+    const upgrade = upgrades.pending(req)!;
     upgrade.release();
     relay.handleUpgrade(req, upgrade.socket, upgrade.head, (socket) => {
       const session = spawnSession(pty, socket, auth.kind === "session" ? auth.session.id : "loopback");
@@ -179,14 +149,14 @@ export function createTerminalRoutes(deps: {
 
   return {
     route,
-    attach,
+    attach: upgrades.attach,
     /** Kill every live shell: graceful shutdown, and each session's socket. */
     closeAll(): void {
       stopped = true;
       // Set iteration tolerates delete-during-iteration; forget() only ever
       // removes the entry it was handed.
       for (const session of sessions) forget(session);
-      for (const upgrade of upgrades.values()) upgrade.close();
+      if (ownGate) upgrades.close();
     },
     closeForOwner(owner: string): void {
       for (const session of sessions) if (session.owner === owner) forget(session);

@@ -42,6 +42,19 @@ export function failure(id: RpcId, method: unknown, message: string, code = -326
     : { jsonrpc: "2.0", id, error: { code, message } };
 }
 
+/** ZCode 0.16 abandons an MCP call after 30 s unless the tool's `_meta.timeoutMs` says otherwise; an abandoned
+ * call keeps the browser busy, so the next one queues behind it and fails too. */
+function withCallTimeout(result: unknown): unknown {
+  const tools = (result as { tools?: unknown } | null)?.tools;
+  if (!Array.isArray(tools)) return result;
+  return {
+    ...result as object,
+    tools: tools.map((tool) => tool && typeof tool === "object" && !Array.isArray(tool)
+      ? { ...tool, _meta: { ...(tool as { _meta?: object })._meta, timeoutMs: HARNESS_PROXY_TIMEOUT_MS } }
+      : tool),
+  };
+}
+
 async function boundedJson(response: Response, name: string): Promise<unknown> {
   if (!response.body) throw new Error(`${name} server returned an empty response.`);
   const reader = response.body.getReader();
@@ -95,7 +108,7 @@ export async function harnessMcpRequest(
       throw new Error(typeof payload?.error === "string" ? payload.error.slice(0, 2_000) : `${name} server is unavailable. Start a new bot turn or try again.`);
     }
     const result = message.method === "tools/list"
-      ? capToolListResult(payload.result, connection.toolLimit, (line) => console.warn(`[${connection.kind}] ${line}`)) : payload.result;
+      ? capToolListResult(withCallTimeout(payload.result), connection.toolLimit, (line) => console.warn(`[${connection.kind}] ${line}`)) : payload.result;
     return { jsonrpc: "2.0", id, result };
   } catch (error) {
     return failure(id, message.method, unansweredText(error, name) + RECOVERY[connection.kind]);

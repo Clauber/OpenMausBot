@@ -299,6 +299,10 @@ export class LiveRouter {
     return chromeTarget(session, spec) ? this.#chrome.service.download(session, id) : undefined;
   }
 
+  watching(session: string): boolean {
+    return this.#old.watching(session) || this.#chrome.live.watching(session) || this.#chrome.stream.watching(session);
+  }
+
   handBack(session: string): void { this.#chrome.live.handBack(session); this.#old.handBack(session); }
   closeForSession(session: string): void { this.#chrome.live.closeForSession(session); this.#chrome.stream.closeForSession(session); this.#old.closeForSession(session); }
   closeForOwner(owner: string): void { this.#chrome.live.closeForOwner(owner); this.#chrome.stream.closeForOwner(owner); this.#old.closeForOwner(owner); }

@@ -97,8 +97,15 @@ export function createBrowserHost(deps: BrowserHostDeps) {
   const store: Pick<Store, "bots" | "bot" | "botByThread"> = { get bots() { return deps.store().bots; }, bot: (id: string) => deps.store().bot(id),
     botByThread: (threadId: string) => deps.store().botByThread(threadId) };
 
+  // One close for every path (restart_browser, the panel's Restart, the unresponsive-page restart): it stops the
+  // daemon's process tree, and when the session mounted through the stealth browser it stops that Chrome too.
+  const closeBotBrowser = async (session: string, spec: { command: string; args?: readonly string[]; env?: NodeJS.ProcessEnv }): Promise<boolean> => {
+    const closed = await closeBrowserSession(spec.command, browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session }));
+    if (closed && browserStealthEnabled(cfg)) await closeStealthSession(session, cfg).catch(() => false);
+    return closed;
+  };
   const agentBrowserRuntime = new BrowserRuntime({
-    closeBrowser: (session, spec) => closeBrowserSession(spec.command, browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session })),
+    closeBrowser: closeBotBrowser,
     applyViewport: (spec) => setBrowserViewport(spec.command, spec.env),
     launch: chromeLauncher,
     relayCommand: (spec, session, command, timeoutMs) => relayCommand(spec, session, command, timeoutMs).catch((error: unknown) => {
@@ -111,7 +118,7 @@ export function createBrowserHost(deps: BrowserHostDeps) {
   const browserBox = deps.browserBox;
   const boxed = Boolean(browserBox?.(LAUNCHER_SECCOMP_FD, []));
   if (browserBox) chromeLauncher.boxWith(() => browserBox(LAUNCHER_SECCOMP_FD, []));
-  const agentBrowserLive = new BrowserLive({ runtime: agentBrowserRuntime, devTools: {
+  const agentBrowserLive = new BrowserLive({ runtime: agentBrowserRuntime, closeBrowser: closeBotBrowser, devTools: {
     url: (port) => relay(port, { action: "cdp_url" }, { timeoutMs: 5_000, maxBytes: 65_536 }).then((answer) => answer.data?.cdpUrl),
   } });
   const host: HostKind = DESKTOP_MANAGED ? "desktop" : CLOUD_HOME || existsSync("/.dockerenv") ? "container" : "server";
@@ -147,11 +154,7 @@ export function createBrowserHost(deps: BrowserHostDeps) {
     owns: (session) => belongs(session) || (Boolean(CLOUD_HOME) && BOT_SESSION.test(session)),
     live: (session) => usedBrowserSessions.has(session) && belongs(session),
     held: (session) => !turnResources.free(`browser:${session}`),
-    closeIdle: async (session) => {
-      const closed = await browserRuntime.closeIfIdle(session, idleMs(), usedBrowserSessions.get(session));
-      if (closed && browserStealthEnabled(cfg)) await closeStealthSession(session, cfg).catch(() => false);
-      return closed;
-    },
+    closeIdle: (session) => browserRuntime.closeIfIdle(session, idleMs(), usedBrowserSessions.get(session)),
   });
   const browserSweep = {
     start() {
@@ -352,7 +355,7 @@ export function createBrowserHost(deps: BrowserHostDeps) {
     return onChrome(profile) ? "The new browser does not list signed-in sites yet. Sign out in the browser itself, or turn off New browser in Settings." : null;
   }
   async function closeBrowser(session: string, spec: Spec): Promise<boolean> {
-    if (!chromeTarget(session, spec)) return closeBrowserSession(spec.command, browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session }));
+    if (!chromeTarget(session, spec)) return closeBotBrowser(session, spec);
     await chromeEngine.service.close(session);
     return true;
   }

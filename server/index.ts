@@ -6411,11 +6411,11 @@ async function openTaughtComputer(botId: string, threadId: string): Promise<Taug
         spec = vps.vpsComputerMcp(cfg, botId);
       } else if (surface === "cloud" || team) {
         const machine = await boat.findBoat(cfg, team ? teamComputerOwner(team.id) : botId);
-        if (!machine || boat.boatTurnLifecycleAction({ explicitCloud: false, state: machine.state }) !== "attach") throw new Error("Bound cloud computer is not reachable.");
+        if (!machine || boat.boatTurnLifecycleAction(machine.state) !== "attach") throw new Error("Bound cloud computer is not reachable.");
         kind = "cloud:box"; id = `box:${machine.id}`; resource = `computer:box:${machine.id}`;
-        tools = ((await cloudComputerRpc({ method: "tools/list" }, { cfg, boxId: machine.id, signal: AbortSignal.timeout(5000), gate: async () => ({ held: false }), assertActive: () => {} })) as { tools: TaughtTool[] }).tools;
+        tools = ((await cloudComputerRpc({ method: "tools/list" }, { cfg, boxId: () => machine.id, signal: AbortSignal.timeout(5000), gate: async () => ({ held: false }), assertActive: () => {} })) as { tools: TaughtTool[] }).tools;
         call = (tool, args) => cloudComputerRpc({ method: "tools/call", params: { name: tool, arguments: args } }, {
-          cfg, boxId: machine.id, signal: AbortSignal.timeout(130_000), gate: async () => { check(); return { held: false }; }, assertActive: check,
+          cfg, boxId: () => machine.id, signal: AbortSignal.timeout(130_000), gate: async () => { check(); return { held: false }; }, assertActive: check,
         });
       } else throw new Error("Choose an explicit Local VM, local or cloud computer before teaching.");
       if (spec) {
@@ -8411,6 +8411,8 @@ function startScreenPoller(
     }),
     onFrame: (frame, surface) => { if (surface === "computer") rememberTurnFrame(turnComputerResources.get(threadId)?.resource, frame); broadcast({ kind: "screen", botId, threadId, surface, ...frame }); },
     minGapMs: SCREEN_MIN_GAP_MS,
+    // Nobody sees a browser preview without an open panel; the final frame uses capture(true).
+    watching: (surface) => surface !== "browser" || browserLive.watching(browserSession),
   }), {
     timer: null as ReturnType<typeof setInterval> | null,
     botId,

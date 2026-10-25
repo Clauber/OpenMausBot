@@ -17,6 +17,7 @@ function fixture(captures?: { computer?: ScreenCapture; browser?: ScreenCapture 
   const source = createScreenFrameSource({
     captures: captures ?? { computer, browser },
     control: () => ({ ...control }),
+    watching: () => true,
     onFrame,
     minGapMs: 3000,
   });
@@ -24,6 +25,48 @@ function fixture(captures?: { computer?: ScreenCapture; browser?: ScreenCapture 
 }
 
 describe("screen frame source", () => {
+  it("captures previews only while watched, but preserves the final conversation frame", async () => {
+    let watching = false;
+    const browser = vi.fn(async () => frame("page"));
+    const source = createScreenFrameSource({
+      captures: { browser },
+      control: () => ({ held: false, revision: 0 }),
+      watching: () => watching,
+      onFrame: vi.fn(),
+      minGapMs: 0,
+    });
+    await source.capture();
+    expect(browser).not.toHaveBeenCalled();
+    watching = true;
+    await source.capture();
+    expect(browser).toHaveBeenCalledTimes(1);
+    watching = false;
+    await source.capture();
+    expect(browser).toHaveBeenCalledTimes(1);
+    await source.capture(true);
+    expect(browser).toHaveBeenCalledTimes(2);
+    expect(source.last).toEqual(publicFrame("page"));
+  });
+
+  it("checks viewers again after an in-flight capture finishes", async () => {
+    let watching = true;
+    let finish!: (value: ReturnType<typeof frame>) => void;
+    const browser = vi.fn(() => new Promise<ReturnType<typeof frame>>((resolve) => { finish = resolve; }));
+    const source = createScreenFrameSource({
+      captures: { browser },
+      control: () => ({ held: false, revision: 0 }),
+      watching: () => watching,
+      onFrame: vi.fn(),
+      minGapMs: 0,
+    });
+    const first = source.capture();
+    const queued = source.capture();
+    watching = false;
+    finish(frame("page"));
+    await Promise.all([first, queued]);
+    expect(browser).toHaveBeenCalledTimes(1);
+  });
+
   it("throttles previews on one surface, but takes a fresh settled frame", async () => {
     const { source, computer, advance } = fixture();
     await source.capture();

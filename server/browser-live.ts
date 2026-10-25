@@ -294,9 +294,11 @@ export class BrowserLive {
   /** Each watched browser's page dialogs, and the views that watch them. */
   private readonly dialogs = new Map<string, { watch: DialogWatch; views: Set<string> }>();
   private readonly devTools?: BrowserLiveDevTools;
-  constructor({ runtime, devTools }: { runtime: BrowserRuntime; devTools?: BrowserLiveDevTools }) {
+  private readonly closeBrowser: (session: string, spec: Viewer["spec"]) => Promise<boolean>;
+  constructor({ runtime, devTools, closeBrowser }: { runtime: BrowserRuntime; devTools?: BrowserLiveDevTools; closeBrowser?: (session: string, spec: Viewer["spec"]) => Promise<boolean> }) {
     this.runtime = runtime;
     this.devTools = devTools;
+    this.closeBrowser = closeBrowser ?? ((session, spec) => closeBrowserSession(spec.command, browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session })));
     runtime.onIdleClose((session) => this.asleep(session));
   }
 
@@ -678,8 +680,7 @@ export class BrowserLive {
     viewer.restarting = true;
     try {
       await this.runtime.restart(viewer.session, viewer.id, async () => {
-        const env = browserRuntimeEnv({ ...viewer.spec.env, AGENT_BROWSER_SESSION: viewer.session });
-        if (!await closeBrowserSession(viewer.spec.command, env)) throw new Error("browser close failed");
+        if (!await this.closeBrowser(viewer.session, viewer.spec)) throw new Error("browser close failed");
       });
       const note = { type: "error", retryable: true, message: restartedNote(viewer.spec.env?.AGENT_BROWSER_RESTORE_SAVE !== "never") };
       for (const other of this.viewers.values()) if (other.session === viewer.session) this.send(other, note);
@@ -784,8 +785,7 @@ export class BrowserLive {
       try {
         const restarting = this.runtime.restart(viewer.session, viewer.id, async () => {
           if (!this.current(viewer)) throw new Error("stale viewer");
-          const env = browserRuntimeEnv({ ...viewer.spec.env, AGENT_BROWSER_SESSION: viewer.session });
-          if (!await closeBrowserSession(viewer.spec.command, env)) throw new Error("browser close failed");
+          if (!await this.closeBrowser(viewer.session, viewer.spec)) throw new Error("browser close failed");
         });
         this.control(viewer.session);
         await restarting;

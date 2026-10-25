@@ -9,7 +9,7 @@ import { launchVerificationServer, runControlOmb } from "../scripts/control-omb.
 import { removeTempDir } from "./testing/cleanup.ts";
 import { openSse } from "./testing/sse.ts";
 
-async function launch(boat?: string, enterprise?: { dir: string; licenseKey: string }) {
+async function launch(boat?: string, _enterprise?: { dir: string; licenseKey: string }) {
   const fixture = await launchVerificationServer(process.env, undefined, undefined, undefined, undefined, [], boat);
   const { url, dataDir } = fixture.info;
   const api = async (method: string, path: string, body?: unknown, token?: string, expectedStatus = 200) => {

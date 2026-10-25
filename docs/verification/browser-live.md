@@ -117,6 +117,73 @@ revoked capabilities, and exact saved-state cleanup. Native workflow testing
 is still required: a green mocked
 frame test alone does not prove browser input or restoration works.
 
+## Unwatched turn previews
+
+The per-turn preview source asks `LiveRouter.watching(session)` before each
+periodic or tool-triggered browser capture, so a bot's browser is not captured
+while no Browser panel views that session. The final conversation screenshot
+still runs, and computer previews keep their existing behavior. The router checks
+agent-browser and stealth viewers through `BrowserLive`, and Chrome viewers
+through both `LiveV1` and `StreamV2`.
+
+```sh
+OMB_VERIFY_BROWSER_BINARY=/absolute/path/to/agent-browser \
+OMB_VERIFY_BROWSER_CHROME=/absolute/path/to/chrome-headless-shell \
+node --experimental-strip-types scripts/verify-browser-preview-watchers.ts
+```
+
+The recipe launches the isolated fixture with a slow fake turn on the
+`browser` surface. The fake engine reports one browser tool call. The recipe
+makes that call itself through the turn's own browser MCP server (read from
+the fixture's `--mcp-config` dump), the same way the model CLI does. It counts
+`screen` events on `/api/events` while it opens and closes
+`/api/bots/:id/browser/live`, the stream the Browser panel opens. It expects
+no captures for 31 seconds with no viewer, new captures with one open, none
+for 31 seconds after the last viewer closes, and new captures on reopening.
+Then it settles the turn with no viewer and fetches the final screenshot's
+image endpoint. It exits non-zero when any check fails.
+
+Verified on Linux arm64 with Node 24.22.1, agent-browser 0.37.0 and Chrome
+Headless Shell 153.0.8010.47 on 2026-10-24. This host disables unprivileged
+user namespaces, so `OMB_VERIFY_BROWSER_CHROME` was a wrapper that adds
+`--no-sandbox`. With the fix, capture counts were 0 to 0 with no viewer for
+31 seconds, 0 to 2 while open, 2 to 2 after closing for 31 seconds and 2 to 4
+on reopening. The final screenshot returned HTTP 200 (4,254-byte PNG). Without
+the fix the same run failed: 0 to 5 with no viewer and 7 to 12 after closing.
+
+## Native mobile control
+
+The native checks below never pair a phone or read a real browser profile.
+Swift and Android core tests cover finite streaming/refusal deadlines, bounded
+frame parsing, server-owned control, cancellable actions and coalesced ACKs:
+
+```sh
+cd ios && swift test
+```
+
+From `android/`:
+
+```sh
+./gradlew :core:test :app:testDebugUnitTest --tests '*BrowserControlWiringTest*' :app:assemblePreview
+```
+
+`BrowserControlWiringTest` drives the real Compose screen against a synthetic
+loopback SSE/action server: watch-only, take, a letterboxed center tap at
+640 × 360, typed text, hand-back, background release and the exact viewer's
+release on disposal.
+
+Generate the iOS project and use a fresh disposable simulator as described in
+[iOS thread verification](ios-threads.md), selecting
+`-only-testing:OpenMausCompanionUITests/BrowserControlUITests`. That case uses
+the Debug-only `-browser-preview` URLProtocol fixture to exercise the real
+SwiftUI screen, ownership, touch mapping, soft keyboard, hand-back and release
+when leaving. Keep the result bundle and its screenshot; remove only the
+simulator created for the check.
+
+These fixtures do not prove physical-device gestures, HTTPS/Tailscale pairing,
+or behavior across a real network interruption. No microphone, provider call,
+personal computer control or existing phone is used.
+
 ## One-minute idle and reconnect regression
 
 With an installed Playwright module, the same isolated launcher can run an

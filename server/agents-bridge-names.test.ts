@@ -61,7 +61,7 @@ describe("the bot's Activity log", () => {
     row({ type: "item.started", title, input: toolDetailPreview(args) });
     row({ type: "item.completed", ok });
   };
-  const log = () => readBotActivity({ dataDir, eventsDir, botId: "b1", threadIds: ["t1"], limit: 50 })
+  const log = () => readBotActivity({ dataDir, eventsDir, botId: "b1", threadIds: ["t1"], limit: 50, messagesFor: () => [] })
     .map(({ tool, app, label, outcome }) => ({ tool, app, label, outcome })).reverse();
 
   it("names a bridged call by the tool it ran, from the event alone", () => {

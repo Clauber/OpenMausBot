@@ -52,7 +52,7 @@ function call(audit: ComputerAuditLog, epochs: ComputerEpochs, name: string, arg
     audit, epochs, botId, computerId: extra.computerId ?? `bot-${botId}`, ...(extra.check ? { check: extra.check } : {}),
     dispatch: ({ signal, gate, assertActive }) => tools.cloudComputerRpc(
       { method: "tools/call", params: { name, arguments: args } },
-      { cfg, boxId: "bx_23456789", signal,
+      { cfg, boxId: () => "bx_23456789", signal,
         gate: () => gate(async () => ({ held: extra.held ?? false })), assertActive: () => assertActive(() => {}) },
     ),
   });

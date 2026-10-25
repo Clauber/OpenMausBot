@@ -61,14 +61,15 @@ describe("spend against a monthly cap", () => {
   it("counts a turn longer than the cache window the moment it is booked, before its row lands", async () => {
     const cfg = { budgets: { monthlyUsd: 1, warnAtPercent: 80 } };
     const start = new Date("2026-09-15T12:00:00Z");
-    expect(spendState(cfg, dataDir, start, yes)).toMatchObject({ spentUsd: 0, exceeded: false });
+    expect(spendState(cfg, dataDir, start)).toMatchObject({ spentUsd: 0, exceeded: false });
+    const end = new Date(start.getTime() + 60_000);
     const booked = row(end.toISOString(), 1.2);
     const written = appendUsage(dataDir, booked);
     noteSpend(dataDir, booked, written);
     const crossed = spendState(cfg, dataDir, end);
     expect(crossed).toMatchObject({ spentUsd: 1.2, exceeded: true, warn: true });
     expect(takeSpendAlert(dataDir, crossed)).toBe("cap");
-    expect(() => assertWithinBudget(cfg, dataDir, new Date(end.getTime() + 1_000), yes)).toThrow(expect.objectContaining({ code: "spend_cap" }));
+    expect(() => assertWithinBudget(cfg, dataDir, new Date(end.getTime() + 1_000))).toThrow(expect.objectContaining({ code: "spend_cap" }));
     await Promise.resolve();
     expect(monthToDateSpend(dataDir, new Date(end.getTime() + 2_000))).toBeCloseTo(1.2, 9);
     expect(monthToDateSpend(dataDir, new Date(end.getTime() + 60_000))).toBeCloseTo(1.2, 9);
