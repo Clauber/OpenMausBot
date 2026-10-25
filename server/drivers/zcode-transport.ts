@@ -28,6 +28,11 @@ export interface ZcodeTransportHandlers {
 }
 
 export interface ZcodeTransport {
+  /**
+   * How long a stop waits for the engine to report the cancelled turn itself before the transport is torn down.
+   * Absent for a process the stop simply kills.
+   */
+  readonly stopGraceMs?: number;
   /** Correlated request; rejects with the engine's error message. */
   request(method: string, params: unknown, timeoutMs?: number): Promise<any>;
   /** Answers a server→client request. */

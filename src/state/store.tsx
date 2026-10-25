@@ -563,7 +563,7 @@ export interface InstanceInfo {
     backgroundText?: boolean;
   };
   access?: "subscription" | "custom" | "api";
-  authentication?: { method: "device-code" | "paste-code" | "browser" | "browser-pkce"; signOut?: boolean };
+  authentication?: { method: "device-code" | "paste-code" | "browser" | "browser-pkce" | "browser-poll"; signOut?: boolean };
   install?: EngineInstall;
   cli?: string;
   cliDefault?: string;

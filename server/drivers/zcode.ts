@@ -40,7 +40,10 @@ import { gateServer } from "../mcp-gate-config.ts";
 import { canUseMcpServer } from "../../shared/tool-scope.ts";
 import { assertToolScopeSupported } from "../../shared/tool-scope-support.ts";
 import { announcesAction, CONTINUATION_NUDGE } from "./announced-action.ts";
-import { openStdioTransport, ZCODE_DEFAULT_REQUEST_TIMEOUT_MS, type ZcodeTransport } from "./zcode-transport.ts";
+import { openStdioTransport, ZCODE_DEFAULT_REQUEST_TIMEOUT_MS, type ZcodeTransport, type ZcodeTransportHandlers } from "./zcode-transport.ts";
+import type { ZcodeServerTransport } from "./zcode-server/connection.ts";
+import { createZcodeServerMode, type ZcodeServerMode } from "./zcode-server/mode.ts";
+import { zcodeTurnModel } from "./zcode-server/models.ts";
 import {
   isTransientZcodeFailure,
   zcodeFailureReason,
@@ -55,6 +58,16 @@ import type { ApprovalMode } from "../../shared/approval-mode.ts";
 const PROBE_SESSION_TIMEOUT_MS = 45_000;
 const PROBE_ATTEMPTS = 3;
 const PROBE_RETRY_MS = 30_000;
+
+const NOT_CONNECTED: ZcodeTransport = {
+  request: () => Promise.reject(new Error("zcode is not connected yet")),
+  respond: () => {},
+  respondError: () => {},
+  alive: () => false,
+  mute: () => {},
+  terminate: async () => true,
+  close: async () => true,
+};
 
 const DENY_TIMEOUT_NOTE =
   "Legion: nobody answered this permission request in time. Skip this action and finish what you can without it.";
@@ -77,11 +90,16 @@ const DRIVER_KIND = "zcodeAgent";
 
 export interface ZcodeConfig {
   cli: string;
+  /** Run turns through the ZCode server (account plans, effort levels, steer). Off: the `zcode app-server` path. */
+  server?: true;
 }
 
 function decodeConfig(raw: unknown): ZcodeConfig {
   const o = (raw ?? {}) as Record<string, unknown>;
-  return { cli: typeof o.cli === "string" && o.cli.trim() ? o.cli : "zcode" };
+  return {
+    cli: typeof o.cli === "string" && o.cli.trim() ? o.cli : "zcode",
+    ...(o.server === true || o.server === "on" ? { server: true as const } : {}),
+  };
 }
 
 /** Fallback when the catalog probe cannot run: the engine runs whatever
@@ -471,7 +489,8 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
     // under the harness's data dir, and point the driver's children at it:
     // the merged set — the person's own providers plus any wrapper-injected
     // ones — is what the catalog advertises and what setModel can reach.
-    const directory = join(DATA_DIR, "providers", "zcode", createHash("sha256").update(instanceId).digest("hex"));
+    const identity = createHash("sha256").update(instanceId).digest("hex");
+    const directory = join(DATA_DIR, "providers", "zcode", identity);
     let personalConfigPath: string | null = null;
     try {
       const docs = zcodePersonalConfigCandidates(process.env, homedir())
@@ -512,6 +531,7 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
       stop: () => Promise<boolean>;
       turnId: string;
       asks: Map<string, (behavior: "allow" | "deny" | "answer", message?: string, source?: "user" | "timeout" | "system") => void>;
+      steer: (text: string) => Promise<SteerOutcome>;
     }
     const active = new Map<string, Turn>();
     let disposed = false;
@@ -683,7 +703,25 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
       }
     };
     let models = FALLBACK_ZCODE_MODELS;
+    // Server mode lists what the ZCode server reports (account plans and each
+    // model's effort levels); the CLI probe below stays the fallback.
+    const refreshFromServer = async (): Promise<boolean> => {
+      if (!server) return false;
+      try {
+        const catalog = await server.readModels();
+        if (!catalog || disposed) return false;
+        models = catalog;
+        return true;
+      } catch (error) {
+        console.error("zcode: server model list failed:", error instanceof Error ? error.message : error);
+        return false;
+      }
+    };
+    const server: ZcodeServerMode | null = config.server === true && process.platform !== "win32"
+      ? createZcodeServerMode({ identity, personalConfigPath, onAccountChange: async () => { await refreshFromServer(); } })
+      : null;
     const refreshModels = async () => {
+      if (await refreshFromServer()) return;
       // A probe that loses a race with a busy startup must not leave the
       // engine on its one-model fallback until the next restart.
       for (let attempt = 1; attempt <= PROBE_ATTEMPTS; attempt++) {
@@ -745,17 +783,26 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
         mount(name, server, true);
       }
 
-      // One session id per conversation; the cursor carries it across turns.
-      const cursor = typeof turn.resumeCursor === "string" && turn.resumeCursor.startsWith("sess_")
-        ? turn.resumeCursor
-        : null;
+      // One session id per conversation; the cursor carries it across turns. A CLI
+      // conversation (`sess_…`) stays on the CLI and a server one (`session_…`)
+      // on the server, so switching server mode never drops a conversation's context.
+      const cursorText = typeof turn.resumeCursor === "string" ? turn.resumeCursor : "";
+      const cursorKind = cursorText.startsWith("sess_") ? "cli" : cursorText.startsWith("session_") ? "server" : null;
+      const useServer = server !== null && cursorKind !== "cli";
+      const cursor = cursorKind === (useServer ? "server" : "cli") ? cursorText : null;
       // A chosen model is reasserted on every turn: fresh sessions take it
       // in create params, resumed sessions get session/setMode's sibling
       // session/setModel. An unparseable id fails loudly — a turn must never
       // silently run on a different model than the one selected.
-      const selection = turn.model && turn.model !== "agent-default" ? zcodeParseModelId(turn.model) : null;
+      const selection = turn.model && turn.model !== "agent-default" ? zcodeTurnModel(turn.model, server ? turn.variant : undefined) : null;
       if (turn.model && turn.model !== "agent-default" && !selection) {
         throw new Error(`"${turn.model}" is not a zcode model selection (expected provider/model with an optional $reasoning level). Pick a model from this engine's list.`);
+      }
+      if (selection && server && turn.variant) {
+        const row = models.options.find((option) => option.id.replace(/\$[^$]*$/, "") === `${selection.providerId}/${selection.modelId}`);
+        if (row?.variants?.length && !row.variants.some((variant) => variant.id === turn.variant)) {
+          throw new Error(`"${turn.variant}" is not an effort level of ${row.label}. Pick one of: ${row.variants.map((variant) => variant.id).join(", ")}.`);
+        }
       }
       // The persona rides the first prompt of a fresh session: the protocol
       // has no developer-instructions slot, so the system prompt travels
@@ -767,7 +814,8 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
         kind: "image", filename: basename(image.path), mimeType: image.mime, localPath: image.path,
       })) : undefined;
 
-      let transport: ZcodeTransport;
+      // Until a server transport opens, nothing is connected: requests fail and a stop has nothing to tear down.
+      let transport: ZcodeTransport = NOT_CONNECTED;
       let sessionId: string | null = null;
       const state = {
         settled: false,
@@ -775,6 +823,7 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
         sawStreamDelta: false,
         nudged: false,
         stopRequested: false,
+        promptSent: false,
         resumes: 0,
         resumeTimer: null as ReturnType<typeof setTimeout> | null,
         usage: undefined as { input: number; output: number; cachedInput?: number } | undefined,
@@ -785,9 +834,12 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
       const request = (method: string, params: unknown, timeoutMs = ZCODE_DEFAULT_REQUEST_TIMEOUT_MS) =>
         transport.request(method, params, timeoutMs);
 
+      let markSettled = () => {};
+      const settledSignal = new Promise<void>((resolve) => { markSettled = resolve; });
       const settle = async (ok: boolean, stopReason: string | null) => {
         if (state.settled) return;
         state.settled = true;
+        markSettled();
         transport.mute();
         if (state.resumeTimer) clearTimeout(state.resumeTimer);
         state.resumeTimer = null;
@@ -818,6 +870,11 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
             await request("session/stop", { sessionId }, 3_000);
           } catch {
             // Old CLI without the method, or a wedged server: kill below.
+          }
+          // A server reports the cancelled turn itself; give it the chance before the connection goes.
+          if (transport.stopGraceMs) {
+            const grace = new Promise<void>((resolve) => setTimeout(resolve, transport.stopGraceMs).unref?.());
+            await Promise.race([settledSignal, grace]);
           }
         }
         return transport.terminate();
@@ -1040,7 +1097,7 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
         }
       };
 
-      transport = openStdioTransport({ cli: config.cli, cwd, env, threadId }, {
+      const handlers: ZcodeTransportHandlers = {
         serverRequest: (msg) => { if (!state.settled) handleServerRequest(msg); },
         event: (params) => { if (!state.settled) handleEvent(params); },
         failed: ({ message, stopReason, setup }) => {
@@ -1048,12 +1105,38 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
           emit({ ...base(threadId, turnId), type: "runtime.error", message, ...(setup !== undefined ? { setup } : {}) });
           void settle(false, stopReason);
         },
-      });
+      };
+      const openCli = () => openStdioTransport({ cli: config.cli, cwd, env, threadId }, handlers);
+      if (!useServer) transport = openCli();
 
-      active.set(threadId, { stop, turnId, asks });
+      // Mid-turn input goes only to a server transport, and only into a prompt the engine has accepted.
+      const steer = async (text: string): Promise<SteerOutcome> => {
+        const live = transport as Partial<ZcodeServerTransport>;
+        if (typeof live.steer !== "function" || !sessionId || !state.promptSent || state.settled || state.stopRequested || state.resumeTimer) return "refused";
+        return live.steer(sessionId, text);
+      };
+      active.set(threadId, { stop, turnId, asks, steer });
       emit({ ...base(threadId, turnId), type: "turn.started" });
 
       try {
+        if (useServer) {
+          try {
+            transport = await server!.openTransport({ workspacePath: cwd, threadId }, handlers);
+          } catch (error) {
+            if (state.stopRequested) {
+              await settle(true, "interrupted");
+              return { turnId };
+            }
+            // A conversation that already lives on the server cannot move to the CLI; a new one can.
+            if (cursor) throw error;
+            emit({ ...base(threadId, turnId), type: "runtime.notice", message: `ZCode server unavailable (${error instanceof Error ? error.message : String(error)}). Running this turn through the CLI.` });
+            transport = openCli();
+          }
+          if (state.stopRequested) {
+            await settle(true, "interrupted");
+            return { turnId };
+          }
+        }
         // Resume into the exact native session first: a refusal here fails
         // the turn (strictResume) instead of silently starting a blank one.
         if (cursor) {
@@ -1082,6 +1165,7 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
         await request("session/subscribe", { sessionId, deliveryKind: "desktop-continuous", includeSnapshot: false });
         emit({ ...base(threadId, turnId), type: "session.started", sessionId, model: null });
         await request("session/send", { sessionId, content: promptText, attachments });
+        state.promptSent = true;
       } catch (e) {
         if (!state.settled) {
           const message = e instanceof Error ? e.message : String(e);
@@ -1107,11 +1191,13 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
       });
       if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
       const auth = authStatus(env);
+      // The server keeps its own Z.ai login; either sign-in lets a turn run.
+      const authenticated = auth.authenticated || (server !== null && await server.signedIn().catch(() => false));
       return {
         state: "available",
         version,
-        authenticated: auth.authenticated,
-        ...(auth.authenticated ? {} : { reason: auth.hint }),
+        authenticated,
+        ...(authenticated ? {} : { reason: auth.hint }),
         billing: "subscription",
       };
     };
@@ -1126,6 +1212,7 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
       },
       refreshModels,
       snapshot,
+      ...(server ? server.instanceMembers() : {}),
       adapter: {
         provider: DRIVER_KIND,
         capabilities: {
@@ -1140,6 +1227,8 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
           images: true,
           nativeImageInput: true,
           strictResume: true,
+          // Server mode only: effort levels per model, and mid-turn input.
+          ...(server ? { modelVariants: true, queueing: true } : {}),
         },
         sendTurn,
         interruptTurn: async (threadId) => {
@@ -1152,7 +1241,8 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
           finish(decision.behavior, decision.message, "user");
           return decision.behavior === "allow" ? "allowed-once" : decision.behavior === "answer" ? "answered" : "rejected";
         },
-        steer: async (): Promise<SteerOutcome> => "refused",
+        steer: async (threadId, text, images): Promise<SteerOutcome> =>
+          images?.length ? "refused" : (await active.get(threadId)?.steer(text)) ?? "refused",
         hasSession: (threadId) => active.has(threadId),
         stopAll: async () => {
           await Promise.all([...active.values()].map(({ stop }) => stop()));
@@ -1171,6 +1261,7 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
         }
         await Promise.all([...active.values()].map(({ stop }) => stop()));
         listeners.clear();
+        await server?.dispose();
       },
     };
   },
