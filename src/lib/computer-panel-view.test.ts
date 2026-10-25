@@ -49,14 +49,12 @@ describe("computer panel view availability", () => {
   it("drops the tabs the current mode does not render", () => {
     expect(resolveComputerPanelView("routines", { advanced: false, androidConnected: false })).toBe("computer");
     expect(resolveComputerPanelView("android", { advanced: false, androidConnected: true })).toBe("computer");
-    expect(resolveComputerPanelView("files", { advanced: true, androidConnected: true })).toBe("computer");
   });
 
   it("keeps a view whose trigger is on the row", () => {
-    for (const view of ["computer", "browser", "data"] as const) {
+    for (const view of ["computer", "browser", "data", "files"] as const) {
       expect(resolveComputerPanelView(view, { advanced: true, androidConnected: true })).toBe(view);
       expect(resolveComputerPanelView(view, { advanced: false, androidConnected: false })).toBe(view);
     }
-    expect(resolveComputerPanelView("files", { advanced: false, androidConnected: false })).toBe("files");
   });
 });

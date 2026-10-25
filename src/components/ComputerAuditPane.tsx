@@ -30,7 +30,7 @@ export function ComputerAuditPane({ bot }: { bot: Bot }) {
     if (action) query.set("action", action);
     try {
       const data = await api<{ rows: AuditRow[] }>(`/api/computer-audit?${query}`);
-      setRows(data.rows);
+      setRows(data.rows ?? []);
       setFailed(false);
     } catch { setFailed(true); }
   }, [bot.id, outcome, action]);

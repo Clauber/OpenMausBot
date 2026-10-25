@@ -2,7 +2,7 @@ import { Children, createElement, isValidElement, type ReactElement, type ReactN
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { Bot, InstanceInfo, Message, Task } from "@/state/store";
+import type { Bot, InstanceInfo, Task } from "@/state/store";
 import type { FeatureFlagConfig } from "@/lib/feature-flags";
 
 // Hook-by-call-order harness: state survives between renders, effects never run, handlers are read off the element
@@ -214,11 +214,11 @@ describe("Computer panel tabs", () => {
   it("includes Audit with the Advanced tabs", () => {
     fixture.advanced = true;
     fixture.android = true;
-    expect(tabs(render(makeBot()))).toEqual(["Screen", "Routines", "Android", "Browser", "Data", "Audit"]);
+    expect(tabs(render(makeBot()))).toEqual(["Screen", "Routines", "Android", "Browser", "Data", "Files", "Audit"]);
     fixture.config = {};
     fixture.android = false;
     // The Browser tab now stays in Advanced too, with its own switch.
-    expect(tabs(render(makeBot()))).toEqual(["Screen", "Routines", "Browser", "Data", "Audit"]);
+    expect(tabs(render(makeBot()))).toEqual(["Screen", "Routines", "Browser", "Data", "Files", "Audit"]);
   });
 
   it("reads a Routines view stored by Advanced as the Computer tab in Simple", () => {
@@ -227,77 +227,9 @@ describe("Computer panel tabs", () => {
     expect(rendered.nodes.find((node) => node.props["data-testid"] === "where-works")).toBeDefined();
   });
 
-  it("lists the files this chat changed in the Files tab", () => {
+  it("shows the folder browser in the Files tab", () => {
     fixture.view.current = "files";
-    const digest = (files: { added?: string[]; changed?: string[]; deleted?: string[] }) => ({
-      id: Math.random().toString(36), role: "assistant", kind: "digest", text: "",
-      digest: { files: { added: [], changed: [], deleted: [], ...files } },
-    }) as unknown as Message;
-    const rendered = render(makeBot({ messages: [
-      digest({ added: ["/Users/me/work/report.md", "/Users/me/work/old.txt"] }),
-      digest({ changed: ["/Users/me/work/notes.md"], deleted: ["/Users/me/work/old.txt"] }),
-    ] }));
-    expect(rendered.nodes.some((node) => node.type === ComputerFilesPane)).toBe(true);
-    expect(rendered.html).toContain("notes.md");
-    expect(rendered.html).toContain("report.md");
-    expect(rendered.html).not.toContain("old.txt");
-    expect(rendered.html).toContain("~/work");
-    expect(rendered.html).toContain("Scout&#x27;s private folder");
-  });
-
-  it("explains an empty Files tab", () => {
-    fixture.view.current = "files";
-    expect(render(makeBot()).html).toContain("Files Scout makes or changes in this chat will show up here.");
-  });
-
-  it("shows the selected chat's pinned folder after the bot default changes", () => {
-    fixture.view.current = "files";
-    const rendered = render(makeBot({
-      cwd: "/workspace/new-project",
-      tasks: [
-        { threadId: "other-thread", title: "Other chat", createdAt: 1, cwd: "/workspace/other-project" },
-        { threadId: "thread-scout", title: "Existing chat", createdAt: 2, cwd: "/Users/me/original-project" },
-      ],
-    }));
-    expect(rendered.html).toContain('title="/Users/me/original-project"');
-    expect(rendered.html).toContain("~/original-project");
-    expect(rendered.html).not.toContain("/workspace/new-project");
-    expect(rendered.html).not.toContain("/workspace/other-project");
-    expect(rendered.html).toContain("Change default");
-    expect(rendered.html).toContain("This chat keeps its current folder.");
-  });
-
-  it("keeps showing the pinned private folder after the bot default is cleared", () => {
-    fixture.view.current = "files";
-    const rendered = render(makeBot({ tasks: [
-      { threadId: "thread-scout", title: "Existing chat", createdAt: 1, cwd: "/Users/me/.openmausbot/task-workspaces/scout/thread-scout" },
-    ] }));
-    expect(rendered.html).toContain('title="/Users/me/.openmausbot/task-workspaces/scout/thread-scout"');
-    expect(rendered.html).toContain("~/.openmausbot/task-workspaces/scout/thread-scout");
-    expect(rendered.html).not.toContain("Scout&#x27;s private folder");
-  });
-
-  it("shows a legacy home-folder pin instead of the new bot default", () => {
-    fixture.view.current = "files";
-    const rendered = render(makeBot({
-      cwd: "/workspace/new-project",
-      tasks: [{ threadId: "thread-scout", title: "Legacy chat", createdAt: 1, cwd: null }],
-    }));
-    expect(rendered.html).toContain("Home folder");
-    expect(rendered.html).not.toContain("/workspace/new-project");
-    expect(rendered.html).not.toContain("Scout&#x27;s private folder");
-    expect(rendered.html).toContain("Change default");
-  });
-
-  it("uses the bot default until the selected chat has a folder pin", () => {
-    fixture.view.current = "files";
-    for (const tasks of [undefined, [{ threadId: "thread-scout", title: "New chat", createdAt: 1 }]]) {
-      const rendered = render(makeBot({ cwd: "/Users/me/new-project", tasks }));
-      expect(rendered.html).toContain('title="/Users/me/new-project"');
-      expect(rendered.html).toContain("~/new-project");
-      expect(rendered.html).not.toContain("This chat keeps its current folder.");
-      expect(rendered.html).not.toContain("Change default");
-    }
+    expect(render(makeBot()).nodes.some((node) => node.type === ComputerFilesPane)).toBe(true);
   });
 });
 

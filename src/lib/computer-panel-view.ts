@@ -1,11 +1,11 @@
-// "files" is a Simple-mode tab; Advanced mode reads it back as "computer".
+// "files" is available in Simple and Advanced modes.
 export type ComputerPanelView = "computer" | "android" | "browser" | "routines" | "files" | "data" | "audit";
 
 type PanelTabsContext = { advanced: boolean; androidConnected: boolean };
 
 export function computerPanelTabs({ advanced, androidConnected }: PanelTabsContext): ComputerPanelView[] {
   return advanced
-    ? ["computer", "routines", ...(androidConnected ? (["android"] as const) : []), "browser", "data", "audit"]
+    ? ["computer", "routines", ...(androidConnected ? (["android"] as const) : []), "browser", "data", "files", "audit"]
     : ["computer", "browser", "data", "files", "audit"];
 }
 
