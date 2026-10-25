@@ -32,15 +32,15 @@ import { basename, join } from "node:path";
 
 import { DATA_DIR, stripWorkspaceCredentialEnv } from "../config.ts";
 import { augmentedPath } from "../env-path.ts";
-import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
+import { execCli, killCliTree, spawnCli } from "../procs.ts";
 import { isHarnessOwnedMcpEnvName } from "../mcp-registry.ts";
-import { appendNative } from "./native.ts";
 import { classifyError } from "./retry.ts";
 import { commandSummary, toolDetailPreview } from "../tool-summary.ts";
 import { gateServer } from "../mcp-gate-config.ts";
 import { canUseMcpServer } from "../../shared/tool-scope.ts";
 import { assertToolScopeSupported } from "../../shared/tool-scope-support.ts";
 import { announcesAction, CONTINUATION_NUDGE } from "./announced-action.ts";
+import { openStdioTransport, ZCODE_DEFAULT_REQUEST_TIMEOUT_MS, type ZcodeTransport } from "./zcode-transport.ts";
 import {
   isTransientZcodeFailure,
   zcodeFailureReason,
@@ -767,13 +767,7 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
         kind: "image", filename: basename(image.path), mimeType: image.mime, localPath: image.path,
       })) : undefined;
 
-      const child = spawnCli(config.cli, ["app-server"], {
-        cwd,
-        env,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-
-      let abandoned = false;
+      let transport: ZcodeTransport;
       let sessionId: string | null = null;
       const state = {
         settled: false,
@@ -788,44 +782,17 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
         startedTools: new Set<string>(),
       };
       const asks = new Map<string, (behavior: "allow" | "deny" | "answer", message?: string, source?: "user" | "timeout" | "system") => void>();
-      let nextId = 1;
-      const rpcPending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
-
-      const send = (obj: unknown) => {
-        try {
-          child.stdin.write(JSON.stringify(obj) + "\n");
-        } catch {}
-        appendNative(threadId, { dir: "out", source: "zcode.app-server", msg: obj });
-      };
-      const request = (method: string, params: unknown, timeoutMs = 60_000) =>
-        new Promise<any>((resolve, reject) => {
-          const id = nextId++;
-          const timer = setTimeout(() => {
-            if (rpcPending.delete(id)) reject(new Error(`zcode ${method} timed out after ${timeoutMs}ms`));
-          }, timeoutMs);
-          if (typeof timer.unref === "function") timer.unref();
-          rpcPending.set(id, {
-            resolve: (v) => {
-              clearTimeout(timer);
-              resolve(v);
-            },
-            reject: (e) => {
-              clearTimeout(timer);
-              reject(e);
-            },
-          });
-          send({ id, method, params });
-        });
+      const request = (method: string, params: unknown, timeoutMs = ZCODE_DEFAULT_REQUEST_TIMEOUT_MS) =>
+        transport.request(method, params, timeoutMs);
 
       const settle = async (ok: boolean, stopReason: string | null) => {
         if (state.settled) return;
         state.settled = true;
+        transport.mute();
         if (state.resumeTimer) clearTimeout(state.resumeTimer);
         state.resumeTimer = null;
         for (const finish of Array.from(asks.values())) finish("deny", "Legion: the turn ended", "system");
-        for (const p of rpcPending.values()) p.reject(new Error("turn settled"));
-        rpcPending.clear();
-        const stopped = await killCliTree(child);
+        const stopped = await transport.close();
         if (active.get(threadId)?.turnId !== turnId) return;
         active.delete(threadId);
         if (!stopped) emit({ ...base(threadId, turnId), type: "runtime.error", message: "zcode did not shut down after termination was requested" });
@@ -846,14 +813,14 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
           await settle(true, "interrupted");
           return true;
         }
-        if (!state.settled && sessionId && child.exitCode === null && child.signalCode === null) {
+        if (!state.settled && sessionId && transport.alive()) {
           try {
             await request("session/stop", { sessionId }, 3_000);
           } catch {
             // Old CLI without the method, or a wedged server: kill below.
           }
         }
-        return killCliTree(child);
+        return transport.terminate();
       };
 
       // server→client requests. `interaction/requestPermission` is the
@@ -866,7 +833,7 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
         if (method === "interaction/requestPermission") {
           const allowResponse = approvalMode === "full" ? zcodeAllowOption(params) : null;
           if (allowResponse) {
-            send({ id: msg.id, result: allowResponse });
+            transport.respond(msg.id, allowResponse);
             return;
           }
           const requestId = newId();
@@ -881,9 +848,9 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
             // the plain decision, which the schema accepts.
             const options = Array.isArray(params.options) ? params.options as Array<{ response?: { decision?: unknown } }> : [];
             const matching = options.find((o) => o && typeof o === "object" && o.response?.decision === (behavior === "allow" ? "allow" : "deny"));
-            send({ id: msg.id, result: matching?.response && typeof matching.response === "object"
+            transport.respond(msg.id, matching?.response && typeof matching.response === "object"
               ? matching.response as Record<string, unknown>
-              : { decision: behavior === "allow" ? "allow" : "deny", ...(message ? { reason: message } : {}) } });
+              : { decision: behavior === "allow" ? "allow" : "deny", ...(message ? { reason: message } : {}) });
             emit({ ...base(threadId, turnId), type: "request.resolved", requestId, behavior, source });
           };
           asks.set(requestId, finish);
@@ -910,9 +877,9 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
             if (!asks.delete(requestId)) return;
             clearTimeout(timer);
             if (behavior === "answer" && source === "user" && typeof message === "string" && message.trim()) {
-              send({ id: msg.id, result: { action: "accept", content: { value: message } } });
+              transport.respond(msg.id, { action: "accept", content: { value: message } });
             } else {
-              send({ id: msg.id, result: { action: behavior === "allow" ? "accept" : "cancel" } });
+              transport.respond(msg.id, { action: behavior === "allow" ? "accept" : "cancel" });
             }
             emit({ ...base(threadId, turnId), type: "request.resolved", requestId, behavior: behavior === "answer" ? "answer" : behavior, source });
           };
@@ -928,7 +895,7 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
           });
           return;
         }
-        send({ id: msg.id, error: { code: -32601, message: `Unsupported server request: ${method}` } });
+        transport.respondError(msg.id, -32601, `Unsupported server request: ${method}`);
       };
 
       // A turn zcode gave up on after its own stream recoveries leaves its
@@ -944,9 +911,9 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
         });
         state.resumeTimer = setTimeout(() => {
           state.resumeTimer = null;
-          if (state.settled || state.stopRequested || abandoned) return;
+          if (state.settled || state.stopRequested) return;
           request("session/send", { sessionId, content: ZCODE_RESUME_PROMPT }).catch((error) => {
-            if (state.settled || state.stopRequested || abandoned) return;
+            if (state.settled || state.stopRequested) return;
             emit({ ...base(threadId, turnId), type: "runtime.error", message: `zcode could not resume after a network failure: ${String(error)}` });
             void settle(false, "resume_failed");
           });
@@ -1044,13 +1011,13 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
                   : {}),
               };
             }
-            if (payload.resultType === "success" && !state.settled && !state.stopRequested && !abandoned &&
+            if (payload.resultType === "success" && !state.settled && !state.stopRequested &&
                 !state.nudged && sessionId && announcesAction(response)) {
               state.nudged = true;
               // Keep the same native session, mode, model, and MCP grants.
               // Only the continuation's completion closes the harness turn.
               void request("session/send", { sessionId, content: CONTINUATION_NUDGE }).catch((error) => {
-                if (state.settled || abandoned || state.stopRequested) return;
+                if (state.settled || state.stopRequested) return;
                 emit({ ...base(threadId, turnId), type: "runtime.error", message: `zcode continuation failed: ${String(error)}` });
                 void settle(false, "continuation_failed");
               });
@@ -1061,7 +1028,7 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
           }
           case "turn.failed": {
             const error = payload.error && typeof payload.error === "object" ? payload.error as Record<string, unknown> : null;
-            if (sessionId && !state.stopRequested && !abandoned && state.resumes < ZCODE_MAX_TURN_RESUMES && isTransientZcodeFailure(error)) {
+            if (sessionId && !state.stopRequested && state.resumes < ZCODE_MAX_TURN_RESUMES && isTransientZcodeFailure(error)) {
               beginResume(zcodeFailureReason(error) ?? "provider error");
               break;
             }
@@ -1073,56 +1040,14 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
         }
       };
 
-      let buf = "";
-      child.stdout.setEncoding("utf8");
-      child.stdout.on("data", (chunk) => {
-        if (abandoned || state.settled) return;
-        buf += chunk;
-        let nl;
-        while (!state.settled && (nl = buf.indexOf("\n")) !== -1) {
-          const line = buf.slice(0, nl);
-          buf = buf.slice(nl + 1);
-          if (!line.trim()) continue;
-          let msg: any;
-          try {
-            msg = JSON.parse(line);
-          } catch {
-            continue;
-          }
-          appendNative(threadId, { dir: "in", source: "zcode.app-server", msg });
-          if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
-            const pend = rpcPending.get(msg.id);
-            if (pend) {
-              rpcPending.delete(msg.id);
-              if (msg.error) pend.reject(new Error(String(msg.error.message ?? "zcode rpc error")));
-              else pend.resolve(msg.result);
-            }
-          } else if (msg.id !== undefined && msg.method) {
-            handleServerRequest(msg);
-          } else if (msg.method === "session/event") {
-            handleEvent(msg.params);
-          }
-        }
-      });
-
-      let stderr = "";
-      child.stderr.on("data", (c) => {
-        stderr += c;
-        if (stderr.length > 8192) stderr = stderr.slice(-8192);
-      });
-      child.on("error", (e) => {
-        if (abandoned) return;
-        emit({ ...base(threadId, turnId), type: "runtime.error", ...describeSpawnFailure(e, config.cli) });
-        void settle(false, "spawn_error");
-      });
-      child.on("close", (code, signal) => {
-        if (abandoned || state.settled) return;
-        emit({
-          ...base(threadId, turnId),
-          type: "runtime.error",
-          message: `zcode exited ${code}${signal ? ` (signal ${signal})` : ""} before turn.completed${stderr.trim() ? `: ${stderr.trim().slice(-300)}` : ""}`,
-        });
-        void settle(false, "exit_before_result");
+      transport = openStdioTransport({ cli: config.cli, cwd, env, threadId }, {
+        serverRequest: (msg) => { if (!state.settled) handleServerRequest(msg); },
+        event: (params) => { if (!state.settled) handleEvent(params); },
+        failed: ({ message, stopReason, setup }) => {
+          if (state.settled) return;
+          emit({ ...base(threadId, turnId), type: "runtime.error", message, ...(setup !== undefined ? { setup } : {}) });
+          void settle(false, stopReason);
+        },
       });
 
       active.set(threadId, { stop, turnId, asks });
@@ -1158,7 +1083,7 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
         emit({ ...base(threadId, turnId), type: "session.started", sessionId, model: null });
         await request("session/send", { sessionId, content: promptText, attachments });
       } catch (e) {
-        if (!state.settled && !abandoned) {
+        if (!state.settled) {
           const message = e instanceof Error ? e.message : String(e);
           const needsAuth = /(?:\b401\b|unauthorized|not signed in|login required|authentication)/i.test(message);
           emit({ ...base(threadId, turnId), type: "runtime.error", message, ...(needsAuth ? { setup: true } : {}) });
