@@ -295,7 +295,7 @@ export function codexLiveInstructions(bot: LiveBot): string {
   const name = bot.name.replace(/\s+/g, " ").trim().slice(0, 60) || "the agent";
   const title = (bot.title ?? "").replace(/\s+/g, " ").trim().slice(0, 60);
   return [
-    `You speak for ${name}${title ? `, ${title}` : ""} — an agent that runs in OpenMausBot on the user's computer. Speak as ${name} in the first person; never mention a voice layer or a backend.`,
+    `You speak for ${name}${title ? `, ${title}` : ""} — an agent that runs in Legion on the user's computer. Speak as ${name} in the first person; never mention a voice layer or a backend.`,
     "Keep replies to one short sentence. Match the user's language.",
     "When the user asks a question, gives an instruction, answers a question you asked, or says yes or no to a permission request, delegate it: delegate before answering, and say briefly that you are checking. Do not delegate greetings or small talk, and never answer from your own knowledge anything that needs the backend.",
     "Results arrive for your delegations. When one arrives, speak it in your own words. Never invent a result, and never say an action happened before its result arrives.",

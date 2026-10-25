@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { Check, CheckCircle2, Circle, Copy, Loader2, XCircle } from "lucide-react";
 import { cn } from "@/lib/cn";
-import { copyText } from "@/lib/clipboard";
 import { t } from "@/lib/i18n";
+import { copyText } from "@/lib/copy-text";
 import { runLogText, type TimelineEvent } from "@/lib/taskTimeline";
 import { formatTime } from "@/state/store";
 import { ArtifactsList } from "./ArtifactsList";
@@ -16,10 +16,10 @@ const STATUS = {
 
 export function RunLog({ events, threadId }: { events: TimelineEvent[]; threadId?: string }) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
-  // The full conversation remains in chat. Keep the debugging view bounded.
   const recent = events.slice(-200);
   const copy = async () => {
-    setCopyState((await copyText(runLogText(recent))) ? "copied" : "failed");
+    const result = await copyText(runLogText(recent));
+    if (result !== "empty") setCopyState(result);
   };
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">

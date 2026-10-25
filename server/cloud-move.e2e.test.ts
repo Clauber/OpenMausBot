@@ -158,7 +158,7 @@ async function api(fixture: Fixture, method: string, path: string, options: { bo
 
 /** The Admin's signed request: one single-use pairing window on the Cloud. */
 async function cloudGrant(): Promise<{ origin: string; code: string; expiresAt: number }> {
-  const body = JSON.stringify({ label: "OpenMausBot app (Cloud)", ttlSeconds: 300 });
+  const body = JSON.stringify({ label: "Legion app (Cloud)", ttlSeconds: 300 });
   const timestamp = String(Math.floor(Date.now() / 1000)), nonce = randomBytes(16).toString("base64url");
   const response = await fetch(`${cloud.base}/api/cloud/pairing`, { method: "POST", body, headers: {
     ...forwarded, "content-type": "application/json", "x-omb-cloud-timestamp": timestamp, "x-omb-cloud-nonce": nonce,
@@ -242,7 +242,7 @@ beforeAll(async () => {
   const owner = await api(server, "POST", "/api/auth/pairing", { body: { scopes: ["admin", "client"], label: "Owner code" } });
   expect(owner.status, JSON.stringify(owner.body)).toBe(200);
   const pairPage = await viaEdge(`${server.base}/api/auth/pair`, { method: "POST", headers: { ...edge(server), "content-type": "application/json", origin: SERVER_ORIGIN },
-    body: JSON.stringify({ code: owner.body.code, cookie: true, label: "OpenMausBot desktop" }) });
+    body: JSON.stringify({ code: owner.body.code, cookie: true, label: "Legion desktop" }) });
   expect(pairPage.status).toBe(200);
   serverCookie = (pairPage.headers.get("set-cookie") ?? "").split(";")[0]!;
   expect(serverCookie).toMatch(/^omb_session_\d+_\w+=omb_sess_/);

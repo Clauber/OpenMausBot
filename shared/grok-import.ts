@@ -1,3 +1,9 @@
+// Bringing a shared Grok Bot into Legion. A public x.ai/bot/<id> page
+// shows only the name, creator and description, so the full setup comes from
+// the person's own Grok Bot: they paste GROK_EXPORT_PROMPT into it and paste
+// the JSON it writes back here. Both turn into an ordinary openmaus.package v2,
+// so the usual preview and import rules apply (skills off, routines paused, no
+// model, no keys). Pure text: the renderer and the server both read it.
 import {
   AGENT_MAX_SKILLS, PACKAGE_FORMAT, PACKAGE_VERSION, SEED_FILE_MAX_BYTES,
   parsePackageDocument, redactPackageSecrets, utf8Bytes, type PackageDocument, type PackageRoutineSchedule,
@@ -97,7 +103,7 @@ export const grokMarketplaceUrl = (slug: string) => `https://x.ai/bot/marketplac
 /** A Grok Bot share link, its grokbot:// button link, or a marketplace page. */
 export const isGrokLink = (text: string) => Boolean(grokShareIdFrom(text) ?? grokMarketplaceSlugFrom(text));
 
-export const GROK_EXPORT_PROMPT = `Please export your setup so I can run you in OpenMausBot.
+export const GROK_EXPORT_PROMPT = `Please export your setup so I can run you in Legion.
 
 Reply with ONE JSON code block and nothing else, in exactly this shape:
 
@@ -130,6 +136,7 @@ const str = (value: unknown): string =>
   typeof value === "string" ? value.trim() : typeof value === "number" && Number.isFinite(value) ? String(value) : "";
 const first = (...values: unknown[]) => values.map(str).find(Boolean) ?? "";
 const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+/** One line of plain text: control and separator characters become spaces (a scan, as in bot-profile.ts). */
 function oneLine(value: string): string {
   let out = "";
   for (const ch of value) {
@@ -151,6 +158,7 @@ function replyObject(text: string): unknown {
       const value: unknown = JSON.parse(candidate.trim());
       if (isRecord(value)) return value;
     } catch {
+      // try the next candidate
     }
   }
   throw new GrokImportError("That is not the JSON reply from Grok Bot. Copy the whole code block it wrote and paste it here.");
@@ -217,6 +225,7 @@ export function parseGrokExport(input: unknown): GrokExport {
   };
 }
 
+/** The mascot palette (src/lib/mascot.ts MAUS_COLORS). */
 const PALETTE = {
   green: "#009957", blue: "#377FE6", red: "#D94B52", orange: "#E78531", purple: "#8057C8",
   cyan: "#0EA5C6", pink: "#D84F8B", yellow: "#D8A729", teal: "#01A492", coral: "#E5634E",
@@ -325,6 +334,7 @@ function routineSchedule(routine: GrokExport["routines"][number], timeZone: stri
     try {
       return { schedule: normalizeCronSchedule({ type: "cron", expression, timeZone: zone }) };
     } catch {
+      // the next zone, then the plain words
     }
   }
   const daily = simpleDaily(routine.schedule);
@@ -435,7 +445,7 @@ export function grokExportToPackage(
       category: "Imported",
       author: { name: clip(x.creator || "Grok Bot creator", 100), ...(sourceUrl ? { url: sourceUrl } : {}) },
       license: "See source",
-      outcomes: [clip(`${name} runs in OpenMausBot with your own engine and apps.`, 240)],
+      outcomes: [clip(`${name} runs in Legion with your own engine and apps.`, 240)],
       setupMinutes: 5,
       requirements: { apps, capabilities: [] },
       team: { name: clip(name, 60) },

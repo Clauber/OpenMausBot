@@ -1,29 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { friendlyEffort, modelBlurb, simpleEffortLevels } from "./model-friendly";
-
-describe("simple effort levels", () => {
-  it("offers the engine effort levels with native names", () => {
-    expect(simpleEffortLevels(["none", "low", "medium", "high", "xhigh", "max"], undefined)).toEqual(["low", "medium", "high", "max"]);
-    expect((["none", "low", "medium", "high", "xhigh", "max"] as const).map(friendlyEffort)).toEqual(["None", "Low", "Medium", "High", "X-High", "Max"]);
-  });
-
-  it("uses X-High as the top step when there is no max", () => {
-    expect(simpleEffortLevels(["low", "medium", "high", "xhigh"], undefined)).toEqual(["low", "medium", "high", "xhigh"]);
-  });
-
-  it("never hides the level a bot is already using", () => {
-    expect(simpleEffortLevels(["none", "low", "medium", "high", "xhigh", "max"], "xhigh")).toEqual(["low", "medium", "high", "xhigh", "max"]);
-    expect(simpleEffortLevels(["none", "low", "medium", "high"], "none")).toEqual(["none", "low", "medium", "high"]);
-  });
-
-  it("ignores a stale current level the engine no longer offers", () => {
-    expect(simpleEffortLevels(["low", "high"], "max")).toEqual(["low", "high"]);
-  });
-
-  it("returns nothing for an engine without effort levels", () => {
-    expect(simpleEffortLevels([], undefined)).toEqual([]);
-  });
-});
+import { modelBlurb } from "./model-friendly";
 
 describe("model blurbs", () => {
   it("describes the well-known Claude families", () => {

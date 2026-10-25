@@ -1,9 +1,9 @@
 # Browser preview polling
 
-`startScreenPoller` in `server/index.ts` owns per-turn screen pollers (6 s tick, plus tool-event pokes). `createScreenFrameSource` (`server/screen-frame-source.ts`) calls its `watching(surface)` callback before every non-fresh capture, after any in-flight capture finishes. `capture(true)` (final conversation screenshot, `finalScreenFrame`) bypasses it.
+`startScreenPoller` in `server/index.ts` owns per-turn screen pollers. `createScreenFrameSource` calls its `watching(surface)` callback before every non-fresh capture, after any in-flight capture finishes. `capture(true)` for the final conversation screenshot bypasses it.
 
-Legion has one viewer registry: `BrowserLive.watching(session)` in `server/browser-live.ts` (the stealth engine attaches through agent-browser, same viewers). The poller gates the browser surface only; computer previews are unchanged.
+After the upstream sync, the host exposes a `LiveRouter`. Its `watching(session)` checks `BrowserLive` for the agent-browser and stealth engine, plus Chrome `LiveV1` and `StreamV2` viewers. Each registry checks current authorization. The poller gates browser captures only; computer previews are unchanged.
 
-A browser capture succeeds only after the turn claimed `browser:<session>` (a real browser tool call) and the turn is `touched` by a screen tool event. Legion's fake CLI does not execute MCP tools; `scripts/verify-browser-preview-watchers.ts` spawns the turn's browser MCP server from the fixture dump to do it.
+A browser capture succeeds only after the turn claimed `browser:<session>` through a browser tool call and a screen tool event touched the turn. The fake CLI does not execute MCP tools; `scripts/verify-browser-preview-watchers.ts` spawns the turn's browser MCP server from the fixture dump.
 
-Checks: `pnpm exec vitest run server/screen-frame-source.test.ts server/browser-live.test.ts`; native proof in docs/verification/browser-live.md "Unwatched turn previews". Node >= 24.
+Focused checks: `pnpm exec vitest run server/screen-frame-source.test.ts server/browser-live.test.ts server/browser/engines.test.ts`. The native fixture recipe is in docs/verification/browser-live.md under Unwatched turn previews. Node >= 24.

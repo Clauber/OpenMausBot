@@ -5,14 +5,17 @@ import { t } from "@/lib/i18n";
 import type { GrokSetupNotes } from "@/lib/team-import";
 import { useStore, type Action, type Bot } from "@/state/store";
 
+/** Something is left to do: apps to connect, Grok-only tools, or what the export could not carry. */
 export const grokSetupLeft = (notes: GrokSetupNotes | undefined): notes is GrokSetupNotes =>
   Boolean(notes && (notes.apps.length || notes.unmatched.length || notes.leftOut.length));
 
+/** Who finishes the setup: the Chief of Staff, or the imported bot itself when there is none. */
 export function setupHelper(bots: readonly Bot[], imported: Bot): { bot: Bot; chief: boolean } {
   const chief = bots.find((bot) => bot.chiefOfStaff && !bot.hidden);
   return chief ? { bot: chief, chief: true } : { bot: imported, chief: false };
 }
 
+/** The first message for the helper, prepared in its composer and never sent for the person. */
 export function grokSetupMessage(botName: string, notes: GrokSetupNotes): string {
   const routines = notes.leftOut.filter((item) => item.kind === "routine");
   const other = notes.leftOut.filter((item) => item.kind !== "routine");
@@ -30,13 +33,17 @@ export function grokSetupMessage(botName: string, notes: GrokSetupNotes): string
   ].filter(Boolean).join("\n\n");
 }
 
+/** Opens the helper's chat with the message in its composer, ahead of anything already typed there. Never sends it. */
 export function openSetupChat(helper: Bot, imported: Bot, notes: GrokSetupNotes, dispatch: (action: Action) => void): void {
   prependComposerDraft(`bot:${helper.id}:${helper.threadId}`, grokSetupMessage(imported.name, notes));
   dispatch({ type: "showChat" });
   dispatch({ type: "select", id: helper.id });
 }
 
-export function GrokFinishSetup({ notes, imported, onDone }: { notes: GrokSetupNotes; imported: Bot; onDone: () => void }) {
+/** After Add: what is left, and one button that opens the helper's chat with the message ready to send. */
+export function GrokFinishSetup({ notes, imported, onDone, className = "min-h-0 flex-1 overflow-y-auto px-6 pb-6 pt-6 sm:px-8" }: {
+  notes: GrokSetupNotes; imported: Bot; onDone: () => void; className?: string;
+}) {
   const { state, dispatch } = useStore();
   const helper = setupHelper(state.bots, imported);
   const routines = notes.leftOut.filter((item) => item.kind === "routine").length;
@@ -45,7 +52,7 @@ export function GrokFinishSetup({ notes, imported, onDone }: { notes: GrokSetupN
     onDone();
   };
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6 pt-6 sm:px-8">
+    <div className={className}>
       <div className="flex items-center gap-2 text-[15px] font-medium text-ink">
         <Check size={17} className="text-success" />
         {t("grokFinish.added", { name: imported.name })}

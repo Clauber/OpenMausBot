@@ -26,6 +26,10 @@ export interface ModelPrice {
 }
 
 /** The bar's tone follows the state: quiet, warning at the threshold, danger at the cap. */
+export function entitledTo(config: ConfigStatus | null | undefined, feature: string): boolean {
+  return config?.edition?.features?.includes(feature) === true;
+}
+
 export function budgetTone(state: BudgetState | null): "quiet" | "warning" | "danger" {
   if (!state) return "quiet";
   return state.exceeded ? "danger" : state.warn ? "warning" : "quiet";
@@ -192,7 +196,6 @@ export function PricesCard() {
   );
 }
 
-/** Both cards. */
 export function UsageBudgetCards({ budget }: { budget: BudgetState | null }) {
   return (
     <>

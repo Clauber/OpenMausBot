@@ -38,7 +38,7 @@ test("local entry opens Settings without enrollment or persistence", async () =>
 });
 
 test("consuming a launch action prevents it replaying on a later restart without changing other arguments", () => {
-  const original = ["/Applications/OpenMausBot", "--profile=fixture", "openmausbot://organization?ignored", "openmausbot://install/example"];
+  const original = ["/Applications/Legion", "--profile=fixture", "openmausbot://organization?ignored", "openmausbot://install/example"];
   const argv = [...original, "openmausbot://organization", "openmausbot://organization"];
   assert.equal(takeOrganizationDeepLink(argv), true);
   assert.deepEqual(argv, original);
@@ -50,7 +50,7 @@ test("desktop relaunch accepts every platform once, guards its sender, and prese
   const main = readFileSync(new URL("./main.mjs", import.meta.url), "utf8");
   const source = main.slice(main.indexOf('ipcMain.handle("desktop:relaunch"'), main.indexOf('ipcMain.handle("speech:start"'))
     + main.slice(main.indexOf("function requireMainWindowSender("), main.indexOf('ipcMain.handle("desktop-remote:state"'));
-  const argv = ["/fixture/OpenMausBot", "--fixture", "openmausbot://organization", "openmausbot://organization?ignored"];
+  const argv = ["/fixture/Legion", "--fixture", "openmausbot://organization", "openmausbot://organization?ignored"];
   takeOrganizationDeepLink(argv);
   const origin = "http://127.0.0.1:48995";
   localOrigin.setLocalOrigin(origin);
@@ -95,7 +95,7 @@ test("the shipped updater adapter explicitly omits only the fixed action and its
   const bundle = readFileSync(new URL("./vendor/electron-updater.cjs", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   assert.ok(bundle.includes(patched));
   const calls = [];
-  const argv = ["/fixture/OpenMausBot", "--fixture", "openmausbot://organization", "openmausbot://organization?ignored"];
+  const argv = ["/fixture/Legion", "--fixture", "openmausbot://organization", "openmausbot://organization?ignored"];
   runInNewContext(`({ app, ${patched} }).relaunch();`, {
     process: { argv }, app: { relaunch: options => calls.push(options.args) },
   });
@@ -214,8 +214,9 @@ test("native entry checks owned server readiness before creating, sending to, or
 test("startup delivers a pending organisation action before default navigation and falls back after cancellation", () => {
   const main = readFileSync(new URL("./main.mjs", import.meta.url), "utf8");
   const startup = main.slice(main.indexOf("  let restoredOrganizationEntry = false;"), main.indexOf("  // Reconcile incomplete setup"));
-  assert.ok(startup.indexOf("await deliverOrganizationEntry()") < startup.indexOf("createWindow()"));
-  assert.match(startup, /if \(!restoredOrganizationEntry && !deliveredOrganizationEntry && !deliveredCloudEntry && \(!mainWindow \|\| mainWindow.isDestroyed\(\)\)\) createWindow\(\)/);
+  assert.ok(startup.indexOf("await deliverOrganizationEntry()") < startup.indexOf("await showHome()"));
+  // A launch from the login item lending added opens no window: lending runs out of sight until the person opens it.
+  assert.match(startup, /if \(!hiddenStart && !restoredOrganizationEntry && !deliveredOrganizationEntry && !deliveredCloudEntry\) await showHome\(\);/);
 });
 
 test("concurrent links share one confirmation and stale confirmations cannot change a new selection", async () => {

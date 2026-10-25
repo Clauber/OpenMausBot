@@ -1,6 +1,6 @@
 // Slack bindings, kept in <data dir>/messaging/slack.json (mode 0600: it holds
 // an app-level token and a bot token per binding). One binding ties one
-// OpenMausBot bot to one Slack app; the DM conversations that may talk to it
+// Legion bot to one Slack app; the DM conversations that may talk to it
 // (and the task each one lands in) hang off the binding. Loaded once, saved
 // atomically on every change. Pairing machinery is shared (see pairing.ts).
 import { randomBytes } from "node:crypto";

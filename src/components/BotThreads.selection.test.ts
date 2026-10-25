@@ -121,7 +121,7 @@ describe("bulk archive bar", () => {
     expect(bulkButton().textContent).toBe("Archive 2 threads");
     flushSync(() => bulkButton().click());
     expect(dialog()).not.toBeNull();
-    expect(dialog()!.textContent).toContain(t("task.bulk.confirmTitle", { count: 2 }));
+    expect(dialog()!.textContent).toContain(t("task.bulk.archiveConfirmTitle", { count: 2 }));
     expect(document.activeElement?.textContent).toBe("Cancel");
     expect(dispatch).not.toHaveBeenCalled();
     vi.spyOn(Date, "now").mockReturnValue(4321);

@@ -1,4 +1,4 @@
-// Telegram inbound/outbound for a bound OpenMausBot bot: validates the webhook
+// Telegram inbound/outbound for a bound Legion bot: validates the webhook
 // secret, pairs unknown chats by code, hands each message to the host's
 // guarded-send path (so approval semantics are unchanged), keeps "typing" up
 // while the turn runs, and sends the bot's reply back, split to Telegram's
@@ -326,7 +326,7 @@ export class TelegramService {
         return;
       }
       if (state.phase === "waiting") {
-        if (!notifiedWaiting) { notifiedWaiting = true; await plain("The bot needs your approval in OpenMausBot to continue."); }
+        if (!notifiedWaiting) { notifiedWaiting = true; await plain("The bot needs your approval in Legion to continue."); }
       } else typing();
     }
     if (!this.stopped) await plain("The bot is still working. Check the app for the result.");

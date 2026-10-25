@@ -106,7 +106,7 @@ function PageEditor({ initial, pages, refresh, draftKey }: { initial: Page; page
       <label>Parent <select aria-label="Parent page" className="rounded border border-hairline bg-card p-1" value={page.parentId ?? ""} disabled={busy || dirty || conflict} onChange={(event) => void move(event.target.value || null)}>
         <option value="">Top level</option>{pages.filter((p) => p.id !== page.id).map((p) => <option key={p.id} value={p.id}>{p.title}</option>)}
       </select></label>
-      {page.sourceThreadId && (sourceOwner ? <button className="underline" onClick={() => openThread(dispatch, { botId: sourceOwner.id, threadId: page.sourceThreadId! }, state)}>Open source conversation</button> : <span>Source conversation: <code>{page.sourceThreadId}</code></span>)}
+      {page.sourceThreadId && (sourceOwner ? <button className="underline" onClick={() => openThread(dispatch, { botId: sourceOwner.id, threadId: page.sourceThreadId! }, state, true)}>Open source conversation</button> : <span>Source conversation: <code>{page.sourceThreadId}</code></span>)}
       <label>Chat with <select aria-label="Page chat bot" className="rounded border border-hairline bg-card p-1" value={botId} onChange={(event) => setBotId(event.target.value)}>
         <option value="">Choose bot</option>{state.bots.filter((bot) => !bot.hidden).map((bot) => <option value={bot.id} key={bot.id}>{bot.name}</option>)}
       </select></label>

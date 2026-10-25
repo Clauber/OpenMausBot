@@ -1,8 +1,5 @@
-// White-label as config: a brand.json next to the data dir renames and recolours
-// the product for one deployment. The file is customer data (it never lives in
-// this repo); applying it is the `whitelabel` entitlement, so an unlicensed
-// server reads the file, reports what it found, and keeps the default brand.
-// Read on every request so an edit shows up on the next reload, no restart.
+// White-label: a brand.json next to the data dir, applied only with the `whitelabel` entitlement (an unlicensed server
+// reports what it found and keeps the default). Read on every request, so an edit shows on the next reload.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
@@ -56,8 +53,8 @@ export function brandFile(): string {
   return process.env.OMB_BRAND_FILE || join(DATA_DIR, "brand.json");
 }
 
-/** Resolve the brand for this server right now. Never throws. */
-export function loadBrand(options: { file?: string } = {}): BrandStatus {
+/** Never throws. */
+export function loadBrand(options: { file?: string; isEntitled?: (feature: string) => boolean } = {}): BrandStatus {
   const file = options.file ?? brandFile();
   const fallback = (notice?: string): BrandStatus =>
     notice ? { brand: DEFAULT_BRAND, source: "default", file, notice } : { brand: DEFAULT_BRAND, source: "default", file };
@@ -77,7 +74,6 @@ export function loadBrand(options: { file?: string } = {}): BrandStatus {
   return { brand: parsed.data, source: "file", file };
 }
 
-/** One line for the startup log. */
 export function describeBrand(status: BrandStatus): string {
   if (status.source === "file") return `brand: ${status.brand.name} (from ${status.file})`;
   return `brand: default${status.notice ? ` (${status.notice})` : ""}`;

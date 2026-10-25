@@ -23,14 +23,14 @@ function validRequest(contract: JobContract): { state: Record<string, unknown>; 
 }
 
 describe("job contracts", () => {
-  it("every option-selection job has a contract", () => {
-    expect(Object.keys(JOB_CONTRACTS).sort()).toEqual(DECIDER_JOBS.filter((job) => job !== "roomRouting" && job !== "autoReview" && job !== "routineGate").sort());
+  it("matches the jobs that use shared contracts", () => {
+    expect(Object.keys(JOB_CONTRACTS).sort()).toEqual(DECIDER_JOBS.filter((job) => job !== "roomRouting" && job !== "autoReview" && job !== "routineGate" && job !== "inboxTriage").sort());
     for (const [job, contract] of Object.entries(JOB_CONTRACTS)) expect(contract.job).toBe(job);
   });
 
-  it("keeps room routing and safety reviews on while optional tool-selection jobs start off", () => {
-    expect(DECIDER_JOBS.filter(jobDefaultOn)).toEqual(["roomRouting", "autoReview", "routineGate"]);
-    for (const job of ["autoReview", "routineGate"] as const) {
+  it("keeps room routing, safety reviews and inbox triage on while optional tool-selection jobs start off", () => {
+    expect(DECIDER_JOBS.filter(jobDefaultOn)).toEqual(["roomRouting", "autoReview", "routineGate", "inboxTriage"]);
+    for (const job of ["autoReview", "routineGate", "inboxTriage"] as const) {
       expect(deciderJobOn({}, job)).toBe(true);
       expect(deciderJobOn({ decider: { jobs: { [job]: false } } }, job)).toBe(false);
     }

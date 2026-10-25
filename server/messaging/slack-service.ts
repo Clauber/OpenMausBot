@@ -1,4 +1,4 @@
-// Slack inbound/outbound for a bound OpenMausBot bot: one Socket Mode
+// Slack inbound/outbound for a bound Legion bot: one Socket Mode
 // WebSocket per binding carries events in (no public URL needed), each
 // envelope is acknowledged at once, unknown DMs pair by code, and every
 // message reaches the host's guarded-send path (so approval semantics are
@@ -326,7 +326,7 @@ export class SlackService {
       }
       if (state.phase === "waiting" && !notifiedWaiting) {
         notifiedWaiting = true;
-        await client.postMessage(binding.botToken, channelId, "The bot needs your approval in OpenMausBot to continue.").catch(() => undefined);
+        await client.postMessage(binding.botToken, channelId, "The bot needs your approval in Legion to continue.").catch(() => undefined);
       }
     }
     if (!this.stopped) await client.postMessage(binding.botToken, channelId, "The bot is still working. Check the app for the result.").catch(() => undefined);

@@ -1,5 +1,5 @@
 // Telegram bindings, kept in <data dir>/messaging/telegram.json (mode 0600:
-// it holds bot tokens). One binding ties one OpenMausBot bot to one Telegram
+// it holds bot tokens). One binding ties one Legion bot to one Telegram
 // bot; the chats that may talk to it (and the task each one lands in) hang off
 // the binding. Loaded once, saved atomically on every change.
 import { randomBytes, randomInt, timingSafeEqual, createHash } from "node:crypto";

@@ -31,7 +31,7 @@ beforeAll(async () => {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("fixture did not bind");
-  vi.stubEnv("OMB_BOX_API", `http://127.0.0.1:${address.port}`);
+  vi.stubEnv("OMB_BOAT_API", `http://127.0.0.1:${address.port}`);
   vi.stubEnv("OMB_CLOUD_BOAT_TOKEN", undefined);
   tools = await import("./cloud-computer-tools.ts");
 });
@@ -52,7 +52,7 @@ function call(audit: ComputerAuditLog, epochs: ComputerEpochs, name: string, arg
     audit, epochs, botId, computerId: extra.computerId ?? `bot-${botId}`, ...(extra.check ? { check: extra.check } : {}),
     dispatch: ({ signal, gate, assertActive }) => tools.cloudComputerRpc(
       { method: "tools/call", params: { name, arguments: args } },
-      { cfg, boxId: "bx_23456789", signal,
+      { cfg, boxId: () => "bx_23456789", signal,
         gate: () => gate(async () => ({ held: extra.held ?? false })), assertActive: () => assertActive(() => {}) },
     ),
   });

@@ -9,8 +9,11 @@ import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { delimiter, dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { CONTROL_UNCONFIRMED } from "./control-client.ts";
 import { gatedLocalComputer } from "./local-computer.ts";
 import { SPAWNED_PROXIES } from "./proxy-paths.ts";
+import { wideSchema } from "./testing/oversized-tool-schema.ts";
+import { TOOL_SCHEMA_PROFILE_ENV } from "./tool-schema-profile.ts";
 
 // A disposable MCP child that never opens a computer or reads user data.
 const FAKE_DRIVER = `
@@ -34,14 +37,17 @@ describe("local computer proxy (isolated child and control endpoint)", () => {
   it.each(["node", "electron"])("%s: keeps discovery lease-free, refuses contention and outages, and drains the final gated frame", async (runtime) => {
     let held = true;
     let unavailable = false;
+    let delayMs = 0;
     let reads = 0;
     const auth: Array<string | undefined> = [];
-    const reason = "Another thread is using this computer. Pause this thread until it finishes.";
+    const reason = "Another thread is using this computer. This call was not performed.";
     const server = createServer((request, response) => {
       reads += 1;
       auth.push(request.headers.authorization);
-      response.writeHead(unavailable ? 503 : 200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ held, helpOpen: false, ...(held ? { blockedReason: reason } : {}) }));
+      setTimeout(() => {
+        response.writeHead(unavailable ? 503 : 200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ held, helpOpen: false, ...(held ? { blockedReason: reason } : {}) }));
+      }, delayMs);
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const original = {
@@ -56,10 +62,8 @@ describe("local computer proxy (isolated child and control endpoint)", () => {
     let child: ChildProcess | undefined;
     try {
       if (runtime === "electron") {
-        // Build the real descriptor INSIDE Electron: in a Node-only test
-        // process.execPath hides a missing ELECTRON_RUN_AS_NODE flag. Never
-        // load the user's app, daemon, or data, and fail before spawning a
-        // malformed descriptor (which would launch a GUI).
+        // Built inside Electron: in a Node-only process execPath hides a missing ELECTRON_RUN_AS_NODE. Never loads the user's app,
+        // daemon or data, and fails before spawning a malformed descriptor (which would launch a GUI).
         const electron = createRequire(import.meta.url)("electron") as string;
         const moduleUrl = new URL("./local-computer.ts", import.meta.url).href;
         const bootstrap = spawnSync(electron, ["--input-type=module", "-e", `
@@ -88,10 +92,10 @@ describe("local computer proxy (isolated child and control endpoint)", () => {
         replies.delete(message.id);
       });
       let nextId = 0;
-      const rpc = (method: string, params = {}, end = false): Promise<any> => {
+      const rpc = (method: string, params = {}, end = false, waitMs = 5_000): Promise<any> => {
         const id = ++nextId;
         return new Promise((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error(`no fixture response for ${id}`)), 5_000);
+          const timer = setTimeout(() => reject(new Error(`no fixture response for ${id}`)), waitMs);
           replies.set(id, (value) => { clearTimeout(timer); resolve(value); });
           const frame = JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n";
           if (end) child!.stdin!.end(frame);
@@ -104,12 +108,18 @@ describe("local computer proxy (isolated child and control endpoint)", () => {
       expect((await rpc("ping")).result).toEqual({});
       const refused = await rpc("tools/call", { name: "click" });
       expect(refused.result).toMatchObject({ isError: true, content: [{ type: "text", text: reason }] });
+      // The harness holds its check while the computer is busy; the bridge's real client must wait past 2 s.
+      delayMs = 2_600;
+      const slow = await rpc("tools/call", { name: "click" }, false, 8_000);
+      expect(slow.result).toMatchObject({ isError: true, content: [{ type: "text", text: reason }] });
+      delayMs = 0;
       held = false;
       const allowed = await rpc("tools/call", { name: "screenshot" });
       expect(allowed.result).toMatchObject({ calls: 1, marker: "preserved-driver-env", tokenPresent: false, argv: ["two words; not a shell"] });
       expect(allowed.result.path.split(delimiter)).toContain(dirname(process.execPath));
       unavailable = true;
-      expect((await rpc("tools/call", { name: "click" })).result.isError).toBe(true);
+      const outage = await rpc("tools/call", { name: "click" });
+      expect(outage.result).toMatchObject({ isError: true, content: [{ type: "text", text: CONTROL_UNCONFIRMED }] });
       unavailable = false;
       const exited = once(child, "exit");
       const final = await rpc("tools/call", { name: "screenshot", large: true }, true);
@@ -126,8 +136,7 @@ describe("local computer proxy (isolated child and control endpoint)", () => {
   });
 
   it("hands every engine a provider-safe tools/list, whatever root schema the driver ships", async () => {
-    // cua-driver 0.22.1's browser_prepare root: an anyOf of untyped branches
-    // that strict providers refuse, failing the whole turn.
+    // cua-driver 0.22.1's browser_prepare root: an anyOf of untyped branches that strict providers refuse.
     const driver = `
 const readline = require("node:readline");
 const inputSchema = {type:"object",required:[],additionalProperties:true,
@@ -163,12 +172,38 @@ readline.createInterface({input: process.stdin}).on("line", (line) => {
       });
       expect(click.inputSchema).toEqual({ type: "object", properties: {} });
 
-      // Anything that is not the answer to a tools/list reaches the agent as sent.
       const other = await rpc(2, "initialize");
       expect(other.result.echo.inputSchema.anyOf).toHaveLength(2);
     } finally {
       child.kill("SIGKILL");
     }
+  });
+
+  it("fits the driver's tools to the engine's provider profile when the turn carries one", async () => {
+    const wide = wideSchema(110);
+    const driver = `
+const readline = require("node:readline");
+readline.createInterface({input: process.stdin}).on("line", (line) => {
+  const message = JSON.parse(line);
+  process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:message.id,result:{tools:[{name:"configure",inputSchema:${JSON.stringify(wide)}}]}}) + "\\n");
+});
+`;
+    const connection = gatedLocalComputer(
+      { command: process.execPath, args: ["-e", driver], env: {}, platform: "darwin", scope: "local-computer" },
+      { url: "http://127.0.0.1:1/control", token: "schema-fixture-token" },
+    );
+    const listed = async (env: Record<string, string>) => {
+      const child = spawn(connection.command, connection.args, { env: { ...process.env, ...connection.env, ...env }, stdio: ["pipe", "pipe", "pipe"] });
+      try {
+        const lines = createInterface({ input: child.stdout! })[Symbol.asyncIterator]();
+        child.stdin!.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) + "\n");
+        return JSON.parse((await lines.next()).value as string).result.tools[0].inputSchema;
+      } finally {
+        child.kill("SIGKILL");
+      }
+    };
+    expect(JSON.stringify(await listed({ [TOOL_SCHEMA_PROFILE_ENV]: "moonshot" })).length).toBeLessThanOrEqual(12_000);
+    expect(await listed({})).toEqual(wide);
   });
 
   it("rejects malformed environment and missing authority without printing connection secrets", () => {

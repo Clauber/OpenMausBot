@@ -1,11 +1,12 @@
 // Optional "Sign in with Cursor" for a one-click Grok Bot import. Grok Bot templates live on Cursor's servers, and the
-// full recipe needs a signed-in Cursor account with Grok Bot access. The person signs in themselves in their own
+// full recipe needs a signed-in Cursor account (a free one is enough). The person signs in themselves in their own
 // browser, with the PKCE flow Cursor's CLI uses (cursor.com/loginDeepControl, then api2.cursor.sh/auth/poll); Maus never
 // reads another app's files or stored logins. The access token is kept in <data dir>/cursor-session.json (mode 0600),
 // is sent only to api2.cursor.sh, and is used only to read a template's import details.
 //
 // The request and response shapes follow pi-grokbot-import by Shixuuu (MIT, github.com/Shixuuu/pi-grokbot-import,
-// src/cursor-auth.mjs and src/fetch-template.mjs), reimplemented here.
+// src/cursor-auth.mjs and src/fetch-template.mjs), reimplemented here. Every failure becomes a CursorFallback: the
+// import box then keeps the card and the copy-paste export, with the fallback's one line saying why.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { isIP } from "node:net";
@@ -20,7 +21,7 @@ export const CURSOR_API = "https://api2.cursor.sh";
 export const CURSOR_LOGIN_PAGE = "https://cursor.com/loginDeepControl";
 export const CURSOR_SESSION_FILE = "cursor-session.json";
 /** Cursor shares a template's setup only with accounts that have Grok Bot. */
-export const GROK_BOT_PLAN_NOTE = "Importing everything needs an account with Grok Bot access. Use Copy export prompt in your Grok Bot instead, or Start from description.";
+export const GROK_BOT_PLAN_NOTE = "Importing everything needs a Cursor account with Grok Bot (Cursor Ultra, or a Premium team seat). Use Copy export prompt in your Grok Bot instead, or Start from description.";
 /** The public client id Cursor's own CLI uses for its browser sign-in and token refresh. */
 const CURSOR_CLI_CLIENT_ID = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB";
 export const IMPORT_DETAILS_PATH = "/aiserver.v1.GrokBotService/GetGrokBotTemplateImportDetails";
@@ -28,6 +29,7 @@ const SIGN_IN_WINDOW_MS = 10 * 60_000;
 const TIMEOUT_MS = 20_000;
 const MAX_ANSWER_BYTES = 4 * 1024 * 1024;
 
+/** A reason to fall back to the copy-paste export, in one short line. */
 export class CursorFallback extends Error {
   constructor(message: string) {
     super(message);
@@ -63,6 +65,7 @@ export function cursorLogin(): { verifier: string; challenge: string; uuid: stri
   return { verifier, challenge, uuid, url: `${CURSOR_LOGIN_PAGE}?${query}` };
 }
 
+/** Seconds since the epoch the JWT says it expires, or undefined. */
 function tokenExpiry(token: string): number | undefined {
   try {
     const payload: unknown = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8"));
@@ -317,4 +320,5 @@ export function createCursorSession(options: { dataDir: string; fetcher?: typeof
 }
 
 let shared: CursorSession | null = null;
+/** The app's one session, built from the data folder on first use. */
 export const defaultCursorSession = (): CursorSession => (shared ??= createCursorSession({ dataDir: DATA_DIR }));

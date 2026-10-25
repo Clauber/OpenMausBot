@@ -1,21 +1,20 @@
+import { t } from "@/lib/i18n";
+
 export type CallCapabilityHelp = {
   label: string;
   reason: string;
-  action?: "choose-local-workspace";
 };
 
-/** Only the Mac app listens on-device. Live calls need no on-device
- * listening, so where they are offered (a browser, a Windows or Linux app)
- * their button is the way on. */
-const TURNS_NEED_MAC: CallCapabilityHelp = {
-  label: "Calls where you take turns need the Mac app",
-  reason: "They listen with on-device speech recognition, which only the Mac app has.",
-};
+const turnsNeedMac = (): CallCapabilityHelp => ({
+  label: t("call.capability.turnsNeedMac"),
+  reason: t("call.capability.turnsNeedMacReason"),
+});
 
-/** Explain why this renderer cannot start a call. Keep the remote-workspace
- * case distinct: the installed Mac app is already present, but this page is
- * intentionally denied access to the Mac microphone. Only a Mac is offered
- * the trip to This computer: anywhere else it cannot take turns either. */
+const turnsOnThisComputer = (): CallCapabilityHelp => ({
+  label: t("call.capability.turnsOnThisComputer"),
+  reason: t("call.capability.turnsOnThisComputerReason"),
+});
+
 export function callCapabilityHelp(
   capabilities: DesktopCapabilities,
   speechServiceAvailable: boolean,
@@ -23,27 +22,21 @@ export function callCapabilityHelp(
   if (!capabilities.dictation.available) {
     switch (capabilities.dictation.reasonCode) {
       case "remote-server":
-        if (capabilities.host.platform !== "darwin") return TURNS_NEED_MAC;
-        return {
-          label: "Calls are available on This computer",
-          reason:
-            "You're viewing a server. Calls use the microphone and on-device speech recognition on your Mac.",
-          action: "choose-local-workspace",
-        };
+        return capabilities.host.platform === "darwin" ? turnsOnThisComputer() : turnsNeedMac();
       case "desktop-app-required":
       case "unsupported-platform":
-        return TURNS_NEED_MAC;
+        return turnsNeedMac();
       default:
         return {
-          label: "Calls aren't available on this device",
-          reason: "This device doesn't currently provide the on-device speech recognition needed for calls.",
+          label: t("call.capability.unavailable"),
+          reason: t("call.capability.unavailableReason"),
         };
     }
   }
   if (!speechServiceAvailable) {
     return {
-      label: "The call service is unavailable",
-      reason: "The speech service is unavailable in this app build. Restart or update Legion.",
+      label: t("call.capability.serviceUnavailable"),
+      reason: t("call.capability.serviceUnavailableReason"),
     };
   }
   return null;

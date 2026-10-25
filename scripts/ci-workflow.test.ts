@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { vitestMatrix } from "./ci-scope.mjs";
 
 const workflow = parse(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
 const requiredRuntimeJobs = ["vitest", "behavior-evals", "packaged-server", "windows-cua", "electron-smokes"];
@@ -51,8 +52,8 @@ describe("CI concurrency", () => {
   });
 
   it("never lets a merged PR's stop run join main's group", () => {
-    // A merged PR's closed event reports the base branch as github.ref, so any
-    // ref-named group here cancelled main's CI on every merge (Oct 3 2026).
+    // A merged PR's closed event reports the base branch as github.ref, so a
+    // ref-named group would cancel main's CI on every merge.
     const stop = parse(readFileSync(new URL("../.github/workflows/ci-stop-closed.yml", import.meta.url), "utf8"));
     expect(stop.concurrency.group).not.toContain("github.ref");
     expect(stop.concurrency.group).toContain("github.event.pull_request.number");
@@ -68,23 +69,53 @@ describe("CI concurrency", () => {
     expect(workflow.jobs.gate.name).toBe("CI");
     expect(workflow.jobs.gate.strategy).toBeUndefined();
     expect(workflow.permissions).toEqual({ contents: "read" });
-    expect(workflow.jobs.vitest.strategy.matrix).toEqual({
-      os: "${{ fromJSON(needs.static.outputs.vitest_os) }}", shard: [1, 2, 3, 4],
-    });
-    expect(workflow.jobs.vitest["timeout-minutes"]).toBe("${{ matrix.os == 'ubuntu-latest' && 20 || 35 }}");
+    expect(workflow.jobs.vitest.strategy.matrix).toBe("${{ fromJSON(needs.static.outputs.vitest_matrix) }}");
+    expect(workflow.jobs.vitest["timeout-minutes"]).toBe("${{ matrix.os == 'ubuntu-latest' && 20 || 30 }}");
   });
 
-  it("keeps each PR to one macOS job unless native code changed", () => {
+  it("runs each selected platform's own shards, and its e2e files, from ci-scope's matrix", () => {
+    expect(workflow.jobs.static.outputs.vitest_matrix).toBe("${{ steps.scope.outputs.vitest_matrix }}");
+    expect(workflow.jobs.vitest.name).toBe("vitest (${{ matrix.os }}, shard ${{ matrix.shard }}/${{ matrix.shards }})");
+    const run = (workflow.jobs.vitest.steps as { name?: string; run?: string; env?: Record<string, string> }[])
+      .find((step) => step.name === "Run tests")!;
+    expect(run.run).toContain("--shard=${{ matrix.shard }}/${{ matrix.shards }} ");
+    expect(run.env?.OMB_VITEST_E2E).toBe("${{ matrix.e2e }}");
+    const { include } = vitestMatrix(["macos-latest", "ubuntu-latest", "windows-latest"]);
+    for (const os of ["macos-latest", "ubuntu-latest", "windows-latest"]) {
+      const shards = include.filter((entry) => entry.os === os);
+      expect(shards.map((entry) => entry.shard)).toEqual(Array.from({ length: shards[0]!.shards }, (_, i) => i + 1));
+      expect(new Set(shards.map((entry) => entry.e2e))).toEqual(new Set([os === "ubuntu-latest" ? "all" : "host"]));
+    }
+    const units = (workflow.jobs.vitest.steps as { name?: string; "timeout-minutes"?: number }[]).find((step) => step.name === "Broker and Electron unit tests")!;
+    expect(units["timeout-minutes"]).toBe(5);
+    // Browser jobs keep one job per platform.
+    expect(workflow.jobs["browser-identity"].strategy.matrix.os).toBe("${{ fromJSON(needs.static.outputs.vitest_os) }}");
+  });
+
+  it("keeps each PR to one macOS job", () => {
     const macosJobs = Object.entries(workflow.jobs as Record<string, { "runs-on": string; strategy?: { matrix?: { os?: unknown } } }>)
       .filter(([, job]) => job["runs-on"] === "macos-latest" || JSON.stringify(job.strategy?.matrix?.os ?? "").includes("macos"))
       .map(([name]) => name);
-    expect(macosJobs.sort()).toEqual(["electron-smokes", "ios"]);
+    expect(macosJobs.sort()).toEqual(["electron-smokes"]);
     const smokes = workflow.jobs["electron-smokes"].steps.map((step: { run?: string }) => step.run);
     expect(smokes).toContain("pnpm test:packaged-server");
-    expect(workflow.jobs.ios.steps.some((step: { run?: string }) => step.run?.includes("verify-ios-thread-navigation"))).toBe(false);
-    const ui = parse(readFileSync(new URL("../.github/workflows/ios-thread-ui.yml", import.meta.url), "utf8"));
-    expect(ui.jobs["thread-ui"].steps.some((step: { run?: string }) => step.run === "bash scripts/verify-ios-thread-navigation-ci.sh")).toBe(true);
-    expect(Object.keys(ui.on).sort()).toEqual(["push", "schedule", "workflow_dispatch"]);
+  });
+
+  it("checks delegated approval modes on the receipt's work thread, not the selected sibling", () => {
+    const smoke = readFileSync(new URL("./smoke-approval-modes.cjs", import.meta.url), "utf8");
+    const delegated = smoke.slice(smoke.indexOf("const peerTarget ="), smoke.indexOf("const customCalls ="));
+    expect(delegated).toContain("const peerWorkThreadId = peerResponse.body.receipts[0].threadId;");
+    expect(delegated).toContain("assert.notEqual(peerWorkThreadId, peerThread.threadId);");
+    expect(delegated).toContain("task.threadId === peerWorkThreadId)?.busy === false");
+    expect(delegated).toContain("/tasks/${peerWorkThreadId}`");
+    expect(delegated).toContain("assert.equal(askPeerResponse.body.receipts[0].threadId, peerWorkThreadId);");
+    expect(delegated).toContain("/api/threads/${peerWorkThreadId}/messages");
+    expect(delegated).toContain("/api/threads/${peerWorkThreadId}/respond");
+    expect(delegated).toContain("const customThreadId = customResponse.body.receipts[0].threadId;");
+    expect(delegated).toContain("/api/threads/${customThreadId}/messages");
+    expect(delegated).toContain("/api/threads/${customThreadId}/respond");
+    expect(delegated).not.toContain("pendingCard((await api(\"/api/bots\"))");
+    expect(delegated).not.toContain("/tasks/${peerThread.threadId}`");
   });
 
   it("makes a release wait for its commit's CI gate before any draft", () => {
@@ -99,6 +130,41 @@ describe("CI concurrency", () => {
     expect(readFileSync(new URL("./release-ci.mjs", import.meta.url), "utf8")).toContain(`job.name === "${workflow.jobs.gate.name}"`);
     // The release lane is a branch, so its runs get their own concurrency group.
     expect(workflow.on).toHaveProperty("workflow_dispatch");
+  });
+
+  it("checks out every module the release gate imports", () => {
+    const release = parse(readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8"));
+    const checkout = release.jobs.ci.steps.find((step: { uses?: string }) => step.uses?.startsWith("actions/checkout@"));
+    const sparse = (checkout.with["sparse-checkout"] as string).split("\n").map((line) => line.trim()).filter(Boolean);
+    const imports = [...readFileSync(new URL("./release-ci.mjs", import.meta.url), "utf8").matchAll(/^import .* from "\.\/([^"]+)";$/gm)]
+      .map((match) => `scripts/${match[1]}`);
+    expect(imports).toContain("scripts/ci-scope.mjs");
+    expect(sparse.sort()).toEqual(["scripts/release-ci.mjs", ...imports].sort());
+  });
+
+  it("lets push scoping read the previous commit's CI, and nothing more", () => {
+    // ci-scope.mjs runs a push's docs- or version-only diff without the runtime
+    // jobs only when the commit before it has its own green run.
+    expect(workflow.jobs.static.permissions).toEqual({ contents: "read", actions: "read" });
+    const scope = workflow.jobs.static.steps.find((step: { id?: string }) => step.id === "scope");
+    expect(scope.env).toEqual({ GH_TOKEN: "${{ github.token }}" });
+    for (const [name, job] of Object.entries(workflow.jobs) as [string, { permissions?: unknown }][]) {
+      if (name !== "static") expect(job.permissions, name).toBeUndefined();
+    }
+  });
+
+  it("reports every known flaky test that needed a retry in the vitest job summary", () => {
+    const steps = workflow.jobs.vitest.steps as { name?: string; run?: string; if?: string; env?: Record<string, string> }[];
+    const tests = steps.findIndex((step) => step.name === "Run tests");
+    const report = steps.findIndex((step) => step.run === "node scripts/testing/ci-retry-summary.mjs");
+    expect(report).toBe(tests + 1);
+    expect(steps[report]!.if).toBe("${{ !cancelled() }}");
+    // The runner context exists only at step level, never in a job's env.
+    expect(workflow.jobs.vitest.env).toBeUndefined();
+    for (const step of [steps[tests]!, steps[report]!]) {
+      expect(step.env?.OMB_VITEST_RETRY_LOG).toBe("${{ runner.temp }}/vitest-retries.jsonl");
+    }
+    expect(readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8")).toContain('runner: "./scripts/testing/ci-retry-runner.ts"');
   });
 
   it.each(requiredRuntimeJobs)("fails closed for every required %s outcome", (job) => {
@@ -129,8 +195,9 @@ describe("CI concurrency", () => {
     expect(workflow.jobs.static.steps[0].with["fetch-depth"]).toBe(0);
     expect(workflow.jobs.static.steps.find((step: { id?: string }) => step.id === "scope").run).toBe("node scripts/ci-scope.mjs");
     expect(workflow.jobs.static.outputs).toEqual({
-      runtime: "${{ steps.scope.outputs.runtime }}", mobile: "${{ steps.scope.outputs.mobile }}",
+      runtime: "${{ steps.scope.outputs.runtime }}",
       vitest_os: "${{ steps.scope.outputs.vitest_os }}",
+      vitest_matrix: "${{ steps.scope.outputs.vitest_matrix }}",
     });
     expect(workflow.jobs.static.steps.some((step: { run?: string }) =>
       step.run === "pnpm exec vitest run scripts/ci-scope.test.ts scripts/ci-workflow.test.ts scripts/testing/verification-docs.test.ts",
@@ -153,7 +220,7 @@ describe("CI concurrency", () => {
         continue;
       }
       expect(job.needs).toBe("static");
-      expect(job.if).toBe(`needs.static.outputs.${["ios", "android"].includes(name) ? "mobile" : "runtime"} == 'true'`);
+      expect(job.if).toBe("needs.static.outputs.runtime == 'true'");
     }
   });
 

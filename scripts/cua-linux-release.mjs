@@ -43,7 +43,7 @@ export const LINUX_CUA_RELEASE = Object.freeze({
   maxExpandedBytes: 128 * MIB,
 });
 
-// Pin the complete upstream archive shape, even though OpenMausBot extracts
+// Pin the complete upstream archive shape, even though Legion extracts
 // only the two CLI runtime files. A release that silently grows a new native
 // payload must receive an explicit review and checksum update first.
 const ARCHIVE_MEMBERS = Object.freeze({

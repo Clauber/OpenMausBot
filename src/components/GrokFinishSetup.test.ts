@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { getDraft, restoreComposerDraft } from "@/lib/drafts";
 import { grokImportPreview, type GrokSetupNotes } from "@/lib/team-import";
-import { BotEditorStore, type Bot } from "@/state/store";
+import { StoreContext, type Bot } from "@/state/store";
 import { GrokFinishSetup, grokSetupLeft, grokSetupMessage, openSetupChat, setupHelper } from "./GrokFinishSetup";
 
 const text = (markup: string) => markup.replace(/<[^>]+>/g, " ").replace(/&#x27;/g, "'").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/\s+/g, " ");
@@ -41,7 +41,7 @@ describe("Chief of Staff finishes a Grok Bot setup", () => {
   it("writes one message with the link, the apps to connect, the tools with no match and the left-out routines verbatim", () => {
     const message = grokSetupMessage("Overheard 2", notes());
     expect(message).toContain("I just added Overheard 2, imported from the Grok Bot at https://x.ai/bot/NIEguoGUjA648fUPle8F5.");
-    expect(message).toContain("Apps to connect (Composio): Gmail (gmail), Slack (slack).");
+    expect(message).toContain("Apps to connect: Gmail (gmail), Slack (slack).");
     expect(message).toContain("Grok Bot tools with no match here: X search.");
     expect(message).toContain("Routines that did not come over, with what they said:\n- Routine “On mention”: it starts on an event, not a clock.\n  When: When someone mentions the brand on X\n  Flag it.");
     expect(message).toContain("Also left out:\n- Skill “empty”: the export had no text for it.");
@@ -63,8 +63,8 @@ describe("Chief of Staff finishes a Grok Bot setup", () => {
 
   it("shows what is left and the button after Add", () => {
     const value = { state: { bots: [bot("chief", { chiefOfStaff: true })] }, dispatch: vi.fn() } as never;
-    const render = (bots: Bot[]) => text(renderToStaticMarkup(createElement(BotEditorStore, { value: { ...(value as object), state: { bots } } as never,
-      children: createElement(GrokFinishSetup, { notes: notes(), imported: bot("Overheard"), onDone: vi.fn() }) })));
+    const render = (bots: Bot[]) => text(renderToStaticMarkup(createElement(StoreContext.Provider, { value: { ...(value as object), state: { bots } } as never },
+      createElement(GrokFinishSetup, { notes: notes(), imported: bot("Overheard"), onDone: vi.fn() }))));
     const shown = render([bot("chief", { chiefOfStaff: true })]);
     expect(shown).toContain("Overheard is added");
     expect(shown).toContain("Connect: Gmail, Slack");

@@ -101,7 +101,7 @@ describe("routine scheduler pre-check", () => {
 
 
 it("allocates no results conversation for an empty scheduled check", async () => {
-  const h = harness(); h.options.resolveResultsThread = vi.fn(() => ({ threadId: "unused" }).threadId);
+  const h = harness(); h.options.resolveResultsThread = vi.fn(() => ({ threadId: "unused" }));
   const manager = new RoutineManager(h.options);
   manager.create({ name: "Quiet", prompt: "Check mail", botId: "pam", preCheck: script(), schedule: { type: "once", at: h.options.now!() } });
   await manager.tick();

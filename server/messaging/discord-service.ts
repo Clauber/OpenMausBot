@@ -1,4 +1,4 @@
-// Discord inbound/outbound for a bound OpenMausBot bot: one gateway WebSocket
+// Discord inbound/outbound for a bound Legion bot: one gateway WebSocket
 // per binding carries DMs in (identify with the DIRECT_MESSAGES intent — no
 // public URL needed), heartbeats keep it alive, unknown DMs pair by code, and
 // every message reaches the host's guarded-send path (so approval semantics
@@ -207,7 +207,7 @@ export class DiscordService {
         if (payload.op === OP_HELLO) {
           const hello = z.object({ heartbeat_interval: z.number() }).safeParse(payload.d);
           if (hello.success) heartbeatMs = hello.data.heartbeat_interval;
-          socket.send(JSON.stringify({ op: OP_IDENTIFY, d: { token, intents: INTENT_DIRECT_MESSAGES, properties: { os: process.platform, browser: "OpenMausBot", device: "OpenMausBot" } } }));
+          socket.send(JSON.stringify({ op: OP_IDENTIFY, d: { token, intents: INTENT_DIRECT_MESSAGES, properties: { os: process.platform, browser: "Legion", device: "Legion" } } }));
           return;
         }
         if (payload.op === OP_DISPATCH && payload.t === "READY") {
@@ -395,7 +395,7 @@ export class DiscordService {
         return;
       }
       if (state.phase === "waiting") {
-        if (!notifiedWaiting) { notifiedWaiting = true; await client.createMessage(binding.token, channelId, "The bot needs your approval in OpenMausBot to continue.").catch(() => undefined); }
+        if (!notifiedWaiting) { notifiedWaiting = true; await client.createMessage(binding.token, channelId, "The bot needs your approval in Legion to continue.").catch(() => undefined); }
       } else typing();
     }
     if (!this.stopped) await client.createMessage(binding.token, channelId, "The bot is still working. Check the app for the result.").catch(() => undefined);

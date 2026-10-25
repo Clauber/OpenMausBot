@@ -6,19 +6,16 @@ import {
 } from "./lib/session";
 import { bootstrapBrand } from "./lib/brand";
 import { applySkin, readSkin } from "./lib/skins";
+import { applyChatWidth, readChatWidth } from "./lib/chat-width";
 import { applyFont, readFont } from "./lib/fonts";
 import { ensureCustomSkinStyles, readCustomSkinsCache } from "./lib/custom-skins";
 import { settleAdvancedModeDefault } from "./lib/interface-mode";
 import { BrowserSignInPage } from "./pair/BrowserSignInPage";
 import { PairPage } from "./pair/PairPage";
-import "katex/dist/katex.min.css";
+import { HomeScreen, SignedOutAtHome } from "./components/HomeScreen";
 import "./styles.css";
 
-// Before the first paint, not inside a component: stamping the skin during
-// render would show one frame of the default palette first. Brand and session
-// requests start after the bootstrap surface mounts.
-// Simple vs Advanced is decided first: applySkin below writes omb-skin, which
-// would otherwise make every fresh install look like an existing one.
+// Before first paint; settleAdvancedModeDefault must run before applySkin writes omb-skin.
 settleAdvancedModeDefault();
 // A custom skin's CSS block must exist before the attribute names it, or the
 // first paint falls back to the default palette. The cache mirrors the
@@ -26,17 +23,16 @@ settleAdvancedModeDefault();
 ensureCustomSkinStyles(readCustomSkinsCache());
 applySkin(readSkin());
 applyFont(readFont());
+applyChatWidth(readChatWidth());
 
-/** A pairing link lands on /pair. A remote browser without a session lands
- * there too, because every API call would otherwise fail with "pair this
- * device"; on the owner's own machine the server trusts loopback and this
- * check is a single fast request. */
 // Consume link secrets once, before rendering; keep them for Retry and StrictMode.
 const signIn = location.pathname === "/pair" ? takeBrowserSignInFromLocation() : null;
 const pairingCode = location.pathname === "/pair" && !signIn ? takePairingCodeFromLocation() : null;
 const invitedEmail = location.pathname === "/pair" && !signIn ? takeInvitedEmailFromLocation() : null;
 
 async function chooseRoot(): Promise<React.ReactNode> {
+  const home = window.ogb?.home;
+  if (location.pathname === "/home" && home) return <HomeScreen bridge={home} manage={window.ogb?.cloudPlan?.manage} />;
   if (location.pathname === "/pair") {
     if (signIn) {
       const preview = await previewBrowserSignIn(signIn);
@@ -47,7 +43,10 @@ async function chooseRoot(): Promise<React.ReactNode> {
   }
   const { session, body } = await readSessionBootstrap();
   if (session.kind === "unreachable") throw new Error(session.error);
-  if (session.kind === "unauthenticated") return <PairPage initialCode={null} reason={session.error} />;
+  if (session.kind === "unauthenticated") {
+    const pair = <PairPage initialCode={null} reason={session.error} />;
+    return home ? <SignedOutAtHome bridge={home} fallback={pair} /> : pair;
+  }
   if (session.kind === "loopback" && session.trust === "service") return <PairPage initialCode={null} reason={SERVICE_TRUST_REASON} />;
   if (location.pathname === "/desktop-viewer") {
     const { DesktopViewer } = await import("./components/DesktopViewer");
