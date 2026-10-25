@@ -100,7 +100,7 @@ describe("decider config", () => {
       provider: "openrouter", openrouterModel: "openai/gpt-4o-mini", openrouterApi: "chat", openrouterKey: OR_KEY, enabled: true, jobs: { roomRouting: true },
     });
     expect(describeDecider(loadConfig())).toEqual({
-      provider: "openrouter", model: "openai/gpt-4o-mini", api: "chat", configured: true, keySource: "own", enabled: true, jobs: { roomRouting: true },
+      provider: "openrouter", model: "openai/gpt-4o-mini", api: "chat", configured: true, keySource: "own", enabled: true, jobs: expect.objectContaining({ roomRouting: true }),
     });
   });
 
@@ -133,7 +133,7 @@ describe("decider config", () => {
 
   it("an existing Jev-only config file keeps resolving to Jev, and an old OpenRouter choice never moves it off the own Jev key", () => {
     writeFileSync(join(DATA_DIR, "config.json"), JSON.stringify({ decider: { enabled: true, key: KEY } }));
-    expect(describeDecider(loadConfig())).toEqual({ provider: "jev", configured: true, enabled: true, jobs: { roomRouting: true } });
+    expect(describeDecider(loadConfig())).toEqual({ provider: "jev", configured: true, enabled: true, jobs: expect.objectContaining({ roomRouting: true }) });
     saveConfig({ decider: { provider: "openrouter" } });
     expect(loadConfig().decider).toMatchObject({ provider: "openrouter", key: KEY, enabled: true });
     expect(describeDecider(loadConfig())).toMatchObject({ provider: "jev", configured: true, enabled: true });

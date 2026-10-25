@@ -5,14 +5,18 @@
 // phrases its own nudge (chat-completions must push the model back into a
 // tool call; ACP agents get a plain continuation prompt).
 
-/** A short reply that only announces a next step, with nothing to answer. */
 export function announcesAction(text: string): boolean {
   const reply = text.trim();
-  if (!reply || reply.length > 400 || reply.includes("?")) return false;
-  return /^(?:checking|let me|i'll|i will|i'm going to|i am going to|opening|pulling|looking|searching|navigating|reading|fetching|loading|now (?:i'll|let me|opening|checking|pulling|reading)|next,? (?:i'll|i will|i'm going to|i am going to|let me|we'll|we will))\b/i.test(reply);
+  if (!reply || reply.length > 4_000 || reply.includes("?")) return false;
+  if (reply.length > 400) {
+    const tail = reply.split(/\n\s*\n/).at(-1)!.trim();
+    return tail.length <= 400 && /^(?:let me|i['\u2019]ll|i will|i(?:['\u2019]m| am) going to)\s+(?:now\s+)?(?:execute|send|type|press|launch|open|check|inspect|read|fetch|run|create|write|verify)\b/i.test(tail);
+  }
+  return /^(?:checking|let me(?! know\b)|i'll|i will|i'm going to|i am going to|opening|pulling|looking|searching|navigating|reading|fetching|loading|now (?:i'll|let me|opening|checking|pulling|reading)|next,? (?:i'll|i will|i'm going to|i am going to|let me|we'll|we will))\b/i.test(reply) ||
+    /^i(?:['\u2019]m| am)\b[^.!?\n]*\band (?:i )?will\s+(?:launch|open|check|pull|look|search|navigate|read|fetch|load|run|inspect)\b/i.test(reply);
 }
 
-export const NUDGE_ANNOUNCED_ACTION = "You said what you would do next but called no tool. Do it now with your tools, or reply with your final answer if nothing is left to do.";
+export const NUDGE_ANNOUNCED_ACTION = "You said what you would do next but called no tool. Use your tools for only the remaining work, or reply with verified results if nothing is left to do. Never repeat an operation that succeeded, was denied, or may already have taken effect; inspect its state instead. Do not retry a destructive operation.";
 
 /** The agent-harness nudge (Claude, Codex, ACP): a follow-up message inside
  *  the same turn that both continues real work and lets a finished agent

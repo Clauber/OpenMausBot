@@ -49,7 +49,7 @@ describe("harness MCP capability proxy", () => {
     status = 200;
     payload = { result: { tools: [{ name: "HIGHLEVEL_GET_CONTACT" }], instructions: "crm" } };
     await expect(harnessMcpRequest(frame("initialize"), connection("highlevel"))).resolves.toMatchObject({ result: { serverInfo: { name: "openmausbot-highlevel" }, instructions: expect.stringContaining("never send SMS") } });
-    await expect(harnessMcpRequest(frame("tools/list"), connection("highlevel"))).resolves.toEqual({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "HIGHLEVEL_GET_CONTACT" }], instructions: "crm" } });
+    await expect(harnessMcpRequest(frame("tools/list"), connection("highlevel"))).resolves.toEqual({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "HIGHLEVEL_GET_CONTACT", _meta: { timeoutMs: HARNESS_PROXY_TIMEOUT_MS } }], instructions: "crm" } });
     expect(requests.at(-1)).toEqual({ path: "/api/internal/highlevel/mcp", auth: "Bearer scoped-capability", body: { method: "tools/list", params: {} } });
     status = 401;
     payload = { error: "the internal turn capability has expired" };
@@ -92,7 +92,7 @@ describe("harness MCP capability proxy", () => {
     expect(initialized.result.serverInfo.name).toBe("openmausbot-data");
     expect(initialized.result.instructions).toContain("GROUP BY ALL");
     expect(((await harnessMcpRequest(frame("initialize"), connection("browser"))) as { result: Record<string, unknown> }).result.instructions).toBeUndefined();
-    await expect(harnessMcpRequest(frame("tools/list"), connection("data"))).resolves.toEqual({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "data_sql" }], instructions: "DuckDB" } });
+    await expect(harnessMcpRequest(frame("tools/list"), connection("data"))).resolves.toEqual({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "data_sql", _meta: { timeoutMs: HARNESS_PROXY_TIMEOUT_MS } }], instructions: "DuckDB" } });
     expect(requests.at(-1)).toEqual({ path: "/api/internal/data/mcp", auth: "Bearer scoped-capability", body: { method: "tools/list", params: {} } });
     status = 503;
     payload = { error: "Data tools are unavailable: the DuckDB binding did not load" };

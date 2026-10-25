@@ -149,7 +149,7 @@ test("Add a Cloud… sits just under the saved servers only where main offers it
   assert.equal(plain.some(item => item.id === "workspace-add-cloud"), false);
   assert.deepEqual(plain.filter(item => item.sublabel).map(item => item.sublabel), ["omb-u-1.fly.dev", "office.example"]);
   const items = env.workspaceMenuTemplate(state, { ...base, onAddCloud: () => calls.push(["add-cloud"]), sublabels: { cloud: "Free trial until 15 Oct" } });
-  assert.deepEqual(items.map(item => item.id ?? item.type), ["workspace-local", "workspace-cloud", "workspace-office", "workspace-add-cloud", "separator", "workspace-connect"]);
+  assert.deepEqual(items.map(item => item.id ?? item.type), ["workspace-local", "workspace-cloud", "workspace-office", "workspace-add-cloud", "separator", "workspace-connect", "workspace-hide-local"]);
   const add = items.find(item => item.id === "workspace-add-cloud");
   assert.deepEqual([add.label, add.sublabel, add.type], ["Add a Cloud…", "Keeps your bots running 24/7", undefined]);
   add.click();
@@ -165,7 +165,7 @@ test("with My Cloud, the switcher says first which side has which bots, and unde
   const options = await env.placesMenuOptions({ cloud: state.environments[0], home: true, platform: "win32", send,
     localBots: async () => ({ bots: [{ name: "Ember" }] }) });
   const items = env.workspaceMenuTemplate(state, { onSwitch() {}, onConnect() {}, onForget() {}, sublabels: { cloud: "Always on" }, ...options });
-  assert.deepEqual(items.map((item) => item.id ?? item.type), ["workspace-places", "separator", "workspace-local", "workspace-cloud", "workspace-copy-to-cloud", "separator", "workspace-connect", "workspace-forget"]);
+  assert.deepEqual(items.map((item) => item.id ?? item.type), ["workspace-places", "separator", "workspace-local", "workspace-cloud", "workspace-copy-to-cloud", "separator", "workspace-connect", "workspace-rename", "workspace-forget", "workspace-hide-local"]);
   const places = items.find((item) => item.id === "workspace-places");
   assert.deepEqual([places.label, places.enabled], ["Your bots live on My Cloud. This computer has its own: Ember.", false]);
   // Windows and Linux menus show no sublabels: My Cloud's status joins its name rather than vanishing.
