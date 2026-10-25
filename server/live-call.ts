@@ -168,6 +168,7 @@ export async function createLiveSession(input: CreateLiveSessionInput): Promise<
     session: {
       model: LIVE_MODEL,
       instructions: liveInstructions(input.bot, { cloudHome: input.cloudHome, compute: input.compute }),
+      delegation: { type: "client" },
       audio: { output: { voice: liveVoice(input.voice) } },
       client: { data_channel: LIVE_DATA_CHANNEL },
       ...(input.compute ? { tools: [ASK_COMPUTE_DEFINITION] } : {}),
