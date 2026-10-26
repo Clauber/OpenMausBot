@@ -58,7 +58,7 @@ import { parseComputerHelp } from "@/lib/computer-control";
 import { answerResponse, dismissResponse } from "@/lib/card-answer";
 import { currentCall } from "@/lib/call";
 import { readLastConversation, rememberConversation } from "@/lib/last-conversation";
-import { readLastBotSection, rememberBotSection } from "@/lib/last-bot-section";
+import { readBotPanels, rememberBotPanels, restoreBotPanel, reconcileBotPanels, type BotPanel } from "./bot-panels";
 import { showNotification } from "@/lib/notify";
 import { useShowThreads } from "@/lib/thread-preferences";
 import { speaker } from "@/lib/tts";
@@ -651,6 +651,7 @@ export interface AppState {
    *  localStorage cache, not the empty array, is what the machine knows. */
   customSkinsLoaded: boolean;
   settingsOpen: boolean;
+  botPanels: Record<string, BotPanel>;
   /** Which tab Settings → Apps opens on: "access" (which bot may use which
    * app) by default; "mcp" when a bot's tools sent the user there to add a
    * server. */
@@ -995,6 +996,13 @@ function optimisticUserMessage(
 export const CLOUD_LINK_SETTINGS = { type: "toggleAppSettings", open: true, section: "cloudAccount", cloudLink: true } as const satisfies Action;
 
 export function reducer(state: AppState, action: Action): AppState {
+  const targeted = action.type === "toggleSettings" && action.botId !== undefined &&
+    state.bots.some((bot) => bot.id === action.botId && !bot.hidden)
+    ? restoreBotPanel(state, action.botId) : state;
+  return reconcileBotPanels(state, reduceAppState(targeted, action), action);
+}
+
+function reduceAppState(state: AppState, action: Action): AppState {
   if (action.type === "messageAdded" || action.type === "messagePatched" || action.type === "threadActive" || action.type === "optimisticMessageRemoved") {
     const owner = state.bots.find((bot) => (bot.threadId !== action.threadId || bot.awaitingThreadSnapshot) && bot.tasks?.some((task) => task.threadId === action.threadId));
     if (owner) {
@@ -1537,7 +1545,7 @@ export function reducer(state: AppState, action: Action): AppState {
       if (action.botId !== undefined && !state.bots.some((bot) => bot.id === action.botId && !bot.hidden)) return state;
       const selectedId = action.botId ?? state.selectedId;
       const open = action.open ?? (action.botId !== undefined || !state.settingsOpen);
-      const freshOpen = open && !state.settingsOpen;
+      const freshOpen = open && (!state.settingsOpen || (action.botId !== undefined && action.botId !== state.selectedId));
       const named = action.section !== undefined;
       return {
         ...state,
@@ -1545,7 +1553,7 @@ export function reducer(state: AppState, action: Action): AppState {
         settingsOpen: open,
         activityOpen: open ? false : state.activityOpen,
         botSettingsSection: action.section ?? state.botSettingsSection,
-        botSettingsExpandAccordion: open ? named || (freshOpen && state.botSettingsSectionStored) : false,
+        botSettingsExpandAccordion: open ? named || (freshOpen && state.botSettingsExpandAccordion) : state.botSettingsExpandAccordion,
         botSettingsExpandRemembered: open ? !named && freshOpen && state.botSettingsSectionStored : false,
         botSettingsSectionStored: named || state.botSettingsSectionStored,
         appSettingsOpen: open ? false : state.appSettingsOpen,
@@ -2030,6 +2038,7 @@ export function dataSheetFromResponse(body: unknown, botId: string): DataSheet {
 }
 
 export const initialState: AppState = {
+  botPanels: {},
   modelVariantSessions: {},
   backgroundThreadEvents: {},
   loadingOlder: {},
@@ -2347,9 +2356,8 @@ export const StoreContext = createContext<{
   refreshModels: (instanceId: string) => Promise<void>;
 } | null>(null);
 
-function restoreBotSettingsSection(state: AppState): AppState {
-  const section = readLastBotSection();
-  return section ? { ...state, botSettingsSection: section, botSettingsSectionStored: true } : state;
+function restoreBotPanels(state: AppState): AppState {
+  return { ...state, botPanels: readBotPanels() };
 }
 
 export function StoreProvider({ children }: { children: ReactNode }) {
@@ -2358,7 +2366,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     ...bot,
     tasks: bot.tasks?.map((task) => ({ ...task, ...taskPatchFields(taskWrites.get(task.threadId)?.patch ?? {}) })),
   });
-  const [state, rawDispatch] = useReducer(reducer, initialState, restoreBotSettingsSection);
+  const [state, rawDispatch] = useReducer(reducer, initialState, restoreBotPanels);
   const stateRef = useRef(state);
   stateRef.current = state;
   const showThreads = useShowThreads();
@@ -2372,8 +2380,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (state.selectedId) rememberConversation(state.selectedId);
   }, [state.selectedId]);
   useEffect(() => {
-    if (state.settingsOpen && state.botSettingsExpandAccordion) rememberBotSection(state.botSettingsSection);
-  }, [state.settingsOpen, state.botSettingsExpandAccordion, state.botSettingsSection]);
+    if (state.hydrated) rememberBotPanels(state.botPanels);
+  }, [state.hydrated, state.botPanels]);
   const botPatchQueue = useMemo(
     () =>
       createBotPatchQueue({

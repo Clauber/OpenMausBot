@@ -10,6 +10,24 @@ const alpha: Bot = {
 const beta: Bot = { ...alpha, id: "beta", name: "Beta", threadId: "b1" };
 
 describe("bot-scoped settings panel", () => {
+  it("opens explicit bot targets with their own section and preserves other bot choices", () => {
+    let state = { ...initialState, bots: [alpha, beta], selectedId: alpha.id };
+    state = reducer(state, { type: "toggleSettings", section: "soul" });
+    state = reducer(state, { type: "toggleSettings", botId: beta.id, section: "identity" });
+    state = reducer(state, { type: "toggleSettings", botId: alpha.id });
+    expect(state).toMatchObject({ selectedId: alpha.id, settingsOpen: true, botSettingsSection: "soul", botSettingsExpandAccordion: true });
+  });
+
+  it("keeps computer state and honors computer actions after cross-bot navigation", () => {
+    let state = { ...initialState, bots: [alpha, beta], selectedId: beta.id };
+    state = reducer(state, { type: "toggleSettings", section: "identity" });
+    state = reducer(state, { type: "select", id: alpha.id });
+    state = reducer(state, { type: "openDataResult", botId: beta.id, cardId: "fixture" });
+    expect(state).toMatchObject({ selectedId: beta.id, computerOpen: true, settingsOpen: false, botSettingsSection: "identity" });
+    state = reducer(state, { type: "select", id: alpha.id });
+    expect(state.computerOpen).toBe(true);
+  });
+
   it("restores open, closed and section choices independently across bots", () => {
     let state = { ...initialState, bots: [alpha, beta], selectedId: alpha.id };
     state = reducer(state, { type: "toggleSettings", open: true, section: "soul" });

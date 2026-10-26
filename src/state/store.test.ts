@@ -38,6 +38,7 @@ import {
 import { LAST_CONVERSATION_KEY } from "@/lib/last-conversation";
 import { cacheDesktopCapabilities, desktopCapabilitiesNow } from "@/lib/desktop";
 import { LAST_BOT_SECTION_KEY } from "@/lib/last-bot-section";
+import { BOT_PANELS_KEY, readBotPanels } from "./bot-panels";
 import { transcriptLookups } from "@/lib/transcript-derivations";
 import { openLiveEvents, type LiveEventSourceLike, type LiveEventsPlatform } from "../lib/live-events";
 import type { ModelVariantState, RuntimeEvent } from "../../shared/runtime-events";
@@ -2468,7 +2469,7 @@ describe("bot settings section", () => {
     expect(next.selectedId).toBe(other.id);
     expect(next.activeView).toBe("team-map");
     expect(next.settingsOpen).toBe(true);
-    expect(next.botSettingsSection).toBe("soul");
+    expect(next.botSettingsSection).toBe("overview");
     expect(next.botSettingsExpandAccordion).toBe(false);
 
     const model = reducer(next, { type: "toggleSettings", botId: bot.id, section: "model" });
@@ -2500,7 +2501,7 @@ describe("bot settings section", () => {
   });
 
   it("a fresh bare open with a stored choice expands the remembered section", () => {
-    const stored = { ...initialState, botSettingsSection: "model" as const, botSettingsSectionStored: true };
+    const stored = { ...initialState, botSettingsSection: "model" as const, botSettingsSectionStored: true, botSettingsExpandAccordion: true };
     const next = reducer(stored, { type: "toggleSettings", open: true });
     expect(next.settingsOpen).toBe(true);
     expect(next.botSettingsSection).toBe("model");
@@ -2538,7 +2539,7 @@ describe("bot settings section", () => {
     expect(next.botSettingsSectionStored).toBe(false);
   });
 
-  it("opening another bot's profile keeps the current section", () => {
+  it("opening another bot's profile starts with its own default section", () => {
     const other = { ...bot, id: "other-bot" };
     const state = {
       ...initialState,
@@ -2551,10 +2552,10 @@ describe("bot settings section", () => {
     };
     const next = reducer(state, { type: "toggleSettings", botId: other.id });
     expect(next.settingsOpen).toBe(true);
-    expect(next.botSettingsSection).toBe("soul");
+    expect(next.botSettingsSection).toBe("overview");
   });
 
-  it("selecting a different bot or room keeps the section pointer", () => {
+  it("selecting a new bot or room resets the panel projection", () => {
     let state = reducer(initialState, {
       type: "botAdded",
       bot: { ...bot, id: "bot-a", threadId: "thread-a" },
@@ -2577,10 +2578,11 @@ describe("bot settings section", () => {
       botSettingsSectionStored: true,
     };
     const kept = {
-      botSettingsSection: "model",
-      botSettingsExpandAccordion: true,
-      botSettingsExpandRemembered: true,
-      botSettingsSectionStored: true,
+      settingsOpen: false,
+      botSettingsSection: "overview",
+      botSettingsExpandAccordion: false,
+      botSettingsExpandRemembered: false,
+      botSettingsSectionStored: false,
     };
     expect(reducer(state, { type: "select", id: "bot-a" })).toMatchObject(kept);
     expect(reducer(state, { type: "select", id: room.id })).toMatchObject(kept);
@@ -3092,31 +3094,31 @@ describe("restoring the open conversation", () => {
       expect(stored.get(LAST_CONVERSATION_KEY)).toBe("room-1");
     });
 
-    it("the provider remembers a section only while it is expanded", async () => {
-      const { stored, stream } = await boot({ [LAST_BOT_SECTION_KEY]: "model" });
+    it("the provider restores per-bot choices and persists expansion and closed state", async () => {
+      const remembered = { settingsOpen: false, botSettingsSection: "model", botSettingsExpandAccordion: true, botSettingsSectionStored: true };
+      const { stored, stream } = await boot({ [BOT_PANELS_KEY]: JSON.stringify({ "bot-1": remembered }) });
       stream.send(hello());
       await settle();
       expect(seen.botSettingsSection).toBe("model");
-      expect(seen.botSettingsSectionStored).toBe(true);
-      expect(stored.get(LAST_BOT_SECTION_KEY)).toBe("model");
+      expect(seen.settingsOpen).toBe(false);
 
       flushSync(() => dispatch({ type: "toggleSettings", open: true }));
       await settle();
       expect(seen.botSettingsExpandRemembered).toBe(true);
-      expect(stored.get(LAST_BOT_SECTION_KEY)).toBe("model");
+      expect(readBotPanels()["bot-1"].settingsOpen).toBe(true);
 
       flushSync(() => dispatch({ type: "toggleSettings", open: true }));
       await settle();
-      expect(seen.botSettingsExpandAccordion).toBe(false);
-      expect(stored.get(LAST_BOT_SECTION_KEY)).toBe("model");
+      expect(readBotPanels()["bot-1"].botSettingsExpandAccordion).toBe(false);
 
       flushSync(() => dispatch({ type: "toggleSettings", open: true, section: "usage" }));
       await settle();
-      expect(stored.get(LAST_BOT_SECTION_KEY)).toBe("usage");
+      expect(readBotPanels()["bot-1"].botSettingsSection).toBe("usage");
 
       flushSync(() => dispatch({ type: "toggleSettings", open: false }));
       await settle();
-      expect(stored.get(LAST_BOT_SECTION_KEY)).toBe("usage");
+      expect(readBotPanels()["bot-1"]).toMatchObject({ settingsOpen: false, botSettingsSection: "usage", botSettingsExpandAccordion: true });
+      expect(stored.has(LAST_BOT_SECTION_KEY)).toBe(false);
     });
 
     it("the provider remembers Overview like any other section", async () => {
@@ -3126,7 +3128,7 @@ describe("restoring the open conversation", () => {
 
       flushSync(() => dispatch({ type: "toggleSettings", open: true, section: "overview" }));
       await settle();
-      expect(stored.get(LAST_BOT_SECTION_KEY)).toBe("overview");
+      expect(JSON.parse(stored.get(BOT_PANELS_KEY)!)["bot-1"].botSettingsSection).toBe("overview");
 
       flushSync(() => dispatch({ type: "toggleSettings", open: false }));
       await settle();
@@ -3135,6 +3137,34 @@ describe("restoring the open conversation", () => {
       expect(seen.botSettingsSection).toBe("overview");
       expect(seen.botSettingsExpandAccordion).toBe(true);
       expect(seen.botSettingsExpandRemembered).toBe(true);
+    });
+
+    it("ignores the old global section rather than copying it into every bot", async () => {
+      const { stream } = await boot({ [LAST_BOT_SECTION_KEY]: "soul" });
+      stream.send(hello());
+      await settle();
+      expect(seen).toMatchObject({ settingsOpen: false, botSettingsSection: "overview", botSettingsExpandAccordion: false });
+    });
+
+    it("restores open panels and collapsed sections after provider remount", async () => {
+      const { stored, stream } = await boot();
+      stream.send(hello());
+      await settle();
+      flushSync(() => dispatch({ type: "toggleSettings", open: true, section: "messaging" }));
+      flushSync(() => dispatch({ type: "toggleSettings", open: true }));
+      flushSync(() => dispatch({ type: "select", id: "bot-2" }));
+      flushSync(() => dispatch({ type: "toggleSettings", open: true, section: "identity" }));
+      await settle();
+      const saved = Object.fromEntries(stored);
+      flushSync(() => root!.unmount());
+      container!.remove();
+      FixtureEventSource.opened = [];
+      const rebooted = await boot(saved);
+      rebooted.stream.send(hello());
+      await settle();
+      expect(seen).toMatchObject({ selectedId: "bot-2", settingsOpen: true, botSettingsSection: "identity", botSettingsExpandAccordion: true });
+      flushSync(() => dispatch({ type: "select", id: "bot-1" }));
+      expect(seen).toMatchObject({ settingsOpen: true, botSettingsSection: "messaging", botSettingsExpandAccordion: false });
     });
 
     it("a throwing storage surface boots as if nothing were stored", async () => {
