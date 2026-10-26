@@ -8,7 +8,7 @@ import { handleToolCall, request } from "../scripts/mcp-server.ts";
 // A Chief's level reached the teammate it handed work to and stopped there: Clive on Approve for me, Ada ran at auto,
 // and the work Ada handed Bea ran at Ask ("default").
 it("carries a Chief's level down every hop it hands out, in threads and in a room, and never an ordinary bot's", async () => {
-  const fixture = await launchVerificationServer({}, undefined, undefined, undefined, undefined, { scripted: true });
+  const fixture = await launchVerificationServer({}, undefined, undefined, undefined, { scripted: true });
   const { url, dataDir, logPath } = fixture.info;
   const planPath = join(dataDir, "room-plan.json");
   const plans: Record<string, { turns: any[] }> = {};

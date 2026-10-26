@@ -525,7 +525,7 @@ import { EffectLedger, effectKey } from "./effect-ledger.ts";
 import { OutboundCounts } from "./outbound-counts.ts";
 import { OutboundRequestService } from "./outbound-requests.ts";
 import { createOutboundHold, OUTBOUND_HOLD_MS, type OutboundHoldAnswer } from "./outbound-hold.ts";
-import { connectorCallsIn, outboundCallsIn } from "../shared/outbound.ts";
+import { connectorCallsIn, DEFAULT_OUTBOUND_POLICY, outboundCallsIn } from "../shared/outbound.ts";
 import { connectorAccessDecision, describeConnectorScopes } from "../shared/connector-scopes.ts";
 import { bindThreadLogCapProvider } from "./thread-log-rotation.ts";
 import { listenWebhookIngress, type WebhookIngress } from "./webhook-ingress.ts";

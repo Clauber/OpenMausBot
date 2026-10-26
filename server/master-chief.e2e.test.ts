@@ -93,6 +93,7 @@ it("manages General bots through injected tools, keeps deletion confirmed, and a
     const cardPage = z.object({ messages: z.array(z.object({ card: z.object({ requestId: z.string().optional(), answered: z.unknown().optional(), dismissed: z.unknown().optional() }).passthrough().optional() })) });
     const pendingCards = async () => cardPage.parse(await request("GET", `/api/threads/${cardBot.threadId}/messages?limit=50`)).messages
       .filter(message => message.card && !message.card.answered && !message.card.dismissed);
+    await request("PATCH", `/api/bots/${cardBot.id}`, { approvalRules: { tools: { "mcp:agents:propose_profile": "require_approval" } } }, 200, owner);
     steps[cardBot.id] = { turns: [] };
     steps[cardBot.id]!.turns.push({ steps: [{ tool: "propose_profile", arguments: { title: "Pending Ask title", reason: "Ask task requires review" } }], reply: "proposal awaiting review" });
     writeFileSync(fixture.planPath, JSON.stringify(steps));

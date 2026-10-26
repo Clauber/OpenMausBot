@@ -17,6 +17,7 @@ async function fixture(test: (f: any) => Promise<void>) {
     const savePlan = () => writeFileSync(join(session.info.dataDir, "room-plan.json"), JSON.stringify(plan));
     const newBot = async (name: string) => {
       const bot = (await cli("new-bot", "--name", name, "--section", "Engineering")).bot;
+      await api(`/api/bots/${bot.id}`, { approvalMode: "ask", autoApprove: false, alwaysAllow: [] }, "PATCH");
       plan[bot.id] = { gateFile: gate, reply: "done" };
       savePlan();
       return bot;
