@@ -52,6 +52,7 @@ export type BotPatch = Partial<
   connectorScopes?: Bot["connectorScopes"] | null;
   /** null returns the bot to the workspace default thread limit. */
   maxConcurrentThreads?: Bot["maxConcurrentThreads"] | null;
+  phoneApps?: Bot["phoneApps"] | null;
   acknowledgeLocalAuto?: boolean;
   acknowledgePeerScope?: boolean;
 };

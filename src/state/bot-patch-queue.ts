@@ -51,6 +51,7 @@ export type BotUpdatePatch = Partial<
   /** null is the wire representation for returning to the workspace default
    * thread limit; Bot state keeps that as an absent field. */
   maxConcurrentThreads?: Bot["maxConcurrentThreads"] | null;
+  phoneApps?: Bot["phoneApps"] | null;
   /** The server's proof the local-auto warning was shown: wire-only, never folded into bot state. */
   acknowledgeLocalAuto?: boolean;
   /** Renderer-local marker that the Full access warning was confirmed: the store strips it from every request and overlay. */
@@ -63,12 +64,13 @@ export type BotUpdatePatch = Partial<
 
 export type BotStatePatch = Omit<
   BotUpdatePatch,
-  "computer" | "connectorTools" | "connectorScopes" | "maxConcurrentThreads" | "acknowledgeLocalAuto" | "confirmFullAccess" | "applyToAllThreads" | "keepThreadModels" | "threadId"
+  "computer" | "connectorTools" | "connectorScopes" | "phoneApps" | "maxConcurrentThreads" | "acknowledgeLocalAuto" | "confirmFullAccess" | "applyToAllThreads" | "keepThreadModels" | "threadId"
 > & {
   computer?: Bot["computer"];
   connectorTools?: Bot["connectorTools"];
   connectorScopes?: Bot["connectorScopes"];
   maxConcurrentThreads?: Bot["maxConcurrentThreads"];
+  phoneApps?: Bot["phoneApps"];
 };
 
 interface BotPatchQueueEntry {
@@ -124,6 +126,7 @@ const stateOverlay = (patch: BotUpdatePatch): BotStatePatch => {
     connectorTools,
     connectorScopes,
     maxConcurrentThreads,
+    phoneApps,
     ...fields
   } = patch;
   const normalized: BotStatePatch = { ...fields };
@@ -135,6 +138,8 @@ const stateOverlay = (patch: BotUpdatePatch): BotStatePatch => {
   else if (connectorScopes !== undefined) normalized.connectorScopes = connectorScopes;
   if (maxConcurrentThreads === null) normalized.maxConcurrentThreads = undefined;
   else if (maxConcurrentThreads !== undefined) normalized.maxConcurrentThreads = maxConcurrentThreads;
+  if (phoneApps === null) normalized.phoneApps = undefined;
+  else if (phoneApps !== undefined) normalized.phoneApps = phoneApps;
   return normalized;
 };
 
