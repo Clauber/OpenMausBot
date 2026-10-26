@@ -10,7 +10,7 @@ import { Select } from "./Select";
 import { resolveCustomAcpModels } from "../../server/drivers/acp/custom-model-catalog";
 
 const fixture = vi.hoisted(() => {
-  vi.stubGlobal("window", {});
+  vi.stubGlobal("window", { location: { hash: "", search: "" } });
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
   return { instances: [] as InstanceInfo[], modelVariantSessions: {} as AppState["modelVariantSessions"], dispatch: vi.fn(),
     values: [] as unknown[], index: 0, own: 0, advanced: false };

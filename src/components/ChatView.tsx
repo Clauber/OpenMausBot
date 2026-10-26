@@ -4,7 +4,7 @@ import { useAdvancedMode } from "@/lib/interface-mode";
 import { PHONE_LAYOUT, useMediaQuery } from "@/lib/use-media-query";
 import { ThreadLinkContext } from "@/components/ThreadLinkMenu";
 import { useShowThreads } from "@/lib/thread-preferences";
-import { AlertTriangle, ChevronLeft, ChevronRight, Crown, Monitor, RefreshCw, Square, Webhook } from "lucide-react";
+import { AlertTriangle, ChevronLeft, ChevronRight, Monitor, RefreshCw, Webhook } from "lucide-react";
 import { WorkingDots } from "@/components/WorkingIndicator";
 import { CopyButton, MESSAGE_ROW, MessageActions, messageActionClass, ReplyAction } from "@/components/MessageActions";
 import { ReactAction, ReactionChips } from "@/components/Reactions";
@@ -92,7 +92,6 @@ import { CallReceiptCard } from "./CallReceiptCard";
 import { CompactionChip, DigestChip } from "./DigestChip";
 import { RenameTitle } from "./RenameTitle"; import { ChatHeadRole, chiefOfStaffBadge } from "./BotRole";
 import { BotActivityPicker } from "./TaskPicker"; import { ChatHeadConversation } from "./ChatHeadConversation";
-import { ModelPicker } from "./ModelPicker";
 import { ChatHeaderMenu, ChatMoreMenu } from "./ChatMoreMenu"; import { TeamPrivateFirstLine, TeamPrivateHeader, TeamSharedHeader } from "./TeamPrivateChatsLine";
 import { useChatFindRequests } from "@/lib/chat-find";
 import { AllThreadsButton } from "./ChatAllThreads";
@@ -1158,8 +1157,6 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
         >
           <ThreadContextWarning bot={bot} messages={messages} />
           <EngineLimitNotice engine={bot.modelSelection?.instanceId} />
-          {/* Simple mode moves the model, the computer and ⋯ into the bot panel; a remote client's panel has neither. */}
-          {advanced && !remoteClient && !phone && <ModelPicker key={bot.threadId} bot={bot} threadId={bot.threadId} />}
           <LiveCallChip currentBotId={bot.id} onOpen={(botId, threadId) => openThread(dispatch, { botId, threadId }, state, showThreads)} />
           <ArchiveThreadButton bot={bot} />
           {(advanced || remoteClient) && <AllThreadsButton />}

@@ -41,7 +41,7 @@ export function SidebarPhoneBar({ query, onQuery }: { query: string; onQuery: (q
       key: "apps",
       label: t("sidebar.nav.apps"),
       icon: <Puzzle size={18} />,
-      active: state.pluginsOpen,
+      active: state.appSettingsOpen && state.appSettingsSection === "apps",
       onSelect: () => dispatch({ type: "togglePlugins", open: true }),
     },
   ];

@@ -80,7 +80,7 @@ describe("createOutboundHold", () => {
 
     await flushDecisionLog(dataDir);
     const rows = readDecisions(dataDir, 10);
-    expect(rows.map((row) => row.rule)).toEqual(["daily-allowance:1/2", "daily-allowance:2/2"]);
+    expect(rows.map((row) => row.rule)).toEqual(["outbound;daily-allowance:1/2", "outbound;daily-allowance:2/2"]);
     expect(rows[0]).toMatchObject({ threadId: "t1", botId: "b1", botName: "Scout", tool: "GMAIL_SEND_EMAIL", decision: "auto-approved", source: "outbound" });
 
     // The cap is spent: the next hold refuses before any card.
@@ -127,6 +127,18 @@ describe("createOutboundHold", () => {
     expect(muted.notified).toEqual([null]);
     muted.outboundRequests.resolve({ threadId: "t1", requestId: muted.appended[0].message.card!.requestId as string, behavior: "allow" });
     await expect(mutedPending).resolves.toEqual({ ok: true, approved: true });
+  });
+
+  it("requires an explicit approval rule even with Full access and preserves its receipt", async () => {
+    const fixture = setup(bot({ policy: "allow", dailyCap: 10 }));
+    const approval = { rule: { decision: "require_approval" as const, rule: "send-rule" }, review: null, effectKey: "send-effect", outbound: true };
+    const pending = fixture.hold.hold({ ...fixture.input, fullAccess: true, active: () => true, approval });
+    expect(fixture.appended[0].message.card).toMatchObject({ effectKey: "send-effect", held: "An approval rule requires your confirmation." });
+    const requestId = fixture.appended[0].message.card!.requestId as string;
+    fixture.outboundRequests.resolve({ threadId: "t1", requestId, behavior: "allow" });
+    await expect(pending).resolves.toEqual({ ok: true, approved: true });
+    await flushDecisionLog(fixture.dataDir);
+    expect(readDecisions(fixture.dataDir, 10)).toMatchObject([{ effectKey: "send-effect", source: "approval-rules", rule: "send-rule", decision: "card-shown" }]);
   });
 
   it("deny answers the decline text; timeout marks the card unavailable", async () => {

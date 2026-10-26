@@ -1024,7 +1024,7 @@ export function Composer({
             className="block max-h-[9rem] min-h-6 w-full resize-none overflow-y-auto bg-transparent px-1 py-1 text-[15px] leading-6 placeholder:text-ink-secondary focus:outline-none"
           />
           <div data-composer-actions className={cn("flex items-center gap-1", !singleRow && "@max-[30rem]/composer:ml-auto")}>
-          {modeBot && !remoteClient && !locked && (
+          {modeBot && !remoteClient && !locked && !singleRow && (
             <>
               <ModelPicker key={modeBot.threadId} bot={modeBot} threadId={modeBot.threadId} dropUp separateEffort />
               <ThinkingPicker key={`thinking:${modeBot.threadId}`} bot={modeBot} threadId={modeBot.threadId} />

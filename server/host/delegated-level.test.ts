@@ -1,12 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("../fleet-authority.ts", () => ({ isMasterChief: (bot: { id?: string } | null | undefined) => bot?.id === "master" }));
 
 import type { ApprovalMode } from "../../shared/approval-mode.ts";
 import type { BotRecord } from "../store.ts";
 import { createDelegatedLevel, type DelegatedLevelDeps, type Hop } from "./delegated-level.ts";
 
 // Clive (a Chief) handed work to Ada, and Ada's turn hands work on: the chain is the hand-off nodes' parents.
-function world(levels: Record<string, ApprovalMode>, nodes: Record<string, Hop>, guest = new Set<string>()) {
+function world(levels: Record<string, ApprovalMode>, nodes: Record<string, Hop>, guest = new Set<string>(), fleetRoom = false) {
   const bots: Record<string, Partial<BotRecord>> = {
+    master: { id: "master", name: "Master", chiefOfStaff: true },
     clive: { id: "clive", name: "Clive", chiefOfStaff: true }, ada: { id: "ada", name: "Ada" }, bea: { id: "bea", name: "Bea" }, ola: { id: "ola", name: "Ola" },
   };
   const patched: Array<{ botId: string; threadId: string; approvalMode?: ApprovalMode }> = [];
@@ -14,6 +17,7 @@ function world(levels: Record<string, ApprovalMode>, nodes: Record<string, Hop>,
   const store = {
     bot: (id: string) => bots[id],
     projectBotForTask: () => undefined,
+    groupByThread: (threadId: string) => fleetRoom ? { fleetRoomGrants: { [threadId]: {} } } : undefined,
     taskByThread: () => undefined,
     patchTask: (botId: string, threadId: string, patch: { approvalMode?: ApprovalMode }) => { patched.push({ botId, threadId, ...patch }); },
     appendMessage: (_threadId: string, message: { tool?: { name: string } }) => { lines.push(message.tool!.name); },
@@ -48,6 +52,15 @@ describe("a Chief's level, every hop down", () => {
       "Approve for me — delegated by Clive, a Chief of Staff on Approve for me",
       "Approve for me — delegated by Ada, from Clive, a Chief of Staff on Approve for me",
     ]);
+  });
+
+  it("keeps Master Chief handoffs and fleet room grants on recipient permissions", () => {
+    const w = world({ master: "full", clive: "full" }, chain);
+    w.apply(w.bot("master"), "master-chat", undefined, w.bot("ada"), "ada-work");
+    w.apply(w.bot("clive"), "clive-chat", "root", w.bot("master"), "master-work");
+    expect(w.patched).toEqual([]);
+    const fleet = world({ "clive:room": "full" }, chain, new Set(), true);
+    expect(fleet.roomTurn(fleet.bot("bea"), "room", chain["room-ada"])).toBe("ask");
   });
 
   it("runs a room turn at the level its hand-off's chain brings down, and a guest's room at Ask", () => {

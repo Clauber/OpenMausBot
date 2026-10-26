@@ -295,7 +295,7 @@ describe("ModelPicker trigger", () => {
     const markup = renderToStaticMarkup(createElement(ModelPicker, { bot: { ...bot("high"), busy: true }, threadId: "independent-thread" }));
     expect(tooltipLines(markup)).toEqual([
       "Codex · GPT-5.6 · High effort",
-      "Stop this thread's turn before changing its model",
+      "Applies next run, or immediately when you send a steering message",
     ]);
   });
 

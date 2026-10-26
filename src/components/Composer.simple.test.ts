@@ -24,6 +24,7 @@ vi.mock("@/state/store", async (importOriginal) => {
   return { ...original, useStore: () => ({
     state: { ...original.initialState, bots: [bot, peer], liveCall: fixture.liveCall, instances: [{
       instanceId: ENGINE, driverKind: "claudeAgent", displayName: "Claude", capabilities: { agentsMcp: true },
+      snapshot: { state: "available" }, models: { default: "fake", options: [{ id: "fake", label: "Fake" }] },
     }] },
     dispatch: fixture.dispatch,
   }) };
