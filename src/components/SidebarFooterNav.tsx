@@ -63,7 +63,7 @@ function NavRow({
 }
 
 /** An unseen failed run, or an app trigger in trouble. */
-function useAutomationsNeedYou(): boolean {
+export function useAutomationsNeedYou(): boolean {
   const { state } = useStore();
   const appTriggers = useAppTriggers();
   return state.routineRuns.some((run) => isRoutineProblemRun(run) && !run.seenAt) || appTriggers.triggers.some((trigger) => trigger.enabled && trigger.problem);

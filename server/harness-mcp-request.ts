@@ -2,35 +2,37 @@
 // stdio proxy an engine starts and the HTTP endpoint an engine reaches both answer through it.
 import { DATA_INSTRUCTIONS } from "./data/instructions.ts";
 import { HIGHLEVEL_INSTRUCTIONS } from "./highlevel/instructions.ts";
-import { HARNESS_PROXY_TIMEOUT_MS } from "./harness-budget.ts";
+import { PHONE_INSTRUCTIONS, PHONE_RECOVERY } from "./phones/instructions.ts";
+import { HARNESS_PROXY_TIMEOUT_MS, HARNESS_PROXY_TIMEOUTS_MS } from "./harness-budget.ts";
 import { capToolListResult } from "./tool-count-limit.ts";
 
 export const MAX_INPUT_BYTES = 1_048_576;
 export const MAX_OUTPUT_BYTES = 16_777_216;
 export type RpcId = string | number | null;
-export type HarnessMcpKind = "browser" | "computer" | "data" | "highlevel";
+export type HarnessMcpKind = "browser" | "computer" | "data" | "highlevel" | "device";
 
-const NAMES: Record<HarnessMcpKind, string> = { browser: "Browser", computer: "Cloud computer", data: "Data", highlevel: "HighLevel" };
-const INSTRUCTIONS: Partial<Record<HarnessMcpKind, string>> = { data: DATA_INSTRUCTIONS, highlevel: HIGHLEVEL_INSTRUCTIONS };
+const NAMES: Record<HarnessMcpKind, string> = { browser: "Browser", computer: "Cloud computer", data: "Data", highlevel: "HighLevel", device: "Phone" };
+const INSTRUCTIONS: Partial<Record<HarnessMcpKind, string>> = { data: DATA_INSTRUCTIONS, highlevel: HIGHLEVEL_INSTRUCTIONS, device: PHONE_INSTRUCTIONS };
 const RECOVERY: Record<HarnessMcpKind, string> = {
   browser: " This failure does not establish that all browsers are unavailable. Inspect available connections with select_computer if that tool is present. Keep the requested computer and account; do not bypass a permission refusal or human takeover, and do not repeat an uncertain action without checking its result.",
   computer: " Keep working on the assigned cloud computer only; do not bypass a person's control of it, and take a fresh screenshot before repeating an action whose result is uncertain.",
   data: " The tables already loaded are unchanged; check with data_describe or SHOW TABLES before repeating a load, and do not repeat a statement whose result is uncertain.",
   highlevel: " The CRM may or may not have taken the change; read the record back (HIGHLEVEL_GET_CONTACT, HIGHLEVEL_GET_OPPORTUNITY) before repeating a write, and never message anyone through the CRM.",
+  device: PHONE_RECOVERY,
 };
 
 export function parseHarnessMcpKind(value: unknown): HarnessMcpKind | null {
-  return value === "browser" || value === "computer" || value === "data" || value === "highlevel" ? value : null;
+  return value === "browser" || value === "computer" || value === "data" || value === "highlevel" || value === "device" ? value : null;
 }
 
 /** Node's fetch (undici) rejects with the socket error as its `cause`: refused before anything was sent, reset or closed after. */
-function unansweredText(error: unknown, name: string): string {
+function unansweredText(error: unknown, name: string, timeoutMs: number): string {
   const code = (error as { cause?: { code?: unknown } } | null)?.cause?.code;
   const call = `this ${name.toLowerCase()} call`;
   if (code === "ECONNREFUSED") return `Legion is restarting, so ${call} did not reach it and did not run. Wait a few seconds, then make it again.`;
   if (code === "ECONNRESET" || code === "UND_ERR_SOCKET") return `Legion restarted while ${call} was running, so it may or may not have taken effect. Check its result before repeating it.`;
   if ((error as { name?: unknown } | null)?.name === "TimeoutError") {
-    return `Legion did not answer ${call} within ${HARNESS_PROXY_TIMEOUT_MS / 1_000} seconds. It may still be running, or it may already have taken effect. Do not repeat it until its result is checked.`;
+    return `Legion did not answer ${call} within ${timeoutMs / 1_000} seconds. It may still be running, or it may already have taken effect. Do not repeat it until its result is checked.`;
   }
   return error instanceof Error && !/fetch failed|abort|timeout|terminated/i.test(error.message)
     ? error.message : `${name} connection was interrupted. Do not repeat the action until its state is checked.`;
@@ -44,13 +46,13 @@ export function failure(id: RpcId, method: unknown, message: string, code = -326
 
 /** ZCode 0.16 abandons an MCP call after 30 s unless the tool's `_meta.timeoutMs` says otherwise; an abandoned
  * call keeps the browser busy, so the next one queues behind it and fails too. */
-function withCallTimeout(result: unknown): unknown {
+function withCallTimeout(result: unknown, timeoutMs: number): unknown {
   const tools = (result as { tools?: unknown } | null)?.tools;
   if (!Array.isArray(tools)) return result;
   return {
     ...result as object,
     tools: tools.map((tool) => tool && typeof tool === "object" && !Array.isArray(tool)
-      ? { ...tool, _meta: { ...(tool as { _meta?: object })._meta, timeoutMs: HARNESS_PROXY_TIMEOUT_MS } }
+      ? { ...tool, _meta: { ...(tool as { _meta?: object })._meta, timeoutMs } }
       : tool),
   };
 }
@@ -101,17 +103,17 @@ export async function harnessMcpRequest(
     const response = await fetch(new URL(`/api/internal/${connection.kind}/mcp`, url), {
       method: "POST", redirect: "error",
       headers: { "content-type": "application/json", authorization: `Bearer ${connection.token}` },
-      body, signal: AbortSignal.timeout(HARNESS_PROXY_TIMEOUT_MS),
+      body, signal: AbortSignal.timeout(HARNESS_PROXY_TIMEOUTS_MS[connection.kind] ?? HARNESS_PROXY_TIMEOUT_MS),
     });
     const payload = await boundedJson(response, name) as { result?: unknown; error?: unknown };
     if (!response.ok || !payload || typeof payload !== "object" || !Object.hasOwn(payload, "result")) {
       throw new Error(typeof payload?.error === "string" ? payload.error.slice(0, 2_000) : `${name} server is unavailable. Start a new bot turn or try again.`);
     }
     const result = message.method === "tools/list"
-      ? capToolListResult(withCallTimeout(payload.result), connection.toolLimit, (line) => console.warn(`[${connection.kind}] ${line}`)) : payload.result;
+      ? capToolListResult(withCallTimeout(payload.result, HARNESS_PROXY_TIMEOUTS_MS[connection.kind] ?? HARNESS_PROXY_TIMEOUT_MS), connection.toolLimit, (line) => console.warn(`[${connection.kind}] ${line}`)) : payload.result;
     return { jsonrpc: "2.0", id, result };
   } catch (error) {
-    return failure(id, message.method, unansweredText(error, name) + RECOVERY[connection.kind]);
+    return failure(id, message.method, unansweredText(error, name, HARNESS_PROXY_TIMEOUTS_MS[connection.kind] ?? HARNESS_PROXY_TIMEOUT_MS) + RECOVERY[connection.kind]);
   }
 }
 

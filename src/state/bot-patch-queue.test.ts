@@ -209,6 +209,7 @@ describe("bot patch queue", () => {
           connectorTools: patch.connectorTools ?? undefined,
           connectorScopes: patch.connectorScopes ?? undefined,
           maxConcurrentThreads: patch.maxConcurrentThreads ?? undefined,
+          phoneApps: patch.phoneApps ?? undefined,
         });
       },
       reconcile: async () => bot(),
