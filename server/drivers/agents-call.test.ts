@@ -17,6 +17,21 @@ function context(overrides: Partial<ToolCallContext> = {}): ToolCallContext {
   };
 }
 
+describe("vm_exec targets", () => {
+  it.each([undefined, "vm", "host"])("routes target %s without silently changing computers", async target => {
+    const paths: string[] = [];
+    const result = await callTool("vm_exec", { command: "pwd", target }, context({ client: {
+      api: async () => ({}),
+      apiResponse: async path => { paths.push(path); return { ok: true, status: 200, body: { stdout: "/workspace\n", stderr: "warning", exitCode: 7, truncated: true } }; },
+    } }));
+    expect(paths).toEqual([target === "host" ? "/api/internal/host-exec" : "/api/internal/vm-exec"]);
+    expect(result).toMatchObject({ isError: true });
+    expect(result.text).toContain("exit code 7");
+    expect(result.text).toContain("warning");
+    expect(result.text).toContain("Output truncated");
+  });
+});
+
 describe("send_voice_note", () => {
   it("refuses a missing or blank note with the shape a retry needs", async () => {
     for (const args of [{}, { text: "" }, { text: "   " }]) {

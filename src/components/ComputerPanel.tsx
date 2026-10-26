@@ -1115,12 +1115,12 @@ export function ComputerPanel({
   const cloudView = viewOf("cloud", cloudRefused);
   const autoView = viewOf("auto");
   const placeOptions = ([
-    [null, "vm.dest.auto", "computer.dest.autoDesc", Sparkles],
+    [null, "computer.dest.autoRecommended", "computer.dest.autoHostDesc", Sparkles],
     ["cloud", "place.cloud", "computer.dest.cloudDesc", Cloud],
     ["vm", "vm.dest.vm", "computer.dest.vmDesc", Box],
-    ["local", "vm.dest.local", "computer.dest.localDesc", Monitor],
+    ["local", "vm.dest.local", "computer.dest.hostScreenDesc", Monitor],
     ["browser", "vm.dest.browser", "computer.dest.browserDesc", Globe],
-    ["off", "vm.dest.off", "computer.dest.offDesc", Power],
+    ["off", "vm.dest.off", "computer.dest.offWithCliDesc", Power],
   ] as const).filter(([mode]) => mode === null || mode === "off" || placeOffered(mode, state.config)).map(([mode, labelKey, descriptionKey, Icon]) => {
     const selected = mode === null ? !profileBot.computer : profileBot.computer === mode;
     const managedKind = mode === "local" ? "thisComputer" : mode === "vm" ? "localVm" : mode === "cloud" ? (profileBot.cloudBackend === "vps" ? "vps" : "box") : null;
@@ -1155,6 +1155,43 @@ export function ComputerPanel({
     else if (mode === "browser") updateComputerSelection({ computer: mode, browser: true });
     else updateComputerSelection({ computer: mode });
   };
+  const placeTiles = (options: typeof placeOptions) => options.map(({ mode, labelKey, descriptionKey, Icon, selected, managedBy, disabled, unavailableTitle, issue, view, simpleLabel }) => (
+    <button
+      key={mode ?? "auto"}
+      type="button"
+      disabled={disabled}
+      title={unavailableTitle}
+      aria-pressed={selected}
+      onClick={() => selectPlace(mode)}
+      className={cn(
+        "min-w-0 rounded-lg border px-2.5 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-card",
+        selected ? "border-accent/60 bg-accent/10 text-ink" : "border-hairline/50 bg-panel/30 text-ink-secondary",
+        disabled ? "cursor-not-allowed opacity-50" : "hover:border-accent/40 hover:bg-control/60",
+      )}
+    >
+      <span className="flex items-center gap-2 text-[12px] font-medium leading-4">
+        {selected ? <Check size={14} className="shrink-0 text-accent" /> : <Icon size={14} className="shrink-0 text-ink-secondary" />}
+        <span>{advanced || mode === null ? t(labelKey) : simpleLabel}</span>
+      </span>
+      {(advanced || issue) && <span className="mt-1.5 block text-[11px] leading-4 text-ink-secondary">
+        {managedBy ?? (issue ? view.short : t(descriptionKey))}
+      </span>}
+    </button>
+  ));
+  const primaryPlaces = placeOptions.filter(({ mode }) => mode === null || mode === "browser" || mode === "off");
+  const advancedPlaces = placeOptions.filter(({ mode }) => mode === "cloud" || mode === "vm" || mode === "local");
+  const placePicker = <>
+    <div role="group" aria-label={t("computer.destinationAria")} className="mt-3 grid auto-rows-fr grid-cols-3 gap-2">
+      {placeTiles(primaryPlaces)}
+    </div>
+    {advancedPlaces.length > 0 && <details className="mt-3">
+      <summary className="cursor-pointer text-[12px] font-medium text-ink-secondary">{t("computer.dest.advanced")}</summary>
+      <div role="group" aria-label={t("computer.dest.advanced")} className="mt-2 grid auto-rows-fr grid-cols-2 gap-2">
+        {placeTiles(advancedPlaces)}
+      </div>
+    </details>}
+    <p className="mt-2 text-[11.5px] leading-5 text-ink-secondary">{t("computer.cliHint")}</p>
+  </>;
   const heldPin = liveTask?.surface && !liveTask.surfaceAuto && profileBot.computer !== "off"
     && liveTask.surface !== profileBot.computer ? liveTask.surface : undefined;
 
@@ -1693,37 +1730,9 @@ export function ComputerPanel({
           <div className="mt-4 rounded-xl bg-card p-4">
             <div className="text-[15px] font-medium text-ink">{t("computer.worksOn")}</div>
             <p className="mt-1 text-[12px] leading-5 text-ink-secondary">
-              {t(state.config?.cloudHome ? "computer.worksOnHintCloudHome" : "computer.worksOnHint")}
+              {t("computer.worksOnHintHost")}
             </p>
-          <div role="group" aria-label={t("computer.destinationAria")} className="mt-3 grid auto-rows-fr grid-cols-2 gap-2">
-            {placeOptions.map(({ mode, labelKey, descriptionKey, Icon, selected, managedBy, disabled, unavailableTitle, issue, view }) => (
-              <button
-                key={mode ?? "auto"}
-                disabled={disabled}
-                title={unavailableTitle}
-                onClick={() => selectPlace(mode)}
-                type="button"
-                aria-pressed={selected}
-                className={cn(
-                  "min-w-0 rounded-lg border px-2.5 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-card",
-                  selected
-                    ? "border-accent/60 bg-accent/10 text-ink"
-                    : "border-hairline/50 bg-panel/30 text-ink-secondary",
-                  disabled
-                    ? "cursor-not-allowed"
-                    : "hover:border-accent/40 hover:bg-control/60",
-                )}
-              >
-                <span className="flex items-center gap-2 text-[12px] font-medium leading-4">
-                  {selected ? <Check size={14} className="shrink-0 text-accent" /> : <Icon size={14} className="shrink-0 text-ink-secondary" />}
-                  <span>{t(labelKey)}</span>
-                </span>
-                <span className="mt-1.5 block text-[11px] leading-4 text-ink-secondary">
-                  {managedBy ?? (issue ? view.short : t(descriptionKey))}
-                </span>
-              </button>
-            ))}
-          </div>
+          {placePicker}
           {liveTask?.surface && (
             <p className="mt-2 text-[11.5px] leading-5 text-ink-secondary" data-testid="place-pinned-note">
               {t("place.pinnedNote", { place: t(placeLabelKey(liveTask.surface)) })}
@@ -1753,29 +1762,7 @@ export function ComputerPanel({
         </> : (
           <div className="mt-4 rounded-xl bg-card p-4" data-testid="where-works">
             <div className="text-[15px] font-medium text-ink">{t("computer.simple.whereWorks", { name: bot.name })}</div>
-            <div role="group" aria-label={t("computer.destinationAria")} className="mt-3 grid grid-cols-3 gap-2">
-              {placeOptions.map(({ mode, Icon, selected, disabled, unavailableTitle, simpleLabel, issue, view }) => (
-                <button
-                  key={mode ?? "auto"}
-                  type="button"
-                  disabled={disabled}
-                  title={unavailableTitle}
-                  aria-pressed={selected}
-                  onClick={() => selectPlace(mode)}
-                  className={cn(
-                    "flex min-w-0 flex-col items-center gap-1.5 rounded-lg border px-1.5 py-2.5 text-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-card",
-                    selected
-                      ? "border-accent/60 bg-accent/10 text-ink"
-                      : "border-hairline/50 bg-panel/30 text-ink-secondary",
-                    disabled ? "cursor-not-allowed opacity-50" : "hover:border-accent/40 hover:bg-control/60",
-                  )}
-                >
-                  <Icon size={16} className={cn("shrink-0", selected ? "text-accent" : "text-ink-secondary")} aria-hidden="true" />
-                  <span className="w-full truncate text-[12px] font-medium leading-4">{simpleLabel}</span>
-                  {issue && <span className="w-full truncate text-[10.5px] leading-3 text-ink-secondary">{view.short}</span>}
-                </button>
-              ))}
-            </div>
+            {placePicker}
             <div className="mt-3 text-[11.5px] leading-5 text-ink-secondary" data-testid="place-line">
               {worksOnView.line}
               {placeActionButton(worksOnView, "mt-1 block font-medium text-accent hover:underline")}

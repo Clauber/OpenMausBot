@@ -75,7 +75,7 @@ describe("Computer panel on a narrow screen", () => {
 });
 
 describe("Computer panel Works on", () => {
-  const places = (markup: string) => [...markup.matchAll(/<span>(Auto|Cloud desktop|Private desktop|This computer|Browser|Off)<\/span>/g)].map((match) => match[1]);
+  const places = (markup: string) => [...markup.matchAll(/<span>(Auto \(recommended\)|Cloud desktop|Private desktop|This computer|Browser|Off)<\/span>/g)].map((match) => match[1]);
   const computerTab = (config: FeatureFlagConfig & { cloudHome?: boolean }) => {
     fixture.view.current = "computer";
     try { return render(config); } finally { fixture.view.current = "browser"; }
@@ -83,14 +83,14 @@ describe("Computer panel Works on", () => {
 
   it("lists this computer and a private desktop on a desktop or self-hosted server", () => {
     const markup = computerTab({});
-    expect(places(markup)).toEqual(["Auto", "Cloud desktop", "Private desktop", "This computer", "Browser", "Off"]);
-    expect(markup).toContain("Choose where this bot works.</p>");
+    expect(places(markup)).toEqual(["Auto (recommended)", "Browser", "Off", "Cloud desktop", "Private desktop", "This computer"]);
+    expect(markup).toContain("Choose how this bot uses a browser or desktop on this LEGION installation.</p>");
   });
 
   it("lists neither on My Cloud, and says why", () => {
     const markup = computerTab({ cloudHome: true });
-    expect(places(markup)).toEqual(["Auto", "Cloud desktop", "Browser", "Off"]);
-    expect(markup).toContain("Choose where this bot works. To let it use your computer, turn on Let my bots use this computer");
+    expect(places(markup)).toEqual(["Auto (recommended)", "Browser", "Off", "Cloud desktop"]);
+    expect(markup).toContain("Choose how this bot uses a browser or desktop on this LEGION installation.");
   });
 });
 

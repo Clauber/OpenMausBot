@@ -242,6 +242,13 @@ it("a guest's Claude turn has no command-running tool and no read outside its fo
   expect(argv()).toContain("--restricted");
   expect(after("--tools")).toBe("Read,Grep,Glob,Edit,Write,WebSearch");
   expect(after("--permission-mode")).toBe("default");
+  const hostCli = JSON.parse(readFileSync(dump, "utf8")).mcpConfig.mcpServers.agents.env;
+  expect(hostCli.OMB_HOST_CLI).toBe("0");
+  const hostDenied = await fetch(`${base}/api/internal/host-exec`, {
+    method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${hostCli.OMB_COMMS_TOKEN}` },
+    body: JSON.stringify({ command: "printf guest-must-not-run" }),
+  });
+  expect(hostDenied.status).toBe(403);
   const socket = connect(JSON.parse(readFileSync(dump, "utf8")).mcpConfig.mcpServers.ogb.args.at(-1) as string);
   await new Promise<void>((resolve, reject) => { socket.once("connect", resolve); socket.once("error", reject); });
   const requestId = randomUUID();
