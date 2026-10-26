@@ -6,6 +6,7 @@ import { json, readBody } from "../harness/http.ts";
 import type { RequestAuth } from "../request-auth.ts";
 import { ownMcpHttpRoutes } from "./own-mcp-http.ts";
 import { AGENTS_ENV_HEADER, OWN_MCP_HTTP_PATH } from "./own-mcp-http-path.ts";
+import { ownMcpOverHttp } from "../drivers/turn-mcp.ts";
 import { TOOL_LIMIT_ENV, TOOL_LIMIT_HEADER } from "../tool-count-limit.ts";
 
 /** This server's own internal endpoints, as the stdio proxies reach them: the turn's capability is checked there. */
@@ -51,7 +52,7 @@ describe("Legion's own MCP servers over HTTP", () => {
     const notice = await post("browser", { jsonrpc: "2.0", method: "notifications/initialized" });
     expect([notice.status, await notice.text()]).toEqual([202, ""]);
     expect(await (await post("browser", { jsonrpc: "2.0", id: 2, method: "tools/list" })).json())
-      .toEqual({ jsonrpc: "2.0", id: 2, result: { tools: [{ name: "agent_browser_open", inputSchema: { type: "object" } }] } });
+      .toEqual({ jsonrpc: "2.0", id: 2, result: { tools: [{ name: "agent_browser_open", inputSchema: { type: "object" }, _meta: { timeoutMs: 130_000 } }] } });
     const batch = await (await post("browser", [{ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "agent_browser_open", arguments: {} } },
       { jsonrpc: "2.0", id: 4, method: "ping" }])).json();
     expect(batch).toEqual([{ jsonrpc: "2.0", id: 3, result: { content: [{ type: "text", text: "ran agent_browser_open" }] } }, { jsonrpc: "2.0", id: 4, result: {} }]);
@@ -83,6 +84,19 @@ describe("Legion's own MCP servers over HTTP", () => {
       expect.objectContaining({ path: "/api/internal/agents?self=chief", authorization: "Bearer turn-capability" }),
       expect.objectContaining({ path: "/api/internal/tool-timing", authorization: "Bearer turn-capability", body: expect.objectContaining({ name: "list_bots", ok: true }) }),
     ]);
+  });
+
+  it.each(["0", "1"])("preserves host CLI setting %s through the engine's HTTP mount", async (hostCli) => {
+    const mount = ownMcpOverHttp({ name: "agents", command: "node", args: ["/app/agents-proxy.js"],
+      env: { OMB_HARNESS_URL: base, OMB_COMMS_TOKEN: "turn-capability", OMB_BOT_ID: "w2",
+        OMB_THREAD_ID: "t2", OMB_CLOUD_HOME: "1", OMB_HOST_CLI: hostCli } });
+    expect(mount).not.toBeNull();
+    const reply = await (await post("agents", { jsonrpc: "2.0", id: 7, method: "tools/list" }, mount!.headers)).json() as {
+      result: { tools: Array<{ name: string; inputSchema: { properties: { target?: { enum: string[] } } } }> };
+    };
+    const shell = reply.result.tools.find((tool) => tool.name === "vm_exec");
+    if (hostCli === "1") expect(shell?.inputSchema.properties.target?.enum).toContain("host");
+    else expect(shell).toBeUndefined();
   });
 
   it("lists no more of a server's tools than the turn's tool limit allows", async () => {
