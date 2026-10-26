@@ -67,27 +67,27 @@ const FULL = "skills+shared+voice+escalations+x";
 
 /** Bytes when the budget was last set; a profile may move at most 2% either way (lower it to lock in a win). */
 const BUDGET_BASELINE: Record<string, number> = {
-  "default": 67865,
-  "voice": 68677,
-  "shared": 69798,
-  "shared+voice": 70610,
-  "skills": 70684,
-  "skills+voice": 71496,
-  "skills+shared": 72617,
-  "skills+shared+voice": 73429,
-  "non-chief": 58016,
-  "voice+non-chief": 58828,
-  "shared+non-chief": 59949,
-  "shared+voice+non-chief": 60761,
-  "skills+non-chief": 60835,
-  "skills+voice+non-chief": 61647,
-  "skills+shared+non-chief": 62768,
-  "skills+shared+voice+non-chief": 63580,
-  "skills+shared+voice+cloud-home": 72484,
-  "skills+shared+voice+non-chief+cloud-home": 62635,
-  "default+legacy-switches": 67865,
-  "skills+shared+voice+escalations": 74289,
-  "skills+shared+voice+escalations+x": 78927,
+  "default": 70229,
+  "voice": 71041,
+  "shared": 72162,
+  "shared+voice": 72974,
+  "skills": 73048,
+  "skills+voice": 73860,
+  "skills+shared": 74981,
+  "skills+shared+voice": 75793,
+  "non-chief": 60380,
+  "voice+non-chief": 61192,
+  "shared+non-chief": 62313,
+  "shared+voice+non-chief": 63125,
+  "skills+non-chief": 63199,
+  "skills+voice+non-chief": 64011,
+  "skills+shared+non-chief": 65132,
+  "skills+shared+voice+non-chief": 65944,
+  "skills+shared+voice+cloud-home": 74848,
+  "skills+shared+voice+non-chief+cloud-home": 64999,
+  "default+legacy-switches": 70229,
+  "skills+shared+voice+escalations": 76653,
+  "skills+shared+voice+escalations+x": 81291,
 };
 
 const RPC_PREFIX = '{"jsonrpc":"2.0","id":1,"result":';
@@ -160,6 +160,16 @@ beforeAll(async () => {
 describe("agents proxy tools/list golden", () => {
   it("round-trips through JSON.parse unchanged, so a parsed golden can stand for the bytes", () => {
     for (const wire of Object.values(wires)) expect(JSON.stringify(JSON.parse(wire))).toBe(wire);
+  });
+
+  it("offers the explicit host CLI target only when mounted, including cloud hosts", () => {
+    const profile = catalogProfileFromEnv({ OMB_HOST_CLI: "1" });
+    const command = availableTools(profile).find(tool => tool.name === "vm_exec");
+    expect(command?.inputSchema.properties).toHaveProperty("target");
+    expect(command?.description).toContain("task workspace");
+    const off = availableTools(catalogProfileFromEnv({ OMB_HOST_CLI: "0" })).find(tool => tool.name === "vm_exec");
+    expect(off?.inputSchema.properties).not.toHaveProperty("target");
+    expect(availableTools({ ...profile, cloudHome: true }).find(tool => tool.name === "vm_exec")?.inputSchema.properties).toHaveProperty("target");
   });
 
   it("the fullest profile is byte-identical to its golden", () => {

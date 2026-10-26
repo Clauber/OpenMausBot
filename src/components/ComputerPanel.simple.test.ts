@@ -290,12 +290,17 @@ function browserSwitch(rendered: ReturnType<typeof render>) {
 }
 
 describe("Where the bot works", () => {
-  it("offers six places in a 3-column grid with plain names", () => {
+  it("keeps Auto, Browser and Off primary and collapses desktop choices", () => {
     const rendered = render(makeBot());
     const card = rendered.nodes.find((node) => node.props["data-testid"] === "where-works")!;
     expect(rendered.html).toContain("Where Scout works");
     expect(nodes(card.props.children).find((node) => node.props.role === "group")!.props.className).toContain("grid-cols-3");
-    expect(grid(rendered).map((node) => text(node.props.children))).toEqual(["Auto", "Cloud desktop", "Private desktop", "This Mac", "Browser", "Off"]);
+    const primary = rendered.nodes.find((node) => node.props.role === "group" && node.props["aria-label"] === "Computer destination")!;
+    expect(nodes(primary.props.children).filter((node) => node.type === "button").map((node) => text(node.props.children))).toEqual(["Auto (recommended)", "Browser", "Off"]);
+    const advanced = rendered.nodes.find((node) => node.type === "details" && text(node.props.children).includes("Advanced"))!;
+    expect(advanced.props.open).toBeUndefined();
+    expect(nodes(advanced.props.children).filter((node) => node.type === "button").map((node) => text(node.props.children))).toEqual(["Cloud desktop", "Private desktop", "This Mac"]);
+    expect(rendered.html).toContain("CLI is always available on the LEGION host, except when Off is selected.");
     expect(placeLine(rendered)).toBe("Uses the built-in browser, a private desktop on this computer, or this computer's screen, whichever the task needs.");
   });
 
@@ -323,8 +328,7 @@ describe("Where the bot works", () => {
     fixture.values = [];
     phaseIndex = -1;
     const advanced = render(makeBot());
-    const group = advanced.nodes.find((node) => node.props.role === "group" && node.props["aria-label"] === "Computer destination")!;
-    const card = nodes(group.props.children).filter((node) => node.type === "button")[1]!;
+    const card = advanced.nodes.find((node) => node.type === "button" && text(node.props.children).startsWith("Cloud desktop"))!;
     expect(card.props.disabled).toBe(true);
     expect(text(card.props.children)).toBe("Cloud desktopNot with this model");
     expect(card.props.title).toBe(tile.props.title);
@@ -384,8 +388,9 @@ describe("Where the bot works", () => {
         fixture.dispatch = vi.fn();
         const start = makeBot({ computer: patch.computer === "off" ? "cloud" : "off" });
         const rendered = render(start);
-        const group = rendered.nodes.find((node) => node.props.role === "group" && node.props["aria-label"] === "Computer destination")!;
-        const option = nodes(group.props.children).filter((node) => node.type === "button")[index]!;
+        const options = rendered.nodes.filter((node) => node.type === "button" && node.props["aria-pressed"] !== undefined);
+        const labels = ["Auto (recommended)", "Cloud desktop", "Private desktop", advanced ? "This computer" : "This Mac", "Browser", "Off"];
+        const option = options.find((node) => text(node.props.children).startsWith(labels[index]!))!;
         (option.props.onClick as () => void)();
         calls.push((fixture.dispatch as ReturnType<typeof vi.fn>).mock.calls);
       }

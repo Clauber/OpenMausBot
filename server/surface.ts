@@ -137,7 +137,7 @@ const CLOUD_HOME_WORDING: ReadonlyArray<readonly [string, string]> = [
 /** Built from what was actually mounted, never from the setting, so the model is only told about tools it can call. */
 export function surfacePrompt(
   mounted: MountedSurfaces,
-  opts: { pinned?: Surface | null; note?: string; canSelect?: boolean; cloudHome?: boolean } = {},
+  opts: { pinned?: Surface | null; note?: string; canSelect?: boolean; cloudHome?: boolean; hostCli?: boolean } = {},
 ): string {
   const computer = mounted.computer ? surfaceLabel(mounted.computer) : null;
   let text = "";
@@ -149,7 +149,7 @@ export function surfacePrompt(
       ` Everything you do on screen happens on ${computer}, web pages included, through its own browser; there is no separate built-in browser this turn. If you need the user to sign in, tell them it is on ${computer}.`;
   } else if (mounted.browser) {
     text =
-      " Everything you do on screen happens in the built-in browser tab; there is no desktop, file or shell computer this turn. If you need the user to sign in, tell them it is in the Browser tab of the Screen panel.";
+      " Everything you do on screen happens in the built-in browser tab; there is no desktop computer mounted this turn. If you need the user to sign in, tell them it is in the Browser tab of the Screen panel.";
   }
   if (text) text += RESTATE_SENTENCE + (opts.canSelect
     ? SURFACE_AUTHORITY.replace(ASK_TO_SWITCH, "inspect connected choices with select_computer and select the requested available place; on a pending result end this turn so Legion can reconnect the correct tools and continue the original request")
@@ -165,5 +165,6 @@ export function surfacePrompt(
   if (opts.canSelect && !computer && !mounted.browser) text += " No computer or browser tools are mounted yet; select_computer is the way to connect them before screen work, not a reason to claim you already performed it.";
   if (computer || mounted.browser) text += " For online research, use the selected Legion browser when a search service is unavailable. A failed tool proves only that this attempt failed, not that every browser is unavailable. Inspect the current page after navigation; report a sign-in page, redirect or error as such. A completed model turn is not proof that the user's task succeeded.";
   if (opts.cloudHome) for (const [desktop, cloudHome] of CLOUD_HOME_WORDING) text = text.replace(desktop, cloudHome);
+  if (opts.hostCli) text += " For command-line work and files on the LEGION host, use vm_exec with target host. It runs sh -lc in this bot and conversation's task workspace and follows your approval settings. This does not select or control a desktop.";
   return text + (opts.note ?? "");
 }

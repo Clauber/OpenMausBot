@@ -57,6 +57,38 @@ async function withFixture(run: (helpers: {
   } finally { await fixture.close(); }
 }
 
+it("runs Browser bot host CLI only after approval, in its task workspace, and refuses Off", async () => {
+  await withFixture(async ({ api, control, launched }) => {
+    const { bot } = await control(["new-bot", "--name", "Host CLI fixture"]);
+    expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: "browser", approvalMode: "ask" })).status).toBe(200);
+    await control(["send", "--bot", bot.id, "--text", "Stay active."]);
+    const turn = await launched();
+    const agents = turn.mcpConfig.mcpServers.agents!;
+    expect(agents.env.OMB_HOST_CLI).toBe("1");
+    expect(turn.systemPrompt).toContain("vm_exec with target host");
+    const execute = (command: string) => fetch(`${agents.env.OMB_HARNESS_URL}/api/internal/host-exec`, {
+      method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${agents.env.OMB_COMMS_TOKEN}` },
+      body: JSON.stringify({ command }), signal: AbortSignal.timeout(10_000),
+    });
+    const pending = execute("pwd; printf host-cli-fixture");
+    let requestId: string | undefined;
+    await expect.poll(async () => {
+      const { messages } = (await api("GET", `/api/threads/${bot.activeTaskId}/messages?limit=100`)).body as { messages: WireMessage[] };
+      requestId = messages.findLast(message => message.card?.tool === "mcp__agents__vm_exec" && !message.card.answered)?.card?.requestId;
+      return requestId;
+    }, { timeout: 15_000 }).toBeTruthy();
+    expect((await api("POST", `/api/threads/${bot.activeTaskId}/respond`, { requestId, behavior: "allow" })).status).toBe(200);
+    const result = await pending;
+    expect(result.status).toBe(200);
+    const output = await result.json();
+    expect(output).toMatchObject({ stdout: expect.stringContaining("host-cli-fixture"), exitCode: 0 });
+    expect(output).toMatchObject({ stdout: expect.stringContaining(`/${bot.id}/${bot.activeTaskId}`) });
+    expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: "off" })).status).toBe(200);
+    expect((await execute("printf must-not-run")).status).toBeGreaterThanOrEqual(400);
+
+  });
+}, 90_000);
+
 /** One MCP server exactly as the engine was told to start it, asked one
  * request at a time: each answer is read off its stdout before the next
  * request is written, as an engine's own calls arrive, so a limit the

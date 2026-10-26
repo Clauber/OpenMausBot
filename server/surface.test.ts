@@ -126,7 +126,11 @@ describe("surfacePrompt", () => {
   it("names only the browser tab when it is the only surface", () => {
     const text = surfacePrompt({ computer: null, browser: true });
     expect(text).toMatch(/happens in the built-in browser tab/);
-    expect(text).toMatch(/no desktop, file or shell computer/);
+    expect(text).toMatch(/no desktop computer mounted/);
+    const cli = surfacePrompt({ computer: null, browser: true }, { hostCli: true });
+    expect(cli).toContain("vm_exec with target host");
+    expect(cli).toContain("approval settings");
+    expect(text).not.toContain("vm_exec with target host");
     expect(text).toMatch(/Browser tab of the Screen panel/);
     expect(text).toMatch(/say in one short sentence where you are working/);
     expect(text).not.toMatch(/happens on the cloud computer/);

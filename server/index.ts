@@ -57,7 +57,7 @@ import { isPendingSignInRequest, normalizeSignInSite, signInFallbackText, signIn
 import { createRoomTurnLevels } from "./room-turn-level.ts";
 import { RoomMemberLock } from "./room-member-lock.ts";
 import { approvalHeldNote, approvalHeldReason, approvalModeForOrigin, autoVerdict, deliverFullAccessApproval, undeliveredApprovalTool } from "./auto-approve.ts";
-import { bindSafetyFloor, denyAtSafetyFloor, heldAtSafetyFloor, safetyFloorOn } from "./safety-floor-gate.ts";
+import { bindSafetyFloor, denyAtSafetyFloor, heldAtSafetyFloor, safetyFloorOn, safetyFloorBlock, safetyFloorClears } from "./safety-floor-gate.ts";
 import { CommandAllowlistStore, commandAllowlistCandidate } from "./command-allowlist.ts";
 import { providerMcpTool, providerToolAllowKey } from "./provider-tool-allow.ts";
 import type { CommandAllowlistCandidate, CommandAllowlistResponse } from "../shared/command-allowlist.ts";
@@ -123,7 +123,7 @@ import { DataFailure } from "./data/types.ts";
 import { TeamComputers, teamComputerOwner, type TeamComputerRecord } from "./team-computers.ts";
 import { isEffortLevel, type CardAnswerer, type ResolvedSender, type SignInRequestCardData, type SteerQueueReason, type WireBot, type WireGroup, type WireTask } from "../shared/wire.ts";
 import { isPersistentQuestionCard, shouldSettleRequestCard } from "../shared/ask-question.ts";
-import { canUseMcpServer, parseToolScope } from "../shared/tool-scope.ts";
+import { allowsTool, canUseMcpServer, parseToolScope } from "../shared/tool-scope.ts";
 import type { TeamComputersPayload } from "../shared/team-computer.ts";
 import { boatCreateRecoverySnapshot } from "./boat-create-idempotency.ts";
 import { boatDeletionSnapshot } from "./boat-delete-journal.ts";
@@ -413,6 +413,8 @@ import {
   undoSkillWrite,
 } from "./skills.ts";
 import { fetchSkillFromSource } from "./skill-fetch.ts";
+import { hostExec } from "./host-exec.ts";
+import { ensureTaskWorkspace } from "./workspace.ts";
 import { ensureTaskWorkspaceWithSkills } from "./skill-task-links.ts";
 import { parseSkillManageReferences, previousSkillVersion, skillCardCopy, skillRequestReferences } from "./skill-request-card.ts";
 import { skillReferencesSha256 } from "./skill-storage.ts";
@@ -2046,6 +2048,7 @@ function agentsIntegration(
       OMB_X_RESEARCH: researchCredential(cfg.treg?.key) && store.bot(botId)?.xResearch !== false ? "1" : "0",
       OMB_CHIEF_OF_STAFF: chiefLevel(store.bot(botId)) ? "1" : "0",
       OMB_ESCALATIONS: chiefEscalationsEnabled(cfg) ? "1" : "0",
+      OMB_HOST_CLI: store.bot(botId)?.computer !== "off" && !cloudGuestDriven(threadId) && !cloudGuestDrivenHandoff(roomHandoffId) ? "1" : "0",
     },
   };
 }
@@ -9322,7 +9325,7 @@ async function startTurnAsItself(
         { id: "shell", label: "Long-running commands", text: worksInWorkspace ? longCommandsPrompt(computerPromptKind) : "" },
         { id: "computer", label: "Computer", text: computerPrompt(computerPromptKind) },
         { id: "team-computer", label: "Team computer", text: teamComputerPrompt(teamComputer) },
-        { id: "plan", label: "Surface", text: surfacePrompt({ computer: mountedComputer, browser: Boolean(integrations.browser) }, { pinned: plan.pinned, note: plan.note + vpsUnavailableNote + vmUpdateNote + (computerSkipped && plan.computer !== "off" ? computerSkippedNote(redactSecretsInText(computerSkipped)) : ""), canSelect: computerSelectionTurns.has(threadId), cloudHome: Boolean(CLOUD_HOME) }) },
+        { id: "plan", label: "Surface", text: surfacePrompt({ computer: mountedComputer, browser: Boolean(integrations.browser) }, { pinned: plan.pinned, note: plan.note + vpsUnavailableNote + vmUpdateNote + (computerSkipped && plan.computer !== "off" ? computerSkippedNote(redactSecretsInText(computerSkipped)) : ""), canSelect: computerSelectionTurns.has(threadId), cloudHome: Boolean(CLOUD_HOME), hostCli: integrations.agents?.env.OMB_HOST_CLI === "1" }) },
         { id: "cloud-home", label: "My Cloud", text: CLOUD_HOME ? cloudHomePrompt(Boolean(integrations.agents) && lendingEnabled(), syncedFolders(DATA_DIR), sharedComputers.known(CLOUD_HOME_LENDER)) : "" },
         { id: "composio", label: "Connected apps", text: integrations.composio ? composioSystemPrompt(liveBot?.connectorTools ?? bot.connectorTools) + describeConnectorScopes((liveBot ?? bot).connectorScopes) : "" },
         { id: "mcp", label: "MCP servers", text: customMcpPrompt(Object.keys(integrations.custom ?? {})) }, { id: "to-connect", label: "Connections to make", text: cloudConnections.prompt(liveBot ?? bot) + teamConnections.prompt(threadId, integrations) },
@@ -10233,8 +10236,8 @@ const outboundRequests = new OutboundRequestService();
 const outboundCounts = new OutboundCounts(join(DATA_DIR, "outbound-counts.json"));
 const outboundHold = createOutboundHold({ store, dataDir: DATA_DIR, outboundRequests, outboundCounts, holdMs: OUTBOUND_HOLD_MS, connectorThread, activeGroupTurnForBot, notify });
 
-async function authorizeInternalAction(capability: InternalCapability, tool: string, args: unknown, confirmation: "none" | "policy" | "owner" = "none"): Promise<void> {
-  const bot = store.bot(capability.botId);
+async function authorizeInternalAction(capability: InternalCapability, tool: string, args: unknown, confirmation: "none" | "policy" | "owner" | "shell" = "none"): Promise<void> {
+  const bot = confirmation === "shell" ? store.projectBotForTask(capability.botId, capability.threadId) ?? store.bot(capability.botId) : store.bot(capability.botId);
   if (!bot || !internalCapabilityIsActive(capability)) throw effectRefusal("effect_unavailable", "This action's turn has ended.");
   const rule = approvalRule(tool, args, bot.approvalRules, cfg.approvalRules);
   const consequential = consequentialTool(tool, args);
@@ -10249,7 +10252,17 @@ async function authorizeInternalAction(capability: InternalCapability, tool: str
     confidence: review.confidence, reasoning: review.reasoning, rule: `judge:${review.decision}` });
   if (review?.decision === "deny") throw Object.assign(new Error(review.reasoning), { status: 403 });
   let approved: boolean | undefined = rule.decision === "always_allow" ? true : undefined;
-  if (rule.decision === "require_approval" || review?.decision === "ask") {
+  const shellCommand = confirmation === "shell" && args && typeof args === "object" && "command" in args && typeof args.command === "string" ? args.command : undefined;
+  const command = shellCommand && args && typeof args === "object" && "cwd" in args
+    ? commandAllowlistCandidate({ command: shellCommand, cwd: args.cwd, providerInstanceId: bot.modelSelection.instanceId }) : null;
+  const shellMode = approvalModeForTurn(bot, isInternalTurn(capability.threadId), capability.threadId);
+  const shellVerdict = confirmation === "shell" ? autoVerdict(shellMode, tool, {
+    ruleDecision: rule.decision, commandAllowed: Boolean(command && commandAllowlist.matches(bot.id, command)),
+    toolAllowed: bot.alwaysAllow?.includes(tool),
+  }) : undefined;
+  const shellAutoApproved = shellVerdict?.approve || (review?.decision === "allow" && shellMode === "auto");
+  const needsShellApproval = confirmation === "shell" && (!shellAutoApproved || !safetyFloorClears(shellCommand));
+  if (rule.decision === "require_approval" || review?.decision === "ask" || needsShellApproval) {
     const held = outboundRequests.open({ botId: bot.id, threadId: capability.threadId, tool, timeoutMs: OUTBOUND_HOLD_MS });
     const summary = (JSON.stringify(redactSecrets(args)) ?? "{}").slice(0, 2000);
     const card = store.appendMessage(capability.threadId, { role: "bot", kind: "options",
@@ -10260,7 +10273,15 @@ async function authorizeInternalAction(capability: InternalCapability, tool: str
     appendDecision(DATA_DIR, { threadId: capability.threadId, requestId: held.requestId, botId: bot.id, tool,
       effectKey: key, decision: "card-shown", source: rule.decision ? "approval-rules" : "auto-review", rule: rule.rule });
     notify(buildNotification("approval", bot, capability.threadId, tool));
-    const answer = await held.answer;
+    const revoked = confirmation === "shell" ? setInterval(() => {
+      const fresh = store.projectBotForTask(bot.id, capability.threadId) ?? store.bot(bot.id);
+      if (!fresh || fresh.computer === "off" || cloudGuestDriven(capability.threadId) || cloudGuestDrivenHandoff(capability.roomHandoffId) ||
+          !internalCapabilityIsActive(capability) || managedPolicy.computerRefusal("thisComputer") ||
+          !allowsTool(fresh.toolScope, { kind: "mcp", server: "agents", name: "vm_exec" })) {
+        outboundRequests.resolve({ threadId: capability.threadId, requestId: held.requestId, behavior: "deny" });
+      }
+    }, 100) : undefined;
+    const answer = await held.answer.finally(() => { clearInterval(revoked); });
     outboundRequests.forget(held.requestId);
     if (answer !== "allow") {
       if (answer === "timeout") store.patchMessage(capability.threadId, card.id, { card: { ...card.card!, answered: "unavailable", dismissed: true } });
@@ -10269,7 +10290,7 @@ async function authorizeInternalAction(capability: InternalCapability, tool: str
     approved = true;
   }
   if (!internalCapabilityIsActive(capability)) throw effectRefusal("effect_unavailable", "This action's turn has ended.");
-  const freshRule = approvalRule(tool, args, store.bot(bot.id)?.approvalRules, cfg.approvalRules);
+  const freshRule = approvalRule(tool, args, (confirmation === "shell" ? store.projectBotForTask(bot.id, capability.threadId) ?? store.bot(bot.id) : store.bot(bot.id))?.approvalRules, cfg.approvalRules);
   if (JSON.stringify(freshRule) !== JSON.stringify(rule)) throw effectRefusal("effect_unavailable", "Approval rules changed; propose this action again.");
   const deferred = confirmation === "owner" || (confirmation === "policy" && approved === undefined && !fullAccessForSource(bot.id, capability.threadId));
   if (!deferred && key && !effectLedger.claim(key)) throw effectRefusal();
@@ -11435,7 +11456,7 @@ async function runClaimedGroupMemberTurn(
     { id: "mcp", label: "MCP servers", text: customMcpPrompt(Object.keys(integrations.custom ?? {})) + teamConnections.prompt(threadId, integrations) },
     { id: "computer", label: "Computer", text: computerPrompt(roomComputerPromptKind) },
     { id: "team-computer", label: "Team computer", text: teamComputerPrompt(roomTeamComputer) },
-    { id: "plan", label: "Surface", text: surfacePrompt({ computer: roomTeamComputer ? "cloud" : roomVmTarget ? "vm" : surfaceOfComputerKind(roomComputerKind), browser: Boolean(integrations.browser) }, { note: roomPlan.note, cloudHome: Boolean(CLOUD_HOME) }) },
+    { id: "plan", label: "Surface", text: surfacePrompt({ computer: roomTeamComputer ? "cloud" : roomVmTarget ? "vm" : surfaceOfComputerKind(roomComputerKind), browser: Boolean(integrations.browser) }, { note: roomPlan.note, cloudHome: Boolean(CLOUD_HOME), hostCli: integrations.agents?.env.OMB_HOST_CLI === "1" }) },
     { id: "cloud-home", label: "My Cloud", text: CLOUD_HOME ? cloudHomePrompt(Boolean(integrations.agents) && lendingEnabled(), syncedFolders(DATA_DIR), sharedComputers.known(CLOUD_HOME_LENDER)) : "" },
     { id: "browser", label: "Browser", text: integrations.browser ? browserPromptFor(bot, Boolean(integrations.agents)) : "" },
     { id: "data", label: "Data", text: integrations.data ? BUILT_IN_DATA_SYSTEM_PROMPT : "" },
@@ -15293,6 +15314,39 @@ const handleRequestInScope = async (req: IncomingMessage, res: ServerResponse) =
             ? `No file was found at ${requestedPath}. Save it under /home/cua/workspace (or your working folder) and pass its exact path.`
             : error instanceof Error ? error.message : "could not attach that file";
           return json(res, status, { error: message });
+        }
+      }
+      if (method === "POST" && path === "/api/internal/host-exec") {
+        const threadId = internalCapability.threadId;
+        if (!connectorThread(internalSender.id, threadId)) return json(res, 403, { error: "source conversation does not belong to sender" });
+        const available = () => {
+          const bot = store.projectBotForTask(internalSender.id, threadId) ?? store.bot(internalSender.id);
+          return bot && bot.computer !== "off" && !cloudGuestDriven(threadId) && !cloudGuestDrivenHandoff(internalCapability.roomHandoffId)
+            && internalCapabilityIsActive(internalCapability) && !managedPolicy.computerRefusal("thisComputer")
+            && allowsTool(bot.toolScope, { kind: "mcp", server: "agents", name: "vm_exec" });
+        };
+        if (!available()) return json(res, 403, { error: "Host CLI is unavailable or disabled by policy." });
+        const body = await readInternalBody();
+        const command = typeof body.command === "string" ? body.command : "";
+        const timeoutSeconds = body.timeout_seconds === undefined ? 60 : body.timeout_seconds;
+        if (!command.trim() || command.length > 32768 || !Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 300) {
+          return json(res, 400, { error: "Supply a non-empty command up to 32768 characters and a timeout between 1 and 300 seconds." });
+        }
+        const block = safetyFloorBlock(command);
+        if (block) return json(res, 403, { error: block.reason });
+        const cwd = ensureTaskWorkspace(internalSender.id, threadId);
+        await authorizeInternalAction(internalCapability, "mcp__agents__vm_exec", { command, cwd, target: "host" }, "shell");
+        if (!available()) return json(res, 403, { error: "Host CLI permission changed before execution." });
+        const abort = new AbortController();
+        const onClose = () => abort.abort(new Error("Host CLI connection closed."));
+        res.once("close", onClose);
+        const revoked = setInterval(() => { if (!available()) abort.abort(new Error("Host CLI permission was revoked.")); }, 100);
+        try {
+          const result = await hostExec({ command, cwd, timeoutSeconds, signal: abort.signal });
+          return json(res, 200, result);
+        } finally {
+          clearInterval(revoked);
+          res.removeListener("close", onClose);
         }
       }
       if (method === "POST" && path === "/api/internal/vm-exec") {

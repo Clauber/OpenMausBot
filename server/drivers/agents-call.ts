@@ -170,7 +170,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     return { text: JSON.stringify(result.body), ...(result.ok ? {} : { isError: true }) };
   }
   if (name === "vm_exec") {
-    const { ok, body } = await apiResponse("/api/internal/vm-exec", {
+    const { ok, body } = await apiResponse(args.target === "host" ? "/api/internal/host-exec" : "/api/internal/vm-exec", {
       method: "POST",
       body: JSON.stringify({ command: args.command, ...(typeof args.timeout_seconds === "number" ? { timeout_seconds: args.timeout_seconds } : {}) }),
     });
@@ -179,6 +179,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     const stdout = String(body.stdout ?? "");
     const stderr = String(body.stderr ?? "");
     const lines = [body.timedOut ? "The command was stopped: it ran past its time limit." : `exit code ${exitCode}`];
+    if (body.truncated) lines.push("Output truncated at 64 KiB.");
     if (stdout) lines.push("--- stdout ---", stdout.replace(/\s+$/, ""));
     if (stderr) lines.push("--- stderr ---", stderr.replace(/\s+$/, ""));
     if (!stdout && !stderr && !body.timedOut) lines.push("(no output)");

@@ -21,6 +21,7 @@ export interface CatalogProfile {
   botId: string;
   /** features.chiefEscalations: raise_escalation is mounted. */
   escalations?: boolean;
+  hostCli?: boolean;
 }
 
 /** Everything is off unless the harness says "1". */
@@ -35,6 +36,7 @@ export function catalogProfileFromEnv(env: NodeJS.ProcessEnv): CatalogProfile {
     chief: env.OMB_CHIEF_OF_STAFF === "1",
     botId: env.OMB_BOT_ID ?? "",
     escalations: env.OMB_ESCALATIONS === "1",
+    hostCli: env.OMB_HOST_CLI === "1",
   };
 }
 
@@ -1062,7 +1064,7 @@ const CLOUD_HOME_SURFACE = {
 export function availableTools(profile: CatalogProfile) {
   const tools = catalogTools(profile);
   return profile.cloudHome
-    ? tools.filter(tool => !LOCAL_VM_TOOL_NAMES.has(tool.name)).map(tool => tool.name === "select_computer"
+    ? tools.filter(tool => profile.hostCli || !LOCAL_VM_TOOL_NAMES.has(tool.name)).map(tool => tool.name === "select_computer"
       ? { ...tool, inputSchema: { ...tool.inputSchema, properties: { surface: CLOUD_HOME_SURFACE } } }
       : tool)
     : tools;
@@ -1096,6 +1098,12 @@ function catalogTools(profile: CatalogProfile) {
     ...tool,
     inputSchema: { ...tool.inputSchema, properties: { ...tool.inputSchema.properties,
       bot_id: { type: "string", enum: [profile.botId], description: START_THREAD_SELF_ID },
+    } },
+  } : tool.name === "vm_exec" && profile.hostCli ? {
+    ...tool,
+    description: "Run a shell command and return stdout, stderr and exit code. Set target host for sh -lc on the LEGION host in this bot and conversation's task workspace, available regardless of desktop or Browser selection and subject to approval. Set target vm or omit it for the attached Local VM, starting in /home/cua/workspace. Never substitute one target for the other. Default timeout 60 seconds, maximum 300. Host output is capped at 64 KiB.",
+    inputSchema: { ...tool.inputSchema, properties: { ...tool.inputSchema.properties,
+      target: { type: "string", enum: profile.cloudHome ? ["host"] : ["vm", "host"], description: "host = LEGION host task workspace. vm = attached Local VM. Default vm; always specify host for host CLI work." },
     } },
   } : tool);
 }
