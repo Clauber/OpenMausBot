@@ -33,13 +33,13 @@ function fixture(source = "src/page.ts") {
   return { directory, git, base: git("rev-parse", "HEAD") };
 }
 
-function run(directory: string, event: string, payload: unknown) {
+function run(directory: string, event: string, payload: unknown, hostedRunners = "true") {
   const eventPath = join(directory, "event.json");
   const outputPath = join(directory, "output.txt");
   writeFileSync(eventPath, JSON.stringify(payload));
   const result = spawnSync(process.execPath, [script], {
     cwd: directory,
-    env: { ...process.env, GITHUB_EVENT_NAME: event, GITHUB_EVENT_PATH: eventPath, GITHUB_OUTPUT: outputPath },
+    env: { ...process.env, GITHUB_EVENT_NAME: event, GITHUB_EVENT_PATH: eventPath, GITHUB_OUTPUT: outputPath, HOSTED_RUNNERS: hostedRunners },
     encoding: "utf8",
     timeout: 5_000,
   });
@@ -159,6 +159,11 @@ describe("CI scope CLI", () => {
     const { directory } = fixture();
     expect(run(directory, event, {}).output).toBe(`runtime=true\n${ALL_OS}\n`);
   });
+
+  it.each(["", "false"])("runs Linux only without hosted runners (HOSTED_RUNNERS=%j)", (hosted) => {
+    const { directory } = fixture();
+    expect(run(directory, "merge_group", {}, hosted).output).toBe(`runtime=true\n${platforms(["ubuntu-latest"])}\n`);
+  });
 });
 
 const pkg = (version: string, extra: Record<string, unknown> = {}) =>
@@ -215,7 +220,7 @@ async function runPush(directory: string, payload: unknown, env: Record<string, 
   const eventPath = join(directory, "event.json");
   const outputPath = join(directory, "output.txt");
   writeFileSync(eventPath, JSON.stringify(payload));
-  const childEnv: Record<string, string | undefined> = { ...process.env, GITHUB_EVENT_NAME: "push", GITHUB_EVENT_PATH: eventPath, GITHUB_OUTPUT: outputPath, ...env };
+  const childEnv: Record<string, string | undefined> = { ...process.env, GITHUB_EVENT_NAME: "push", GITHUB_EVENT_PATH: eventPath, GITHUB_OUTPUT: outputPath, HOSTED_RUNNERS: "true", ...env };
   for (const [key, value] of Object.entries(childEnv)) if (value === undefined) delete childEnv[key];
   const stderr = await new Promise<string>((resolve, reject) => {
     execFile(process.execPath, [script], { cwd: directory, env: childEnv as NodeJS.ProcessEnv, encoding: "utf8", timeout: 10_000 },
