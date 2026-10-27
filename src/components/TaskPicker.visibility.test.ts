@@ -27,6 +27,21 @@ const bot: Bot = {
 beforeEach(() => { fixture.showThreads = true; fixture.queued = {}; fixture.bots = []; fixture.dispatch.mockClear(); });
 
 describe("optional bot thread picker", () => {
+  it("scopes header attention to the opened bot while retaining sibling statuses", () => {
+    const other: Bot = { ...bot, id: "anvil", threadId: "anvil-current", tasks: [
+      { threadId: "anvil-work", title: "Anvil work", createdAt: 1, busy: true },
+      { threadId: "anvil-unread", title: "Anvil reply", createdAt: 2, unread: true },
+    ] };
+    fixture.bots = [bot, other];
+    fixture.queued = { queued: [{}], "anvil-work": [{}] };
+    const picker = TaskPicker({ bot });
+    expect(picker!.props.attention.map((entry: { botId: string }) => entry.botId)).toEqual([
+      "pepper", "pepper", "pepper", "pepper", "pepper",
+    ]);
+    expect(picker!.props.attention.map((entry: { task: { threadId: string } }) => entry.task.threadId))
+      .toEqual(expect.arrayContaining(["current", "waiting", "working", "queued", "unread"]));
+  });
+
   it("keeps the usual picker when threads are shown", () => {
     expect(renderToStaticMarkup(createElement(TaskPicker, { bot }))).toContain('aria-label="All threads"');
   });

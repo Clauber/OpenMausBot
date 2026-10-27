@@ -12,7 +12,7 @@ import type { BotApps } from "./bot-settings/useBotApps";
 // Hook-by-call-order harness: component state survives between renders, effects never run, and handlers are read off
 // the element tree.
 const fixture = vi.hoisted(() => {
-  vi.stubGlobal("window", { confirm: () => true });
+  vi.stubGlobal("window", { confirm: () => true, location: { hash: "" } });
   return {
     advanced: false,
     setAdvanced: (() => {}) as (enabled: boolean) => void,
