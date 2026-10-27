@@ -107,7 +107,7 @@ const ASK_NOW = { approvalMode: "ask" as const, autoApprove: false, alwaysAllow:
 const TASK_PATCH_FIELDS = [
   "title", "projectId", "modelSelection", "approvalMode", "autoApprove", "alwaysAllow", "goal",
   "unread", "lastReadMessageId", "rewound", "archivedAt", "pinned", "pinnedMessageId", "resumeCursors", "lastInstanceId", "cwd",
-  "routineRunId", "surface", "surfaceSource", "snoozedUntil", "link", "linkAuto", "appliedCompactionId", "contextFloor", "lastContextModel",
+  "routineRunId", "requestedBrowserProfile", "lastMountedBrowserProfile", "surface", "surfaceSource", "snoozedUntil", "link", "linkAuto", "appliedCompactionId", "contextFloor", "lastContextModel",
 ] as const satisfies readonly (keyof TaskRecord)[];
 export type TaskPatch = Partial<Pick<TaskRecord, typeof TASK_PATCH_FIELDS[number]>>;
 
@@ -139,7 +139,7 @@ function permissionChange(record: PermissionFields & { threadId?: string }, patc
   };
 }
 
-export type GroupTaskPatch = Partial<Pick<GroupTaskRecord, "title" | "pinned">> & { turnTimeoutMinutes?: number | null };
+export type GroupTaskPatch = Partial<Pick<GroupTaskRecord, "title" | "pinned" | "requestedBrowserProfiles" | "lastMountedBrowserProfiles">> & { turnTimeoutMinutes?: number | null };
 
 function mirrorActiveGroupTask(group: GroupRecord, task: GroupTaskRecord): void {
   Object.assign(group, { threadId: task.threadId, pinnedCwd: task.pinnedCwd, pinnedMessageId: task.pinnedMessageId });
@@ -944,7 +944,7 @@ export class Store {
     );
   }
 
-  patchGroup(id: string, patch: Partial<Pick<GroupRecord, "name" | "memberIds" | "defaultResponder" | "bulletin" | "description" | "unread" | "lastReadMessageId" | "busyBotId" | "cwd" | "pinnedMessageId" | "section" | "pinned" | "setupCompletedAt" | "setupSkippedAt" | "audienceFloor" | "installedPackage" | "turnTimeoutMinutes" | "holds" | "heldMessages">>): GroupRecord | null {
+  patchGroup(id: string, patch: Partial<Pick<GroupRecord, "name" | "memberIds" | "defaultResponder" | "bulletin" | "description" | "unread" | "lastReadMessageId" | "busyBotId" | "cwd" | "pinnedMessageId" | "section" | "pinned" | "setupCompletedAt" | "setupSkippedAt" | "audienceFloor" | "installedPackage" | "turnTimeoutMinutes" | "holds" | "heldMessages" | "requestedBrowserProfiles" | "lastMountedBrowserProfiles">>): GroupRecord | null {
     const group = this.group(id);
     if (!group) return null;
     if (Object.prototype.hasOwnProperty.call(patch, "section")) {
@@ -1116,6 +1116,8 @@ export class Store {
     const task = this.groupTaskByThread(groupId, threadId);
     if (!group || !task) return null;
     this.commitGroupChange(group, "the thread change", () => {
+      if (patch.lastMountedBrowserProfiles !== undefined) task.lastMountedBrowserProfiles = structuredClone(patch.lastMountedBrowserProfiles);
+      if (patch.requestedBrowserProfiles !== undefined) task.requestedBrowserProfiles = structuredClone(patch.requestedBrowserProfiles);
       if (patch.title !== undefined) task.title = patch.title.trim().slice(0, 80) || UNTITLED_TASK;
       if (patch.pinned) task.pinned = true;
       else if (patch.pinned === false) delete task.pinned;
@@ -2134,6 +2136,7 @@ export class Store {
     return {
       ...bot,
       threadId: task.threadId,
+      browserProfile: task.requestedBrowserProfile === undefined ? bot.browserProfile : task.requestedBrowserProfile ?? undefined,
       approvalGrant: bot.approvalGrant?.threadOnly && bot.approvalGrant.threadId !== threadId ? undefined : bot.approvalGrant,
       modelSelection: structuredClone(task.modelSelection ?? bot.modelSelection),
       resumeCursors: structuredClone(task.resumeCursors),

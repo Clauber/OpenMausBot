@@ -67,11 +67,12 @@ afterEach(async () => {
   for (const folder of folders.splice(0)) await removeTempDir(folder);
 });
 
-async function serve({ attach, current = () => true, download, audience = () => "team" }: {
+async function serve({ attach, current = () => true, download, audience = () => "team", session = () => "bot-pepper" }: {
   attach?: (options: ViewerOptions, push: (output: ViewerOutput) => void) => Promise<Viewer>;
   current?: () => boolean;
   download?: (id: string) => Download | undefined;
   audience?: (threadId: string | null) => Audience | null;
+  session?: (threadId: string | null) => string;
 } = {}): Promise<Fixture> {
   const fixture = { origin: "", attachments: [], inputs: [], answers: [], pickerChecks: 0, resumes: [], opened: [], checked: [], dataDir: mkdtempSync(join(tmpdir(), "omb-browser-viewers-")) } as unknown as Fixture;
   folders.push(fixture.dataDir);
@@ -111,12 +112,12 @@ async function serve({ attach, current = () => true, download, audience = () => 
       download: (_browser, id) => download?.(id),
     },
     audience: (_auth, threadId) => audience(threadId),
-    browser: async (botId, opened) => {
+    browser: async (botId, opened, threadId) => {
       fixture.opened.push(opened);
-      return botId === "pepper" ? { botId, session: "bot-pepper", spec: { command: "omb-cdp", args: ["bot:pepper"], env: {} } } : { status: 404, error: "no such bot" };
+      return botId === "pepper" ? { botId, session: session(threadId ?? null), spec: { command: "omb-cdp", args: ["bot:pepper"], env: {} } } : { status: 404, error: "no such bot" };
     },
     authorize: async () => null,
-    current: (_botId, _session, _auth, checked) => { fixture.checked.push(checked); return current(); },
+    current: (_botId, browserSession, _auth, checked, threadId) => { fixture.checked.push(checked); return current() && browserSession === session(threadId ?? null); },
     restartRefusal: () => null,
   };
   const route = createBrowserViewerRoutes(deps);
@@ -378,6 +379,18 @@ describe("the page's file picker and downloads", () => {
 });
 
 describe("whose browser a view shows on a Team Cloud", () => {
+  it("keeps a view on its thread's frozen binding while pending, then invalidates it when a later mount changes", async () => {
+    let mounted = "work-session";
+    const seen: (string | null)[] = [];
+    const fixture = await serve({ session: (threadId) => { seen.push(threadId); return mounted; } });
+    expect((await fetch(`http://${fixture.origin}/api/bots/pepper/browser/live?threadId=ada-chat`)).status).toBe(204);
+    expect(fixture.isCurrent()).toBe(true);
+    expect(fixture.isCurrent()).toBe(true);
+    mounted = "other-session";
+    expect(fixture.isCurrent()).toBe(false);
+    expect(seen.every(threadId => threadId === "ada-chat")).toBe(true);
+  });
+
   it("opens the browser of the conversation shown, the person's own with none named, and nothing for a conversation hidden from them", async () => {
     const hidden = new Set(["cleo-chat"]);
     const fixture = await serve({ audience: (threadId) => (threadId === null ? "member:p_ada" : hidden.has(threadId) ? null : threadId === "room-chat" ? "room:launch" : "member:p_ada") });

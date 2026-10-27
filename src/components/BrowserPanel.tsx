@@ -5,6 +5,7 @@ import { t } from "@/lib/i18n";
 import { usePageVisible } from "@/lib/page-visible";
 import { api, useStore, type Bot } from "@/state/store";
 import { BrowserProfilesManager } from "./BrowserProfilesManager";
+import { ThreadBrowserProfiles, useThreadBrowserProfile } from "./ThreadBrowserProfiles";
 import { ChromeRow, type BrowserNav, type BrowserTab } from "./browser/ChromeRow";
 import { MoreMenu } from "./browser/MoreMenu";
 import { PasskeyNotice } from "./browser/PasskeyNotice";
@@ -16,7 +17,7 @@ import { browserStreamAccess, createPreviewStreamClient, type PreviewStreamClien
 import { createLiveStreamClient, type LiveResume, type LiveStreamClient } from "@/lib/browser-stream-v1";
 import { BROWSER_HELD_ELSEWHERE } from "../../shared/browser-held";
 import { passkeyWallAt } from "../../shared/passkey-wall";
-import { browserScope, withBrowserScope } from "@/lib/team-browser";
+import { withBrowserScope } from "@/lib/team-browser";
 
 const button = "rounded-md p-1.5 text-ink-secondary hover:bg-inset hover:text-ink disabled:opacity-40 disabled:cursor-not-allowed";
 const NO_NAV: BrowserNav = { url: "", loading: false, canGoBack: false, canGoForward: false };
@@ -79,10 +80,12 @@ export function LiveBrowser({ bot, signIn, page }: { bot: Bot; signIn?: BrowserS
   const pageNow = useRef<string | null>(null);
   const latest = useRef({ openSignInPage: () => {}, takeControl: () => {} });
   const signInOpen = state.computerControl?.[bot.id]?.help?.place === "browser";
-  const scopedThread = browserScope(state.config?.team, bot.threadId).threadId;
+  const scopedThread = bot.threadId;
+  const threadProfiles = useThreadBrowserProfile(bot);
+  const activeProfile = threadProfiles.profile ? threadProfiles.profile.viewerProfileId ?? undefined : bot.browserProfile;
   keepNow.current = kept || signInOpen;
-  const profileName = bot.browserProfile === "guest" ? "Temporary browser"
-    : state.config?.browserProfiles?.find((profile) => profile.id === bot.browserProfile)?.name ?? `${bot.name}’s own browser`;
+  const profileName = activeProfile === "guest" ? "Temporary browser"
+    : state.config?.browserProfiles?.find((profile) => profile.id === activeProfile)?.name ?? `${bot.name}’s own browser`;
   useEffect(() => { if (showProfiles) profilesDialog.current?.showModal(); else profilesDialog.current?.close(); }, [showProfiles]);
   useEffect(() => {
     browserControl.current?.hold(showTyping);
@@ -96,7 +99,7 @@ export function LiveBrowser({ bot, signIn, page }: { bot: Bot; signIn?: BrowserS
     setAttempt((value) => value + 1);
   }, []);
   // Another profile may run on the other engine: it gets the stream again if it has one.
-  useEffect(() => { setFallback(false); }, [bot.id, bot.browserProfile, scopedThread]);
+  useEffect(() => { setFallback(false); }, [bot.id, activeProfile, scopedThread]);
   useEffect(() => {
     setTabs([]);
     setNav(stream ? NO_NAV : { ...NO_NAV, canGoBack: true, canGoForward: true });
@@ -104,18 +107,18 @@ export function LiveBrowser({ bot, signIn, page }: { bot: Bot; signIn?: BrowserS
     setGone(false);
     setAsleep("");
     pageNow.current = null;
-  }, [bot.id, bot.browserProfile, scopedThread, attempt, stream]);
+  }, [bot.id, activeProfile, scopedThread, attempt, stream]);
 
   const connect = useCallback<SurfaceConnect>((target, events) => {
     const scope: Record<string, string> = scopedThread ? { threadId: scopedThread } : {};
     if (stream) return createPreviewStreamClient({ access: browserStreamAccess(bot.id, window.location, scope), ...target }, events);
-    const key = `${bot.id}\n${bot.browserProfile ?? ""}${scopedThread ? `\n${scopedThread}` : ""}`;
+    const key = `${bot.id}\n${activeProfile ?? ""}${scopedThread ? `\n${scopedThread}` : ""}`;
     if (resume.current.key !== key) resume.current = { key, viewer: "" };
     return createLiveStreamClient(bot.id, events, (body, viewerId) => api(withBrowserScope(`/api/bots/${encodeURIComponent(bot.id)}/browser/action`, scope), {
       // 120 s matches the server's browser requestTimeoutMs.
       method: "POST", body: JSON.stringify({ ...body, viewerId }), timeoutMs: 120_000,
     }), resume.current, scope);
-  }, [bot.id, bot.browserProfile, scopedThread, stream]);
+  }, [bot.id, activeProfile, scopedThread, stream]);
 
   const interact = useCallback((input: PreviewStreamInput) => {
     if (controlRef.current?.controller === "another-viewer") { setError(BROWSER_HELD_ELSEWHERE); return; }
@@ -273,7 +276,7 @@ export function LiveBrowser({ bot, signIn, page }: { bot: Bot; signIn?: BrowserS
       onTake={takeControl}
       onHandBack={handBack}
       onFullscreen={toggleFullscreen}
-      onProfiles={() => { browserControl.current?.handBack(); setShowProfiles(true); }}
+      onProfiles={() => setShowProfiles(true)}
       menu={<MoreMenu
         stream={stream}
         ready={connected && you}
@@ -296,7 +299,7 @@ export function LiveBrowser({ bot, signIn, page }: { bot: Bot; signIn?: BrowserS
     <div className="relative flex min-h-0 flex-1 flex-col bg-inset/40">
       {shown ? (
         <StreamSurface
-          key={`${attempt}:${stream ? "stream" : "live"}:${bot.browserProfile ?? ""}`}
+          key={`${attempt}:${stream ? "stream" : "live"}:${activeProfile ?? ""}`}
           ref={surface}
           connect={connect}
           input={interact}
@@ -325,7 +328,8 @@ export function LiveBrowser({ bot, signIn, page }: { bot: Bot; signIn?: BrowserS
     <dialog ref={profilesDialog} onClose={() => setShowProfiles(false)} onClick={(e) => { if (e.target === e.currentTarget) setShowProfiles(false); }} className="m-auto w-[min(420px,calc(100%-32px))] max-h-[80vh] overflow-auto rounded-2xl border border-hairline/50 bg-card p-5 text-ink shadow-2xl backdrop:bg-black/40">
       <div className="mb-4 flex items-center justify-between"><h2 className="text-[15px] font-medium">{t("browser.panel.profiles")}</h2><button className={button} aria-label={t("browser.panel.closeProfiles")} onClick={() => setShowProfiles(false)}><X size={16} /></button></div>
       {(heldElsewhere || (you && takeStatus !== "")) && <p className="mb-3 text-[12px] text-ink-secondary">{t(heldElsewhere ? "browser.profiles.heldElsewhere" : "browser.profiles.busy")}</p>}
-      <BrowserProfilesManager bot={bot} disabled={heldElsewhere || takeStatus === "pending" || takeStatus === "slow"} onProfileChanged={() => { setShowProfiles(false); reconnect(); }} />
+      <ThreadBrowserProfiles {...threadProfiles} />
+      <BrowserProfilesManager bot={bot} showBotSites={false} disabled={heldElsewhere || takeStatus === "pending" || takeStatus === "slow"} onProfileChanged={() => { setShowProfiles(false); reconnect(); }} />
     </dialog>
     {/* Security: a password or code typed here goes only to the page's focused field; it is never held in state, logged or shown. */}
     <dialog ref={typingDialog} onClose={() => { const field = typingDialog.current?.querySelector("input"); if (field) field.value = ""; setShowTyping(false); }} className="m-auto w-[min(420px,calc(100%-32px))] rounded-2xl border border-hairline/50 bg-card p-5 text-ink shadow-2xl backdrop:bg-black/40">

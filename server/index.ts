@@ -681,6 +681,10 @@ import { createTerminalRoutes } from "./routes/terminal.ts";
 import { createApprovalGrantRoutes } from "./routes/approval-grants.ts";
 import { createUpgrades } from "./routes/upgrades.ts";
 import { createBrowserViewerRoutes } from "./routes/browser-viewers.ts";
+import { createThreadBrowserProfileRoutes } from "./routes/thread-browser-profiles.ts";
+import { createThreadBrowserProfiles, BROWSER_PROFILE_TOOLS } from "./thread-browser-profiles.ts";
+import { createBrowserProfileUsage } from "./browser-profile-usage.ts";
+import { TOOL_LIST as BROWSER_TOOLS } from "./browser/tools.ts";
 import { localDesktopTarget, localVmViewerStatus } from "./desktop-viewer-targets.ts";
 import { viewerTargetId } from "../shared/desktop-viewer.ts";
 import { createComputerPreviews } from "./computer-previews.ts";
@@ -1790,6 +1794,7 @@ type InternalCapability = {
   /** Set only by the harness at attach; null: mounted, and the first call creates or wakes the Boat. */
   boxId?: string | null;
   browserSession?: string;
+  browserProfileId?: string | null;
   roomHandoffId?: string;
   attachedFiles?: number;
   /** attach_file may also deliver files saved outside the conversation's folders. Never on a Cloud home or a hosted workspace. */
@@ -1880,6 +1885,9 @@ function mintInternalCapability(capability: Omit<InternalCapability, "orphanExpi
   }
   // perTurn: a machine stopped between turns needs a fresh engine, which a new bearer forces.
   const token = perTurn ? randomBytes(24).toString("hex") : sessionBearer(capability);
+  if (capability.kind === "browser" && capability.browserSession && capability.browserProfileId !== undefined) {
+    threadBrowserProfiles.mounted(capability.botId, capability.threadId, capability.browserProfileId);
+  }
   // Minted twice in one turn: keep that turn's record and its counters.
   if (internalCapabilities.get(token)?.generation !== capability.generation) {
     internalCapabilities.set(token, {
@@ -2638,8 +2646,57 @@ function cancelDirectTurnDispatch(botId: string, expectedThreadId?: string): Dir
 const {
   browserRuntime, browserLive, usedBrowserSessions, browserSweep, temporaryBrowserSessions,
   currentBrowserSession, forgetTemporaryBrowser, myChromeAvailable, browserSessionSpec, browserIntegration,
-  browserReady, currentBrowserSpec, loginInput, browserSystemPrompt, closeBrowser, browserEngineSwitched, eraseDeletedBrowser, engineSummary, browserSessionsOf, signedInSitesTarget, uploadPaths, eraseAudienceBrowsers,
-} = createBrowserHost({ cfg, store: () => store, turnResources, activeInternalGenerationByThread, mintInternalCapability, DESKTOP_MANAGED, CLOUD_HOME, PORT, engineMemory, clickByDescription: { decider, ready: () => deciderReady(cfg, "browserClick") }, audienceOf: teamHost.browserAudience, ...(CLOUD_TEAM ? { browserBox: (fd: number, ro: readonly string[]) => botBox.browserBox(fd, ro) } : {}), mayLend: (turn) => cloudLendingRefusal({ botId: store.botByThread(turn.threadId)?.id ?? "", threadId: turn.threadId, generation: turn.generation }) === null, device: () => deviceLinks.route(CLOUD_HOME_LENDER) ?? sharedComputers.internetAway(CLOUD_HOME_LENDER) });
+  browserReady, usesChromeEngine, currentBrowserSpec, loginInput, browserSystemPrompt, closeBrowser, browserEngineSwitched, eraseDeletedBrowser, engineSummary, browserSessionsOf, signedInSitesTarget, uploadPaths, eraseAudienceBrowsers,
+} = createBrowserHost({ cfg, store: () => store, turnResources, activeInternalGenerationByThread, mintInternalCapability, DESKTOP_MANAGED, CLOUD_HOME, PORT, engineMemory, clickByDescription: { decider, ready: () => deciderReady(cfg, "browserClick") }, audienceOf: teamHost.browserAudience, bindingOf: (botId, threadId) => activeBrowserBinding(botId, threadId), ...(CLOUD_TEAM ? { browserBox: (fd: number, ro: readonly string[]) => botBox.browserBox(fd, ro) } : {}), mayLend: (turn) => cloudLendingRefusal({ botId: store.botByThread(turn.threadId)?.id ?? "", threadId: turn.threadId, generation: turn.generation }) === null, device: () => deviceLinks.route(CLOUD_HOME_LENDER) ?? sharedComputers.internetAway(CLOUD_HOME_LENDER) });
+
+function activeBrowserBinding(botId: string, threadId: string) {
+  for (const capability of internalCapabilities.values()) {
+    if (capability.kind === "browser" && capability.botId === botId && capability.threadId === threadId &&
+        capability.browserSession && capability.browserProfileId !== undefined &&
+        activeInternalGenerationByThread.get(threadId) === capability.generation) {
+      return { profileId: capability.browserProfileId, session: capability.browserSession };
+    }
+  }
+  return undefined;
+}
+function viewerBrowserBinding(botId: string, threadId: string) {
+  const active = activeBrowserBinding(botId, threadId);
+  if (active) return active;
+  const profileId = threadBrowserProfiles.viewerProfile(botId, threadId);
+  return { profileId, session: currentBrowserSession(botId, profileId ?? undefined, teamHost.browserAudience(threadId)) };
+}
+const browserProfileUsage = createBrowserProfileUsage({
+  bots: () => store.bots,
+  mounted: function* () {
+    for (const capability of internalCapabilities.values()) {
+      if (capability.kind === "browser" && capability.browserSession && capability.browserProfileId !== undefined &&
+          activeInternalGenerationByThread.get(capability.threadId) === capability.generation) {
+        yield { botId: capability.botId, profileId: capability.browserProfileId, session: capability.browserSession };
+      }
+    }
+  },
+  sessionsOf: browserSessionsOf,
+  session: (botId, threadId, profileId) => currentBrowserSession(botId, profileId ?? undefined, teamHost.browserAudience(threadId)),
+  generation: (threadId) => activeInternalGenerationByThread.get(threadId),
+  botForThread: (threadId) => store.botByThread(threadId)?.id ?? groupSpeakers.get(threadId)?.botId,
+  resources: turnResources, heldBy: (session) => browserRuntime.heldBy(session),
+  unavailable: (profileId) => {
+    if (profileId && cfg.browserProfiles?.some(profile => profile.id === profileId && profile.browser === "chrome") && !myChromeAvailable()) return "My Chrome is unavailable on this server.";
+    if (!usesChromeEngine(profileId ?? undefined)) {
+      const status = browserEngineStatus();
+      if (status.kind === "unavailable") return `The requested browser profile is unavailable: ${status.reason}`;
+    }
+    return null;
+  },
+});
+const threadBrowserProfiles = createThreadBrowserProfiles({
+  cfg, store: () => store, active: activeBrowserBinding,
+  refusal: (botId, threadId, profileId) => {
+    const bot = store.bot(botId);
+    if (!bot || bot.browser === false || bot.computer === "off" || !builtInBrowserEnabled(cfg)) return "Browser tools are not enabled for this bot.";
+    return browserProfileUsage.refusal(botId, threadId, profileId);
+  },
+});
 
 const dataSheets = new DataSheetRegistry({
   broadcast: (frame) => broadcast({ ...frame }),
@@ -9272,8 +9329,10 @@ async function startTurnAsItself(
         liveBot.browser !== false &&
         instance.adapter.capabilities.browserMcp === true
       ) {
-        const selectedProfile = liveBot.browserProfile;
+        const choice = threadBrowserProfiles.activation(bot.id, threadId);
+        const selectedProfile = choice.profileId ?? undefined;
         browser = await browserIntegration(bot.id, selectedProfile, { threadId, generation: dispatchClaimId });
+        if (!browser && choice.explicit) throw new Error("The requested browser profile is unavailable. Select an available profile in Screen.");
         if (browser) integrations.browser = browser.integration;
         if (browser) {
           const spec = browser.spec;
@@ -11249,8 +11308,9 @@ async function runClaimedGroupMemberTurn(
   const phone = instance.adapter.capabilities.deviceMcp === true ? phones.integration(readyBot, { threadId, generation: internalGeneration }) : null;
   if (phone) integrations.device = phone;
   if (roomPlan.browser && !(roomPlan.computer === undefined && roomTeamComputer)) {
-    const selectedProfile = readyBot.browserProfile;
-    const browser = await browserIntegration(readyBot.id, selectedProfile, { threadId, generation: internalGeneration });
+    const choice = threadBrowserProfiles.activation(readyBot.id, threadId);
+    const browser = await browserIntegration(readyBot.id, choice.profileId ?? undefined, { threadId, generation: internalGeneration });
+    if (!browser && choice.explicit) throw new Error("The requested browser profile is unavailable. Select an available profile in Screen.");
     if (browser) integrations.browser = browser.integration;
   }
   const browserReadyBot = store.bot(readyBot.id);
@@ -14140,7 +14200,13 @@ ROUTES.push(createTeamRoutes({
   ...skillExport(skillsHost),
 }));
 ROUTES.push(createBrowserSiteRoutes({
-  target: (which, threadId) => signedInSitesTarget(which, threadId === null ? "team" : teamHost.browserAudience(threadId)),
+  target: (which, threadId, auth) => {
+    const audience = threadId === null ? "team" : teamHost.viewerBrowserAudience({ threadId, sees: (id) => visibleTo(viewerFor(auth)).thread(id), person: auth.kind === "session" ? actorKey(auth) : null });
+    if (!audience) return { status: 404, error: "no such conversation" };
+    const binding = threadId && "bot" in which ? viewerBrowserBinding(which.bot, threadId) : undefined;
+    if (binding?.profileId && binding.profileId !== "guest" && !cfg.browserProfiles?.some(profile => profile.id === binding.profileId)) return { status: 409, error: "The viewed browser profile was deleted." };
+    return signedInSitesTarget(which, audience, binding);
+  },
   list: (target) => listSignedInSites(target),
   signOut: (target, site) => signOutOfSites(target, site),
 }));
@@ -14184,7 +14250,7 @@ ROUTES.push(createAntigravityAccountRoutes({
   },
 }));
 ROUTES.push(createConfigRoutes({
-  store, cfg, registry, sessions, browserCleanup, browserLive, browserRuntime, usedBrowserSessions, decider,
+  store, cfg, registry, sessions, browserCleanup, browserLive, browserRuntime, usedBrowserSessions, decider, browserProfileUsers: browserProfileUsage.users,
   sharedComputers, sharedComputerControl, closeBrowser, browserEngineSwitched,
   hostedModels: Boolean(hostedModels),
   cloudHome: Boolean(CLOUD_HOME),
@@ -14261,25 +14327,35 @@ ROUTES.push(createSkinRoutes({ skins: customSkins }));
 
 ROUTES.push(desktopViewer.route);
 ROUTES.push(terminal.route);
+ROUTES.push(createThreadBrowserProfileRoutes({
+  profiles: threadBrowserProfiles,
+  visible: (botId, threadId, auth) => (auth.kind !== "session" || sessions.isLive(auth.session.id)) && Boolean(store.taskByThread(botId, threadId) || store.groupByThread(threadId)?.memberIds.includes(botId))
+    && visibleTo(viewerFor(auth)).bot(botId) && visibleTo(viewerFor(auth)).thread(threadId),
+}));
 ROUTES.push(createBrowserViewerRoutes({
   upgrades, viewers: browserLive, dataDir: DATA_DIR,
   audience: (auth, threadId) => teamHost.viewerBrowserAudience({ threadId, sees: (id) => visibleTo(viewerFor(auth)).thread(id), person: auth.kind === "session" ? actorKey(auth) : null }),
-  browser: async (botId, audience) => {
+  browser: async (botId, audience, threadId) => {
     const bot = store.bot(botId);
     if (!bot) return { status: 404, error: "no such bot" };
     if (!builtInBrowserEnabled(cfg) || bot.browser === false) return { status: 409, error: "Enable this bot's browser in its profile first." };
-    const browser = await browserIntegration(bot.id, bot.browserProfile, undefined, audience);
+    if (threadId && !store.taskByThread(botId, threadId) && !store.groupByThread(threadId)?.memberIds.includes(botId)) return { status: 404, error: "no such conversation" };
+    const active = threadId ? viewerBrowserBinding(botId, threadId) : undefined;
+    if (active?.profileId && active.profileId !== "guest" && !cfg.browserProfiles?.some(profile => profile.id === active.profileId)) return { status: 409, error: "The viewed browser profile was deleted. Select a profile and start a new turn." };
+    const browser = await browserIntegration(bot.id, active ? active.profileId ?? undefined : bot.browserProfile, undefined, audience);
     return browser ? { botId: bot.id, session: browser.session, spec: browser.spec } : { status: 503, error: "Install the browser first." };
   },
   authorize: async (req, auth) => !HOSTED_WORKSPACE || auth.kind !== "session" ? null
     : workspaceAccess ? workspaceAccess.authorize(req, auth) : { status: 503, error: "Workspace sign-in is unavailable." },
-  current: (botId, session, auth, audience) => {
+  current: (botId, session, auth, audience, threadId) => {
     const current = store.bot(botId);
-    return !!current && current.browser !== false && builtInBrowserEnabled(cfg) && currentBrowserSession(current.id, current.browserProfile, audience) === session
+    const active = threadId ? viewerBrowserBinding(botId, threadId) : undefined;
+    const profile = active ? active.profileId ?? undefined : current?.browserProfile;
+    const exists = !profile || profile === "guest" || cfg.browserProfiles?.some(candidate => candidate.id === profile) === true;
+    return !!current && exists && current.browser !== false && builtInBrowserEnabled(cfg) && currentBrowserSession(current.id, profile, audience) === session
       && (auth.kind !== "session" || (sessions.isLive(auth.session.id) && visibleTo(viewerFor(auth)).bot(botId)));
   },
-  restartRefusal: (session) => browserRestartRefusal(browserRuntime.interrupted(session), store.bots.filter((candidate) => candidate.busy
-    && browserSessionsOf(candidate.id, candidate.browserProfile).includes(session)).map((candidate) => ({ waitingOnBrowser: computerControl.snapshot(candidate.id).help?.place === "browser" }))),
+  restartRefusal: (session) => browserRestartRefusal(browserRuntime.interrupted(session), browserProfileUsage.sessionUsers(session).map((candidate) => ({ waitingOnBrowser: computerControl.snapshot(candidate.botId).help?.place === "browser" }))),
 }));
 const helperToolRoutes = createHelperToolRoutes({ decider, extractor }); const xResearchRoutes = createXResearchInternalRoutes({ credential: () => researchCredential(cfg.treg?.key), botEnabled: (botId) => store.bot(botId)?.xResearch !== false, cloudHome: CLOUD_HOME !== null }); ROUTES.push(createXConnectorRoutes({ credential: () => researchCredential(cfg.treg?.key), included: () => xCredential(), unavailable: () => xResearchStatus().unavailable === true }));
 
@@ -15075,8 +15151,32 @@ const handleRequestInScope = async (req: IncomingMessage, res: ServerResponse) =
         if (!bot || bot.browser === false || bot.computer === "off" || !builtInBrowserEnabled(cfg)) {
           return json(res, 403, { error: "browser tools are not enabled for this bot" });
         }
-        const browser = await browserIntegration(bot.id, bot.browserProfile, undefined, teamHost.browserAudience(internalCapability.threadId));
-        if (!browser) return json(res, 503, { error: "the browser could not start on this server" });
+        requireActiveInternalCapability();
+        if (body.method === "tools/call" && BROWSER_PROFILE_TOOLS.some(tool => tool.name === body.params?.name)) {
+          if (!allowsTool(bot.toolScope, { kind: "mcp", server: "browser", name: body.params.name })) return json(res, 403, { error: "This browser tool is not allowed for this bot." });
+          await authorizeInternalAction(internalCapability, `mcp__browser__${body.params.name}`, body.params.arguments);
+          requireActiveInternalCapability();
+          if (!allowsTool(store.bot(bot.id)?.toolScope, { kind: "mcp", server: "browser", name: body.params.name })) return json(res, 403, { error: "This browser tool is not allowed for this bot." });
+          try {
+            const state = body.params.name === "browser_profiles_list"
+              ? threadBrowserProfiles.state(bot.id, internalCapability.threadId)
+              : threadBrowserProfiles.select(bot.id, internalCapability.threadId, body.params.arguments);
+            return json(res, 200, { result: { content: [{ type: "text", text: JSON.stringify(state) }], structuredContent: state } });
+          } catch (error) {
+            return json(res, 200, { result: { isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : "Could not select browser profile." }] } });
+          }
+        }
+        if (body.method === "tools/list" && usesChromeEngine(internalCapability.browserProfileId ?? undefined)) {
+          return json(res, 200, { result: { tools: [...BROWSER_TOOLS, ...BROWSER_PROFILE_TOOLS].filter(tool => allowsTool(bot.toolScope, { kind: "mcp", server: "browser", name: tool.name })) } });
+        }
+        const activeProfile = internalCapability.browserProfileId;
+        if (activeProfile && activeProfile !== "guest" && !cfg.browserProfiles?.some(profile => profile.id === activeProfile)) {
+          return json(res, 409, { error: "The active browser profile was deleted. Select a profile and start a new turn." });
+        }
+        const browser = await browserIntegration(bot.id, activeProfile ?? undefined, undefined, teamHost.browserAudience(internalCapability.threadId));
+        if (!browser) return body.method === "tools/list"
+          ? json(res, 200, { result: { tools: BROWSER_PROFILE_TOOLS.filter(tool => allowsTool(bot.toolScope, { kind: "mcp", server: "browser", name: tool.name })) } })
+          : json(res, 503, { error: "the browser could not start on this server" });
         if (browser.session !== internalCapability.browserSession) {
           return json(res, 409, { error: "this browser profile changed; start a new turn" });
         }
@@ -15096,14 +15196,20 @@ const handleRequestInScope = async (req: IncomingMessage, res: ServerResponse) =
           requireActiveInternalCapability();
           const current = store.bot(bot.id);
           if (!current || current.browser === false || current.computer === "off" || !builtInBrowserEnabled(cfg) ||
-              currentBrowserSession(current.id, current.browserProfile, teamHost.browserAudience(internalCapability.threadId)) !== browser.session) {
+              currentBrowserSession(current.id, activeProfile ?? undefined, teamHost.browserAudience(internalCapability.threadId)) !== browser.session) {
             throw Object.assign(new Error("Browser access changed while connecting."), { status: 409 });
           }
           if (body.method === "tools/call" && !claimTurnResource(internalCapability, `browser:${browser.session}`)) {
             throw Object.assign(new Error("another thread is using this browser — pause browser work until that thread finishes"), { status: 409 });
           }
-        }, stepContext(bot, internalCapability, () => liveTurnByThread.get(internalCapability.threadId) ?? null));
+        }, stepContext(bot, internalCapability, () => liveTurnByThread.get(internalCapability.threadId) ?? null)).catch((error: unknown) => {
+          if (body.method === "tools/list") return { tools: [] };
+          throw error;
+        });
         requireActiveInternalCapability();
+        if (body.method === "tools/list" && result && typeof result === "object" && "tools" in result && Array.isArray(result.tools)) {
+          return json(res, 200, { result: { ...result, tools: [...result.tools, ...BROWSER_PROFILE_TOOLS.filter(tool => allowsTool(bot.toolScope, { kind: "mcp", server: "browser", name: tool.name }))] } });
+        }
         return json(res, 200, { result });
       }
       // The turn's capability names its Boat; the Boat credential stays here.

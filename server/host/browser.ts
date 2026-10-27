@@ -58,7 +58,7 @@ export interface BrowserHostDeps {
   turnResources: Pick<TurnResources, "free" | "holder">;
   activeInternalGenerationByThread: ReadonlyMap<string, string>;
   mintInternalCapability(capability: {
-    botId: string; threadId: string; generation: string; browserSession: string; kind: "browser";
+    botId: string; threadId: string; generation: string; browserSession: string; browserProfileId: string | null; kind: "browser";
     depth: number; skillAuthoring: boolean; createdBots: number; openedThreads: number;
   }): string;
   DESKTOP_MANAGED: boolean;
@@ -73,6 +73,7 @@ export interface BrowserHostDeps {
   /** Whose browser a conversation's turns use on a Team Cloud: the member's, the group chat's or the team's. Every
    * browser is the bot's own without it. */
   audienceOf?(threadId: string): Audience;
+  bindingOf?(botId: string, threadId: string): { profileId: string | null; session: string } | undefined;
   /** The box every Chrome of the bots' browsers runs in (a Team Cloud's), or none. */
   browserBox?(seccompFd: number, ro: readonly string[]): LauncherBox | null;
   /** agent_browser_click_text: the decision model picks the element; offered per tools/list while `ready()`. */
@@ -287,8 +288,8 @@ export function createBrowserHost(deps: BrowserHostDeps) {
   function browserReady(profile: string | undefined): boolean {
     return onChrome(profile) ? chromeEngine.summary().kind === "engine" : browserEngineStatus().kind === "ready";
   }
-  function turnIntegration(botId: string, session: string, turn: { threadId: string; generation: string }) {
-    const token = mintInternalCapability({ botId, ...turn, browserSession: session,
+  function turnIntegration(botId: string, session: string, turn: { threadId: string; generation: string }, profile: string | undefined) {
+    const token = mintInternalCapability({ botId, ...turn, browserSession: session, browserProfileId: profile ?? null,
       kind: "browser", depth: 0, skillAuthoring: false, createdBots: 0, openedThreads: 0 });
     return {
       command: process.execPath, args: [SPAWNED_PROXIES.harnessMcp, "browser"], env: {
@@ -303,7 +304,7 @@ export function createBrowserHost(deps: BrowserHostDeps) {
     if (onChrome(profile)) {
       const { session, spec } = chromeSpec(botId, profile, audience);
       usedBrowserSessions.set(session, spec);
-      return { profile: partitionId, session, spec, integration: turn ? turnIntegration(botId, session, turn) : spec };
+      return { profile: partitionId, session, spec, integration: turn ? turnIntegration(botId, session, turn, profile) : spec };
     }
     const status = browserEngineStatus();
     if (status.kind !== "ready") {
@@ -317,7 +318,7 @@ export function createBrowserHost(deps: BrowserHostDeps) {
       if (!turn && await stealthTarget(session, profile) === false) return null;
       const spec = stealthSpec();
       usedBrowserSessions.set(session, spec);
-      return { profile: partitionId, session, spec, integration: turn ? turnIntegration(botId, session, turn) : spec };
+      return { profile: partitionId, session, spec, integration: turn ? turnIntegration(botId, session, turn, profile) : spec };
     }
     const stealthCdp = turn || usesMyChrome(browserProfileId) ? null : await stealthTarget(session, profile);
     if (stealthCdp === false) return null;
@@ -330,11 +331,11 @@ export function createBrowserHost(deps: BrowserHostDeps) {
     await prepareBrowserSessionState(status.binaryPath, session, { env: spec.env, persistent: profile !== "guest" && !attachesToChrome(spec.env), isCurrent: () => {
       const current = store.bot(botId);
       return !!current && current.browser !== false && builtInBrowserEnabled(cfg)
-        && currentBrowserSession(current.id, current.browserProfile, audience) === session
+        && currentBrowserSession(current.id, profile, audience) === session
         && (!turn || activeInternalGenerationByThread.get(turn.threadId) === turn.generation);
     } });
     if (!turn) return { profile: partitionId, session, spec, integration: spec };
-    return { profile: partitionId, session, spec, integration: turnIntegration(botId, session, turn) };
+    return { profile: partitionId, session, spec, integration: turnIntegration(botId, session, turn, profile) };
   }
   const stealthAttachments = new StealthAttachments();
   const warmedStealth = new Set<string>();
@@ -423,9 +424,12 @@ export function createBrowserHost(deps: BrowserHostDeps) {
   /** The browser a thread's bot would start; a temporary one has no session until its first call. My Chrome is the person's own. */
   function threadBrowser(threadId: string): { session: string | undefined; spec: Spec | undefined } | null {
     const bot = store.botByThread(threadId);
-    if (!bot || bot.browser === false || bot.computer === "off" || !builtInBrowserEnabled(cfg) || usesMyChrome(bot.browserProfile)) return null;
+    if (!bot || bot.browser === false || bot.computer === "off" || !builtInBrowserEnabled(cfg)) return null;
+    const binding = deps.bindingOf?.(bot.id, threadId);
+    const profile = binding ? binding.profileId ?? undefined : bot.browserProfile;
+    if (usesMyChrome(profile)) return null;
     const audience = browserAudience(threadId);
-    const session = bot.browserProfile === "guest" ? temporaryBrowserSessions.get(bot.id + audienceBrowserSuffix(audience)) : currentBrowserSession(bot.id, bot.browserProfile, audience);
+    const session = binding?.session ?? (profile === "guest" ? temporaryBrowserSessions.get(bot.id + audienceBrowserSuffix(audience)) : currentBrowserSession(bot.id, profile, audience));
     return { session, spec: session === undefined ? undefined : usedBrowserSessions.get(session) };
   }
   /** Tried until no turn holds the browser and no call runs in it, or for 30 s: the stopped turn may still be settling. */
@@ -511,7 +515,7 @@ export function createBrowserHost(deps: BrowserHostDeps) {
     return namedUploadPaths(files, join(browserProfileDirectory(session), "omb-uploads"), Date.now(), { everyFile: true });
   }
   /** The saved sign-ins of a bot's or a shared profile's browser, for one audience. */
-  async function signedInSitesTarget(which: BrowserSitesRef, audience: Audience = "team"): Promise<BrowserSitesTarget | { status: number; error: string }> {
+  async function signedInSitesTarget(which: BrowserSitesRef, audience: Audience = "team", binding?: { profileId: string | null; session: string }): Promise<BrowserSitesTarget | { status: number; error: string }> {
     const engine = browserEngineStatus();
     if (engine.kind !== "ready") return { status: 409, error: engine.reason };
     let session: string;
@@ -524,9 +528,9 @@ export function createBrowserHost(deps: BrowserHostDeps) {
     } else {
       const bot = store.bot(which.bot);
       if (!bot) return { status: 404, error: "no such bot" };
-      if (bot.browserProfile === "guest") return { status: 409, error: "A temporary browser saves no sign-ins." };
-      session = currentBrowserSession(bot.id, bot.browserProfile, audience);
-      profile = bot.browserProfile;
+      profile = binding ? binding.profileId ?? undefined : bot.browserProfile;
+      if (profile === "guest") return { status: 409, error: "A temporary browser saves no sign-ins." };
+      session = binding?.session ?? currentBrowserSession(bot.id, profile, audience);
     }
     const refusal = signedInSitesRefusal(profile);
     if (refusal) return { status: 409, error: refusal };
@@ -541,7 +545,7 @@ export function createBrowserHost(deps: BrowserHostDeps) {
   return {
     browserRuntime, browserLive, usedBrowserSessions, browserSweep, temporaryBrowserSessions, browserIdleMs: idleMs,
     currentBrowserSession, forgetTemporaryBrowser, myChromeAvailable, usesMyChrome, browserSessionSpec, browserIntegration,
-    browserReady, currentBrowserSpec, loginInput, browserSystemPrompt, signedInSitesRefusal, closeBrowser, browserEngineSwitched,
+    browserReady, usesChromeEngine: onChrome, currentBrowserSpec, loginInput, browserSystemPrompt, signedInSitesRefusal, closeBrowser, browserEngineSwitched,
     eraseDeletedBrowser, engineSummary, engineBrowsers, browserAudience, browserSessionsOf, signedInSitesTarget, uploadPaths,
     eraseAudienceBrowsers,
   };

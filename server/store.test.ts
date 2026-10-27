@@ -26,11 +26,85 @@ import { SECTION_CONTEXTS_FILE, readSectionContext, writeSectionContext } from "
 import { TeamComputers } from "./team-computers.ts";
 import { allowsTool } from "../shared/tool-scope.ts";
 
+import { createThreadBrowserProfiles } from "./thread-browser-profiles.ts";
+import { createBrowserProfileUsage } from "./browser-profile-usage.ts";
+import { TurnResources } from "./turn-resources.ts";
+import { browserRestartRefusal } from "./browser-live.ts";
 const selection = (): ModelSelection => ({ instanceId: "claude", model: "claude-sonnet-5" });
 
 describe("Store", () => {
   beforeEach(() => {
     rmSync(DATA_DIR, { recursive: true, force: true });
+  });
+
+  it("rejects an occupied target with real turn ownership and keeps current-profile management independent", () => {
+    const store = new Store(selection);
+    const bot = store.createBot({ name: "Browser ownership" });
+    store.patchBot(bot.id, { browserProfile: "work" });
+    const cfg = { browserProfiles: [{ id: "work", name: "Work" }, { id: "other", name: "Other" }, { id: "unavailable", name: "Unavailable" }] };
+    const resources = new TurnResources();
+    const other = { botId: "other-bot", threadId: "other-thread", generation: "other-generation" };
+    expect(resources.claim("browser:work", other)).toBe(true);
+    const usage = createBrowserProfileUsage({
+      bots: () => store.bots,
+      mounted: () => [{ botId: bot.id, profileId: "work", session: "work" }],
+      sessionsOf: (_botId, profileId) => [profileId ?? "own"],
+      session: (_botId, _threadId, profileId) => profileId ?? "own",
+      generation: () => "current-generation", botForThread: threadId => store.botByThread(threadId)?.id, resources, heldBy: () => null,
+      unavailable: profileId => profileId === "unavailable" ? "Browser is unavailable." : null,
+    });
+    const profiles = createThreadBrowserProfiles({
+      cfg, store: () => store, active: () => ({ profileId: "work", session: "work" }), refusal: usage.refusal,
+    });
+    expect(profiles.state(bot.id, bot.threadId).profiles.map(profile => profile.id)).toEqual([null, "guest", "work", "other", "unavailable"]);
+    expect(profiles.activation(bot.id, bot.threadId)).toEqual({ profileId: "work", explicit: false });
+    expect(() => profiles.select(bot.id, bot.threadId, { profileId: "work" })).toThrow("Another thread");
+    expect(store.taskByThread(bot.id, bot.threadId)?.requestedBrowserProfile).toBeUndefined();
+    expect(profiles.select(bot.id, bot.threadId, { profileId: "other" })).toMatchObject({ active: { profileId: "work" }, requestedProfileId: "other", status: "pending" });
+    expect(resources.holder("browser:work")).toEqual(other);
+    expect(resources.holder("browser:other")).toBeUndefined();
+    expect(resources.claim("browser:other", other)).toBe(true);
+    expect(profiles.state(bot.id, bot.threadId)).toMatchObject({ status: "error", requestedProfileId: "other" });
+    expect(() => profiles.activation(bot.id, bot.threadId)).toThrow("Another thread");
+    expect(resources.holder("browser:other")).toEqual(other);
+    expect(browserRestartRefusal(false, usage.sessionUsers("work").map(() => ({ waitingOnBrowser: false })))).toContain("Stop every bot");
+    expect(() => profiles.select(bot.id, bot.threadId, { profileId: "unavailable" })).toThrow("unavailable");
+    cfg.browserProfiles = [{ id: "work", name: "Work" }];
+    expect(profiles.state(bot.id, bot.threadId)).toMatchObject({ status: "error", error: expect.stringContaining("deleted") });
+    expect(profiles.viewerProfile(bot.id, bot.threadId)).toBe("work");
+  });
+
+  it.each([false, true])("keeps group browser choices per bot and reloads only verified mounted history, dm %s", (dm) => {
+    const store = new Store(selection);
+    const first = store.createBot({ name: "First browser" });
+    const second = store.createBot({ name: "Second browser" });
+    const group = store.createGroup("Browser group", [first.id, second.id], dm);
+    const cfg = { browserProfiles: [{ id: "work", name: "Work" }, { id: "other", name: "Other" }] };
+    const profiles = createThreadBrowserProfiles({ cfg, store: () => store, active: () => undefined, refusal: () => null });
+    expect(profiles.select(first.id, group.threadId, { profileId: "work" })).toMatchObject({ status: "reconnect", active: null, requestedProfileId: "work", viewerProfileId: null });
+    expect(profiles.select(second.id, group.threadId, { profileId: "guest" })).toMatchObject({ requestedProfileId: "guest", viewerProfileId: null });
+    profiles.mounted(first.id, group.threadId, "work");
+    const reloaded = new Store(selection);
+    const restored = createThreadBrowserProfiles({ cfg, store: () => reloaded, active: () => undefined, refusal: () => null });
+    expect(restored.state(first.id, group.threadId)).toMatchObject({ requestedProfileId: "work", viewerProfileId: "work", active: null, status: "reconnect" });
+    expect(restored.state(second.id, group.threadId)).toMatchObject({ requestedProfileId: "guest", viewerProfileId: null, active: null });
+    expect(restored.select(first.id, group.threadId, { profileId: null })).toMatchObject({ requestedProfileId: null, viewerProfileId: "work" });
+    expect(restored.requested(second.id, group.threadId)).toBe("guest");
+    expect(reloaded.bot(first.id)?.browserProfile).toBeUndefined();
+    expect(reloaded.bot(second.id)?.browserProfile).toBeUndefined();
+  });
+
+  it("persists requested and last mounted browser identities per thread without changing the bot default", () => {
+    const store = new Store(selection);
+    const bot = store.createBot({ name: "Browser choices" });
+    const firstThread = bot.threadId;
+    const sibling = store.createTask(bot.id)!;
+    store.patchTask(bot.id, firstThread, { requestedBrowserProfile: "work", lastMountedBrowserProfile: null });
+    const reloaded = new Store(selection);
+    expect(reloaded.taskByThread(bot.id, firstThread)).toMatchObject({ requestedBrowserProfile: "work", lastMountedBrowserProfile: null });
+    expect(reloaded.projectBotForTask(bot.id, firstThread)?.browserProfile).toBe("work");
+    expect(reloaded.projectBotForTask(bot.id, sibling.threadId)?.browserProfile).toBeUndefined();
+    expect(reloaded.bot(bot.id)?.browserProfile).toBeUndefined();
   });
 
   it("retains tool selection across restarts and distinguishes clearing from no tools", () => {

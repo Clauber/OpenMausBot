@@ -13,6 +13,7 @@ const fixture = vi.hoisted(() => ({
 }));
 vi.mock("@/state/store", async (importOriginal) => ({ ...await importOriginal<typeof import("@/state/store")>(), api: fixture.api, useStore: () => ({ state: fixture.state }) }));
 vi.mock("./BrowserProfilesManager", () => ({ BrowserProfilesManager: () => null }));
+vi.mock("@/lib/session", async (importOriginal) => ({ ...await importOriginal<typeof import("@/lib/session")>(), readSessionState: async () => ({ kind: "loopback", trust: "owner" }) }));
 const { LiveBrowser } = await import("./BrowserPanel");
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -105,6 +106,94 @@ const pill = () => host.querySelector<HTMLButtonElement>("[data-pill]")!;
 const button = (label: string) => [...host.querySelectorAll("button")].find((candidate) => (candidate.getAttribute("aria-label") ?? candidate.textContent) === label)!;
 
 describe("the browser panel's connection", () => {
+  it("masks the old profile while another conversation's GET is pending and ignores the old GET", async () => {
+    fixture.state.config.browserProfiles = [{ id: "work", name: "Work" }, { id: "other", name: "Other" }];
+    const answer = (id: string) => ({ active: { profileId: id }, activeProfileId: id, viewerProfileId: id, requestedProfileId: id, status: "ready", profiles: fixture.state.config.browserProfiles });
+    let finish: (value: unknown) => void = () => { throw new Error("GET was not started"); };
+    const pending = new Promise(resolve => { finish = resolve; });
+    let delayed = false;
+    fixture.api.mockImplementation((path: string) => Promise.resolve(path.includes("/browser-profile?") ? path.includes("thread-b") || delayed ? pending : answer("work") : { ok: true }));
+    await render({ bot: { ...bot, threadId: "thread-a", busy: false } });
+    expect(button("Browser profiles").title).toBe("Browser profile: Work");
+    delayed = true;
+    await render({ bot: { ...bot, threadId: "thread-a", busy: true } });
+    await render({ bot: { ...bot, threadId: "thread-b", busy: true } });
+    expect(button("Browser profiles").title).not.toBe("Browser profile: Work");
+    await act(async () => finish(answer("other")));
+    expect(button("Browser profiles").title).toBe("Browser profile: Other");
+  });
+
+  it("ignores a selection response after navigating to another conversation", async () => {
+    fixture.state.config.browserProfiles = [{ id: "work", name: "Work" }, { id: "other", name: "Other" }];
+    const answer = (id: string) => ({ active: { profileId: id }, activeProfileId: id, viewerProfileId: id, requestedProfileId: id, status: "ready", profiles: fixture.state.config.browserProfiles });
+    let finish: (value: unknown) => void = () => { throw new Error("selection was not started"); };
+    const pending = new Promise(resolve => { finish = resolve; });
+    fixture.api.mockImplementation((path: string, options?: { method?: string }) => {
+      if (options?.method === "PUT") return pending;
+      return Promise.resolve(path.includes("/browser-profile?") ? answer(path.includes("thread-a") ? "work" : "other") : { ok: true });
+    });
+    await render({ bot: { ...bot, threadId: "thread-a" } });
+    const chooser = host.querySelector<HTMLSelectElement>('select[aria-label="Conversation browser profile"]')!;
+    await act(async () => { chooser.value = "other"; chooser.dispatchEvent(new Event("change", { bubbles: true })); });
+    await render({ bot: { ...bot, threadId: "thread-b" } });
+    expect(button("Browser profiles").title).toBe("Browser profile: Other");
+    const connections = FakeSocket.instances.length;
+    await act(async () => finish({ ...answer("work"), requestedProfileId: "other", status: "pending" }));
+    expect(button("Browser profiles").title).toBe("Browser profile: Other");
+    expect(FakeSocket.instances).toHaveLength(connections);
+    expect(host.querySelector<HTMLSelectElement>('select[aria-label="Conversation browser profile"]')!.value).toBe("other");
+  });
+
+  it("does not restore a pending response after a newer next-turn mount has loaded", async () => {
+    fixture.state.config.browserProfiles = [{ id: "work", name: "Work" }, { id: "other", name: "Other" }];
+    let active = "work";
+    const answer = () => ({ active: { profileId: active }, activeProfileId: active, viewerProfileId: active, requestedProfileId: active, status: "ready", profiles: fixture.state.config.browserProfiles });
+    let finish: (value: unknown) => void = () => { throw new Error("selection was not started"); };
+    const pending = new Promise(resolve => { finish = resolve; });
+    fixture.api.mockImplementation((path: string, options?: { method?: string }) => options?.method === "PUT" ? pending : Promise.resolve(path.includes("/browser-profile?") ? answer() : { ok: true }));
+    await render({ bot: { ...bot, threadId: "thread-a", busy: false } });
+    const chooser = host.querySelector<HTMLSelectElement>('select[aria-label="Conversation browser profile"]')!;
+    await act(async () => { chooser.value = "other"; chooser.dispatchEvent(new Event("change", { bubbles: true })); });
+    active = "other";
+    await render({ bot: { ...bot, threadId: "thread-a", busy: true } });
+    expect(button("Browser profiles").title).toBe("Browser profile: Other");
+    await act(async () => finish({ ...answer(), active: { profileId: "work" }, activeProfileId: "work", viewerProfileId: "work", requestedProfileId: "other", status: "pending" }));
+    expect(button("Browser profiles").title).toBe("Browser profile: Other");
+  });
+
+  it("scopes the viewed browser's signed-in sites to the conversation outside Team", async () => {
+    fixture.state.config.browserProfiles = [{ id: "work", name: "Work" }];
+    fixture.api.mockImplementation(async (path: string) => path.includes("/browser-profile?")
+      ? { active: { profileId: "work" }, activeProfileId: "work", viewerProfileId: "work", requestedProfileId: "work", status: "ready", profiles: fixture.state.config.browserProfiles }
+      : path.startsWith("/api/browser-sites") ? { sites: [{ site: "example.com", cookies: 1, storage: 0 }] } : { ok: true });
+    await render({ bot: { ...bot, threadId: "thread-a" } });
+    const sites = [...host.querySelectorAll("details")].find(details => details.querySelector("summary")?.textContent === "Signed-in sites");
+    expect(sites).toBeDefined();
+    await act(async () => { sites!.open = true; sites!.dispatchEvent(new Event("toggle")); });
+    expect(fixture.api).toHaveBeenCalledWith("/api/browser-sites?bot=pepper&threadId=thread-a");
+    await act(async () => button("Sign out of example.com").click());
+    expect(fixture.api).toHaveBeenCalledWith("/api/browser-sites/sign-out", { method: "POST", body: JSON.stringify({ bot: "pepper", threadId: "thread-a", site: "example.com" }) });
+  });
+
+  it("keeps the view on its current profile for a pending request and reconnects only after the mounted profile changes", async () => {
+    fixture.state.config.browserProfiles = [{ id: "work", name: "Work" }, { id: "other", name: "Other" }];
+    let active = "work";
+    fixture.api.mockImplementation(async (path: string) => path.includes("/browser-profile?")
+      ? { active: { profileId: active }, activeProfileId: active, viewerProfileId: active, requestedProfileId: "other", status: active === "work" ? "pending" : "ready", profiles: fixture.state.config.browserProfiles }
+      : { ok: true });
+    const scopedBot = { ...bot, threadId: "thread-one", browserProfile: "work", busy: true };
+    await render({ bot: scopedBot });
+    expect(new URL(FakeSocket.instances.at(-1)!.url).searchParams.get("threadId")).toBe("thread-one");
+    expect(button("Browser profiles").title).toBe("Browser profile: Work");
+    const connections = FakeSocket.instances.length;
+    await render({ bot: { ...scopedBot, busy: false } });
+    expect(FakeSocket.instances).toHaveLength(connections);
+    active = "other";
+    await render({ bot: { ...scopedBot, busy: true } });
+    expect(FakeSocket.instances.length).toBeGreaterThan(connections);
+    expect(button("Browser profiles").title).toBe("Browser profile: Other");
+  });
+
   it("streams the new engine's browser over the v2 socket, sized to the panel", async () => {
     await render();
     expect(FakeSocket.instances).toHaveLength(1);

@@ -129,6 +129,10 @@ export interface BotMovedTo {
 /** One task = one conversation with its own context, thread and provider
  * session. */
 export interface WireTask {
+  /** Requested browser identity for this conversation's next turn; null selects the bot's own browser. */
+  requestedBrowserProfile?: string | null;
+  /** Last profile successfully mounted for this conversation; viewing it does not activate a request. */
+  lastMountedBrowserProfile?: string | null;
   goal?: import("./chat-goal.ts").ChatGoal;
   /** Outstanding handoffs, not an active provider turn. */
   waitingForTeammates?: boolean;
@@ -819,6 +823,10 @@ export type GroupDefaultResponder =
 
 /** One independent conversation inside a user-created channel. */
 export interface GroupTask {
+  /** Each member bot may request its own browser identity for its next turn in this conversation. */
+  requestedBrowserProfiles?: Record<string, string | null>;
+  /** Last verified mounted browser identity for each member bot, without runtime credentials. */
+  lastMountedBrowserProfiles?: Record<string, string | null>;
   threadId: string;
   title: string;
   createdAt: number;
@@ -843,6 +851,10 @@ export interface GroupTask {
 
 /** A room as a client may see it: the record plus the computed working flag. */
 export interface WireGroup {
+  /** Per-bot browser requests for a single-threaded direct-message channel. */
+  requestedBrowserProfiles?: Record<string, string | null>;
+  /** Last verified profile choices for that channel, without runtime credentials. */
+  lastMountedBrowserProfiles?: Record<string, string | null>;
   /** Computed from the usage ledger, not stored in groups.json. */
   usage?: GroupThreadUsage | null;
   /** transient: each member's context in the active thread, from its last
