@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { chromium, type Browser, type BrowserContext } from "patchright";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { TransportError } from "../browser-runtime.ts";
-import { StealthBrowserClient } from "./client.ts";
+import { TransportError } from "./browser-runtime.ts";
+import { StealthBrowserClient } from "./stealth-browser-client.ts";
 
 const CHROME = process.env.OMB_TEST_CHROME ?? "/opt/google/chrome/chrome";
 

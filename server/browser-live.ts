@@ -7,8 +7,7 @@ import { closeBrowserSession } from "./browser-engine.ts";
 import { DialogWatch, localDevToolsUrl } from "./browser-dialogs.ts";
 import type { Cdp, CdpListeners } from "./browser-sites.ts";
 import { relay } from "./browser-relay.ts";
-import { StealthLiveStream, type LiveInput } from "./stealth-browser/live.ts";
-import type { StealthBrowserEngine } from "./stealth-browser/engine.ts";
+import { StealthLiveStream, type LiveInput, type StealthBrowserEngine } from "stealth-browser/engine";
 import { BROWSER_HELD_ELSEWHERE } from "../shared/browser-held.ts";
 
 const execute = promisify(execFile);

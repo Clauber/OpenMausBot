@@ -58,7 +58,7 @@ export function isValidSshAlias(value: unknown): value is string {
   return typeof value === "string" && SSH_ALIAS.test(value);
 }
 
-/** Base URL of the stealth-browser service (stealth-browser/ in this repo). */
+/** Base URL of the standalone stealth-browser service (repo gsdtechsolutions/stealth-browser). */
 export function isValidStealthUrl(value: unknown): value is string {
   if (typeof value !== "string" || value === "") return false;
   try {
@@ -82,7 +82,8 @@ export function normalizeVpsConfig(raw: unknown): { sshAlias?: string } {
 const vpsConfigSchema = z.object({
   sshAlias: z.string().refine((value) => value === "" || isValidSshAlias(value), { message: "must be a simple SSH config alias" }).optional(),
 });
-/** `stealth` runs LEGION's own fingerprinted browser (server/stealth-browser/), which supplies the attach target itself, so
+/** `stealth` runs LEGION's own fingerprinted browser (engine from the `stealth-browser` package, repo gsdtechsolutions/stealth-browser,
+ * pinned by vendor/stealth-browser-<version>.tgz), which supplies the attach target itself, so
  * attachCdpUrl is ignored rather than raced while it is enabled. `stealthUrl` is an external stealth-browser service. */
 const stealthBrowserEngineConfigSchema = browserEngineConfigSchema.extend({
   stealth: z.object({

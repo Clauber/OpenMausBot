@@ -5,9 +5,9 @@
 // and click-by-description work unchanged.
 import type { BrowserContext, Page } from "patchright";
 
-import { TransportError } from "../browser-runtime.ts";
-import TOOLS from "./agent-browser-tools.json" with { type: "json" };
-import { StealthBrowserEngine } from "./engine.ts";
+import { AGENT_BROWSER_TOOLS as TOOLS, StealthBrowserEngine } from "stealth-browser/engine";
+
+import { TransportError } from "./browser-runtime.ts";
 
 export class StealthBrowserClient {
   readonly ready: Promise<void>;

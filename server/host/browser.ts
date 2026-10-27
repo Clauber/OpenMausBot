@@ -10,7 +10,7 @@ import type { AppConfig } from "../config.ts";
 import { browserEngineAttachCdpUrl, browserEngineStealthUrl, browserProfilePartitionId, browserProfilePartitionTarget, builtInBrowserEnabled, DATA_DIR } from "../config.ts";
 import { BrowserRuntime, STEALTH_ENGINE, TransportError, attachesToChrome, browserRuntimeEnv, formatBrowserTiming, runsOnStealth, type BrowserClickByDescription } from "../browser-runtime.ts";
 import { browserStealthEnabled, closeStealthSession, dropStealthSession, stealthCdpTarget, stealthContext, stealthPrepare, stealthScreenshotDir } from "../browser-stealth.ts";
-import type { StealthBrowserEngine } from "../stealth-browser/engine.ts";
+import type { StealthBrowserEngine } from "stealth-browser/engine";
 import { StealthAttachments } from "../stealth-browser.ts";
 import { execCli } from "../procs.ts";
 import { RelayTimeout, relay, relayCommand, relayInput } from "../browser-relay.ts";

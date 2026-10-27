@@ -7,6 +7,16 @@ calls carries `"server": "browser"`, so it really runs on the turn's browser
 MCP server and reaches `/api/internal/browser/mcp`. Every proof reads the
 results the bot itself got back.
 
+The engine comes from the `stealth-browser` package (repo
+gsdtechsolutions/stealth-browser), pinned by
+`vendor/stealth-browser-<version>.tgz`. LEGION keeps only the wiring
+(`server/browser-stealth.ts`, `server/stealth-browser-client.ts`) and the
+decider contract test (`server/stealth-browser-contract.test.ts`).
+The current pin is release `v2.1.0` (commit `d70b082`), whose release asset
+is the vendored tarball (sha256 `dd2a2782…12b5`). To bump it, download the new
+release's tarball into `vendor/`, point the `stealth-browser` dependency at it
+and run `pnpm install`.
+
 ## Driving it
 
 The recipe needs an `agent-browser` binary and a Chrome it may use; pass both
