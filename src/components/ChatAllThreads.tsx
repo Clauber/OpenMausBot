@@ -13,8 +13,8 @@ export function AllThreadsButton() {
   const rootRef = useRef<HTMLDivElement>(null);
   usePopoverDismiss(open, rootRef, () => setOpen(false));
   const entries = useMemo(
-    () => crossBotAllThreads(state.bots, state.groups, state.pendingQueued),
-    [state.bots, state.groups, state.pendingQueued],
+    () => crossBotAllThreads(state.bots.filter((bot) => bot.id === state.selectedId), [], state.pendingQueued),
+    [state.bots, state.selectedId, state.pendingQueued],
   );
   return (
     <div ref={rootRef} className="relative">
