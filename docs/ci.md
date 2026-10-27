@@ -27,6 +27,24 @@ skips fail the gate. Existing advisory jobs remain advisory.
 The separate shared-terminal smoke workflow is manual-only: its tests already
 run in the Windows Vitest/Electron jobs.
 
+## Runners
+
+Linux jobs run on our self-hosted runners (`runs-on: [self-hosted, legion]`,
+Proxmox CT136). GitHub sends `ubuntu-*`, `windows-*` and `macos-*` labels to
+its own hosted pool whatever labels a self-hosted runner carries, so no
+ungated job names one (`scripts/ci-workflow.test.ts` checks every workflow).
+Jobs that reuse fixed Docker container names, volumes, host ports or `/tmp`
+paths (`docker.yml`, `foss`) add the `serial` label, which only one runner has,
+so they queue instead of colliding.
+
+Windows, macOS and ARM jobs, and Linux jobs that need `sudo` (the `.deb`
+smokes, `ui-smoke`, `browser-identity`, `browser-driver`), run only when the
+repository variable `HOSTED_RUNNERS` is `true`. While it is unset, CI selects
+only the Linux Vitest shards and packaged-server smoke, the `CI` gate expects
+`windows-cua` and `electron-smokes` to be skipped, and releases skip their
+platform builds and `assemble`, so nothing is published. Set `HOSTED_RUNNERS`
+to `true` to restore full hosted coverage.
+
 ## Vitest shards
 
 The suite runs one file at a time, so a shard takes as long as its files added

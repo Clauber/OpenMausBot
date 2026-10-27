@@ -130,6 +130,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       console.warn(`CI scope: using all checks because the push diff is unavailable: ${error.message}`);
     }
   }
+  // Only Linux has self-hosted runners; hosted Windows/macOS run once HOSTED_RUNNERS is "true" (docs/ci.md).
+  if (process.env.HOSTED_RUNNERS !== "true") vitestOs = ["ubuntu-latest"];
   appendFileSync(
     process.env.GITHUB_OUTPUT,
     `runtime=${scope.runtime}\nvitest_os=${JSON.stringify(vitestOs)}\nvitest_matrix=${JSON.stringify(vitestMatrix(vitestOs))}\n`,

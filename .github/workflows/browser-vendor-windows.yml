@@ -19,6 +19,7 @@ permissions:
 jobs:
   build:
     name: Build reviewed Windows browser
+    if: vars.HOSTED_RUNNERS == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -50,6 +51,7 @@ jobs:
   smoke:
     name: Cold-start and restart on Windows
     needs: build
+    if: vars.HOSTED_RUNNERS == 'true'
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
