@@ -1,9 +1,10 @@
-// LEGION's built-in stealth browser: the app wiring around the vendored
-// runtime in server/stealth-browser/. When config turns it on
+// LEGION's built-in stealth browser: the app wiring around the runtime from the
+// `stealth-browser` package (repo gsdtechsolutions/stealth-browser, pinned by
+// vendor/stealth-browser-<version>.tgz). When config turns it on
 // (browserEngine.stealth.enabled), every bot browser session gets a
 // persistent, fingerprinted Chrome launched inside this process instead of
 // agent-browser spawning its own plain one. The bot's browser tools run
-// in-process on the runtime's own patchright context (stealth-browser/engine.ts).
+// in-process on the runtime's own patchright context (the package's StealthBrowserEngine).
 //
 // The runtime is created once per process from the settings it first saw:
 // changing the port base or headed flag takes effect on restart, which keeps
@@ -11,9 +12,9 @@
 import { join } from "node:path";
 
 import type { BrowserContext, Page } from "patchright";
+import { createStealthRuntime, type StealthRuntime } from "stealth-browser/engine";
 
 import { DATA_DIR, browserStealthEnabled, browserStealthOptions, type AppConfig } from "./config.ts";
-import { createStealthRuntime, type StealthRuntime } from "./stealth-browser/runtime.ts";
 
 export { browserStealthEnabled, browserStealthOptions };
 

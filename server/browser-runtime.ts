@@ -1,4 +1,5 @@
 import type { BrowserContext, Page } from "patchright";
+import type { StealthBrowserEngine } from "stealth-browser/engine";
 
 import { killCliTree, spawnCli } from "./procs.ts";
 import { scrubHeldSecrets } from "../shared/redact.ts";
@@ -9,8 +10,7 @@ import type { BrowserSteps, StepCall, StepContext } from "./browser-steps.ts";
 import { HARNESS_CALL_BUDGET_MS } from "./harness-budget.ts";
 import { BROWSER_CLICK_TOOL, BROWSER_CLICK_TOOL_DEFINITION, clickByDescription } from "./decider/browser-click.ts";
 import type { Decider } from "./decider/index.ts";
-import { StealthBrowserClient } from "./stealth-browser/client.ts";
-import type { StealthBrowserEngine } from "./stealth-browser/engine.ts";
+import { StealthBrowserClient } from "./stealth-browser-client.ts";
 
 export interface BrowserSpawnSpec {
   command: string;
@@ -19,7 +19,7 @@ export interface BrowserSpawnSpec {
 }
 
 /** A spec's command when the session's tools run in-process on the built-in stealth runtime's own patchright context
- * (server/stealth-browser/engine.ts) instead of a spawned agent-browser: no daemon, CLI or relay serves that session. */
+ * (StealthBrowserEngine from the `stealth-browser` package) instead of a spawned agent-browser: no daemon, CLI or relay serves that session. */
 export const STEALTH_ENGINE = "omb-stealth";
 export function runsOnStealth(spec: { command: string } | undefined): boolean { return spec?.command === STEALTH_ENGINE; }
 

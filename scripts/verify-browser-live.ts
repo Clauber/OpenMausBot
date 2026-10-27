@@ -16,7 +16,7 @@ try {
   const { bots } = await (await fetch(`${fixture.info.url}/api/bots`)).json() as any;
   await fetch(`${fixture.info.url}/api/config`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ features: { browser: true } }) });
   // Opt-in: attach Pepper's browser to a stealth-browser service the caller
-  // started (stealth-browser/README.md), instead of the managed engine.
+  // started (see README.md in gsdtechsolutions/stealth-browser), instead of the managed engine.
   if (process.env.OMB_VERIFY_STEALTH_URL) {
     await fetch(`${fixture.info.url}/api/config`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ browserEngine: { stealthUrl: process.env.OMB_VERIFY_STEALTH_URL } }) });
   }

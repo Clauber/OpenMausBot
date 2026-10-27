@@ -1,5 +1,7 @@
-// A bot's persistent browser as a headed stealth Chrome (stealth-browser/ in
-// this repo). The service keeps one patchright Chrome per profile, with its
+// A bot's persistent browser as a headed stealth Chrome served by the
+// standalone stealth-browser service (repo gsdtechsolutions/stealth-browser;
+// LEGION's in-process engine comes from the `stealth-browser` package, pinned by
+// vendor/stealth-browser-<version>.tgz). The service keeps one patchright Chrome per profile, with its
 // fingerprint and evasions, and opens a fixed CDP port for it. agent-browser
 // attaches to that port, so the bot's tools and the Browser panel drive the
 // same window, and a person can click through a challenge the bot cannot.
