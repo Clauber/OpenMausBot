@@ -131,3 +131,11 @@ parity will be checked again after push and recorded in /tmp/bot-scoped-panels-r
 | src/state/store.test.ts | 6e936f10b34a681b0317933c5c0ab91533757d73 |
 | src/state/store.tsx | 58822e99d15307d262a64ad546c9d3376e311c04 |
 | .serena/project.yml | 2a6899e2df78976000fcf4780dbd3749c048b551 |
+
+## Real browser header failure and correction
+
+Anvil failed original acceptance at c56df2b7f13e2e23a95640a9c9e3c3ce023145ca: Alpha open, actual header All threads showed Beta and Fixture Starter. Screenshot /home/clauber/.openmausbot/stealth-browser/screenshots/profile-d86d5b3f409549ac9b3b3eaa6c8f034d/screenshot-1793076539836.png. Earlier387 tests cover insufficient path and do not prove this dropdown. TaskPicker is separate; actual ChatView uses AllThreadsButton. Sol delegate startup/identity/red/green receipts /tmp/pr18-header-implementation.json. Source preview provenance /tmp/pr18-header-preview-identity.log verified actual original Vite source and c56 unscoped header; final served scoped module /tmp/pr18-header-served-fix.log.
+
+Regression-only commit5097bba8f preserves three failing real-menu regressions before fix; exact red patch /tmp/pr18-header-red.patch, log /tmp/pr18-header-red.log. Focused43 pass /tmp/pr18-header-scope-green.log; typecheck explicitexit0 /tmp/pr18-header-typecheck.exit; changedfilelint0 /tmp/pr18-header-lint.exit. Broader focused ChatViewcontrols3 failures identical unchanged-source baseline /tmp/pr18-header-baseline.log; not claimed green. No global helper/fixture hiding changes. Independent review and coordinator gate in progress. Anvil owns browser reacceptance.
+
+Correction artifact: regression5097bba8f, implementation dff4b58c585c67a248999d324c0220025a600cbb. Source tree9494465e636142b6029a6e6b4c325d986dcbeec1. Coordinator exact43test rerun exit0 /tmp/pr18-header-coordinator-green.log. Independent native /root/pr18_header_independent_review PASS for source/thermo only, report /tmp/pr18-header-independent-review.md; no browser claim. Full3file correction diff againstc56 SHA4783df0332d6459237a831c1b2d45aa6d0f0a97becde8f1cccadadc058d2ace1, blobs /tmp/pr18-header-source-parity.json. Staged and outgoing attribution and gitleaks passed for both source commits. Preview5174 serves scoped Vite source, no preview/production restart. Publication pending required hooks /tmp/pr18-header-push.log.
