@@ -53,9 +53,12 @@ export type ModelSelectionCheck = { ok: true; selection: ModelSelection } | { ok
 
 export type ConfigStatus = Record<string, unknown>;
 
+import type { BrowserProfileUse } from "../browser-profile-usage.ts";
+
 export interface ConfigRouteDeps {
   store: Pick<Store, "bots" | "patchBot" | "clearVoiceSelections">;
   cfg: AppConfig;
+  browserProfileUsers(): readonly BrowserProfileUse[];
   registry: Pick<ProviderRegistry, "get" | "forgetSnapshots">;
   sessions: Pick<SessionRegistry, "revalidateEmailSessions">;
   browserCleanup: Pick<BrowserCleanupCoordinator, "hasPendingProfile" | "prepare" | "abort" | "commit" | "ensure">;
@@ -213,9 +216,7 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
       }
       if (patch.browserProfiles !== undefined) {
         const retained = new Set(patch.browserProfiles.map((profile) => profile.id));
-        const activeReference = store.bots.find(
-          (bot) => bot.busy && bot.browserProfile && bot.browserProfile !== "guest" && !retained.has(bot.browserProfile),
-        );
+        const activeReference = deps.browserProfileUsers().find(user => user.profileId && user.profileId !== "guest" && !retained.has(user.profileId));
         if (activeReference) {
           return json(res, 409, {
             error: `stop ${activeReference.name}'s turn before removing its browser profile`,
@@ -454,18 +455,16 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
       if (patch.browserProfiles !== undefined) {
         // Revalidated: the awaits above let a turn claim a profile. No awaits from here through the save.
         const retained = new Set(patch.browserProfiles.map((profile) => profile.id));
-        const activeReference = store.bots.find(
-          (bot) => bot.busy && bot.browserProfile && bot.browserProfile !== "guest" && !retained.has(bot.browserProfile),
-        );
+        const activeReference = deps.browserProfileUsers().find(user => user.profileId && user.profileId !== "guest" && !retained.has(user.profileId));
         if (activeReference) {
           return json(res, 409, {
             error: `stop ${activeReference.name}'s turn before removing its browser profile`,
           });
         }
-        const switching = store.bots.find((bot) => bot.busy && bot.browserProfile && browserChoiceChanged.includes(bot.browserProfile));
+        const switching = deps.browserProfileUsers().find(user => user.profileId && browserChoiceChanged.includes(user.profileId));
         if (switching) return json(res, 409, { error: `stop ${switching.name}'s turn before changing its browser` });
       }
-      const browsing = switchingBrowserEngine ? store.bots.find((bot) => bot.busy && bot.browser !== false) : undefined;
+      const browsing = switchingBrowserEngine ? deps.browserProfileUsers()[0] : undefined;
       if (browsing) return json(res, 409, { error: `stop ${browsing.name}'s turn before switching the browser` });
       // Observed again after the awaits: catches an operation that already held a claim.
       for (const provider of transitioningProviders) {

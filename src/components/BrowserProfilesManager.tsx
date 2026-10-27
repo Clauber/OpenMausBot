@@ -9,10 +9,11 @@ import { Select } from "./Select";
 import { browserScope } from "@/lib/team-browser";
 
 /** Security: the server owns session routing and erasure; this UI never handles cookies or partitions. */
-export function BrowserProfilesManager({ bot, onProfileChanged, disabled = false }: {
+export function BrowserProfilesManager({ bot, onProfileChanged, disabled = false, showBotSites = true }: {
   bot?: Bot;
   onProfileChanged?: () => void;
   disabled?: boolean;
+  showBotSites?: boolean;
 }) {
   const { state, dispatch, flushBotPatches } = useStore();
   const profiles = state.config?.browserProfiles ?? [];
@@ -169,7 +170,7 @@ export function BrowserProfilesManager({ bot, onProfileChanged, disabled = false
             {currentBot.busy ? t("settings.profiles.stopToSwitch") : selected === "guest" ? t("settings.profiles.temporaryHint") : t("settings.profiles.sharedHint")}
           </p>
           {selectedProfile?.browser === "chrome" && myChrome ? chromeNote
-            : (selected === "" || selectedProfile) && (
+            : showBotSites && (selected === "" || selectedProfile) && (
               <SignedInSites key={`${currentBot.id}:${selected}`} target={{ bot: currentBot.id }} scope={browserScope(state.config?.team, bot?.threadId)} sharedBy={selected ? usersOf(selected) : [currentBot.name]} disabled={locked} />
             )}
         </div>

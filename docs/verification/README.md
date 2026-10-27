@@ -180,6 +180,9 @@ The [live browser fixture](browser-live.md) mounts the real Browser panel with
 an explicitly selected native engine and Chrome in a disposable home, covering
 watching, takeover, input, and profile switching.
 
+The [conversation browser profiles check](browser-profiles.md) verifies mounted profile
+listing, deferred per-thread selection, account isolation and the Screen chooser.
+
 The [built-in stealth browser fixture](browser-stealth.md) drives a real bot
 turn through the fingerprinted Chrome the server launches itself
 (`browserEngine.stealth`) and proves the identity the page sees is the
