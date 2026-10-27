@@ -1,19 +1,22 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { vitestMatrix } from "./ci-scope.mjs";
 
 const workflow = parse(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
 const requiredRuntimeJobs = ["vitest", "behavior-evals", "packaged-server", "windows-cua", "electron-smokes"];
+const RUNTIME = "needs.static.outputs.runtime == 'true'";
+const HOSTED = "vars.HOSTED_RUNNERS == 'true'";
+const LINUX_MATRIX = `\${{ matrix.os == 'ubuntu-latest' && fromJSON('["self-hosted","legion"]') || matrix.os }}`;
 
-function runGate(needs: Record<string, unknown>) {
+function runGate(needs: Record<string, unknown>, hostedRunners = "true") {
   // Execute the actual gate, not a duplicate of its success/failure logic.
   const command = workflow.jobs.gate.steps[0].run as string;
   const script = command.match(/node --input-type=module -e '([\s\S]+)'/);
   expect(script).not.toBeNull();
   const check = spawnSync(process.execPath, ["--input-type=module", "-e", script![1]], {
-    env: { ...process.env, NEEDS: JSON.stringify(needs) },
+    env: { ...process.env, NEEDS: JSON.stringify(needs), HOSTED_RUNNERS: hostedRunners },
     encoding: "utf8",
     timeout: 5_000,
   });
@@ -147,7 +150,7 @@ describe("CI concurrency", () => {
     // jobs only when the commit before it has its own green run.
     expect(workflow.jobs.static.permissions).toEqual({ contents: "read", actions: "read" });
     const scope = workflow.jobs.static.steps.find((step: { id?: string }) => step.id === "scope");
-    expect(scope.env).toEqual({ GH_TOKEN: "${{ github.token }}" });
+    expect(scope.env).toEqual({ GH_TOKEN: "${{ github.token }}", HOSTED_RUNNERS: "${{ vars.HOSTED_RUNNERS }}" });
     for (const [name, job] of Object.entries(workflow.jobs) as [string, { permissions?: unknown }][]) {
       if (name !== "static") expect(job.permissions, name).toBeUndefined();
     }
@@ -220,7 +223,33 @@ describe("CI concurrency", () => {
         continue;
       }
       expect(job.needs).toBe("static");
-      expect(job.if).toBe("needs.static.outputs.runtime == 'true'");
+      expect([RUNTIME, `${HOSTED} && ${RUNTIME}`]).toContain(job.if);
+    }
+  });
+
+  it("requires the hosted-only jobs only when hosted runners are on", () => {
+    const gated = (workflow.jobs.gate.needs as string[]).filter((job) => String(workflow.jobs[job].if ?? "").startsWith(HOSTED));
+    expect(gated.sort()).toEqual(["electron-smokes", "windows-cua"]);
+    const linuxOnly = { ...gateNeeds("true"), ...Object.fromEntries(gated.map((job) => [job, { result: "skipped" }])) };
+    expect(runGate(linuxOnly, "").status).toBe(0);
+    expect(runGate(linuxOnly, "true").status).toBe(1);
+    expect(runGate(gateNeeds("true"), "").status).toBe(1);
+    for (const job of ["vitest", "behavior-evals", "packaged-server"]) {
+      expect(runGate({ ...linuxOnly, [job]: { result: "skipped" } }, "").status).toBe(1);
+    }
+  });
+
+  it("runs every job on our self-hosted runners unless it waits for hosted runners", () => {
+    // GitHub sends hosted labels (ubuntu-*, windows-*, macos-*) to its own pool whatever labels our runners carry.
+    const selfHosted = [["self-hosted", "legion"], ["self-hosted", "legion", "serial"]];
+    const dir = new URL("../.github/workflows/", import.meta.url);
+    for (const file of readdirSync(dir).filter((name) => name.endsWith(".yml"))) {
+      const jobs = parse(readFileSync(new URL(file, dir), "utf8")).jobs as Record<string, { "runs-on": unknown; if?: string }>;
+      for (const [name, job] of Object.entries(jobs)) {
+        if (String(job.if ?? "").startsWith(HOSTED)) continue;
+        if (job["runs-on"] === LINUX_MATRIX) continue;
+        expect(selfHosted, `${file} ${name}`).toContainEqual(job["runs-on"]);
+      }
     }
   });
 
