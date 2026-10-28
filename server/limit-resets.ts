@@ -83,7 +83,7 @@ export class LimitResetClock {
   private readonly refusals = new Map<string, { resetsAt: number; window: LimitWindowName | null }>();
   private readonly turnEngines = new Map<string, string>();
   private checkedAt = 0;
-  private loading: Promise<void> | null = null;
+  private loading: { promise: Promise<void>; force: boolean } | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private soon: ReturnType<typeof setTimeout> | null = null;
 
@@ -172,19 +172,25 @@ export class LimitResetClock {
   }
 
   async refresh(force: boolean): Promise<void> {
-    if (this.loading) return this.loading;
+    if (this.loading) {
+      const pending = this.loading;
+      if (!force || pending.force) return pending.promise;
+      await pending.promise;
+      return this.refresh(true);
+    }
     const accounts = this.options.accounts();
-    this.loading = (async () => {
+    const promise = (async () => {
       try {
         if (accounts.length) this.noteUsage(await this.load(accounts, force));
         else this.checkedAt = this.now();
       } catch {
         this.checkedAt = this.now();
-      } finally {
-        this.loading = null;
       }
-    })();
-    return this.loading;
+    })().finally(() => {
+      this.loading = null;
+    });
+    this.loading = { promise, force };
+    return promise;
   }
 
   start(): void {
