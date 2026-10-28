@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { codexLimitResetsAt } from "./drivers/codex-errors.ts";
 import { engineLimitFromUsage, LimitResetClock, nearLimitNote } from "./limit-resets.ts";
 import type { RuntimeEvent } from "../shared/runtime-events.ts";
-import { parseClaudeUsage, parseCodexUsage, type PlanProviderRow, type PlanUsageReport, type PlanWindows } from "./plan-usage.ts";
+import { parseClaudeUsage, parseCodexUsage, type PlanAccount, type PlanProviderRow, type PlanUsageReport, type PlanWindows } from "./plan-usage.ts";
 
 const NOW = Date.parse("2026-10-19T10:00:00Z");
 const HOUR = 3_600_000;
@@ -15,6 +15,31 @@ const iso = (at: number) => new Date(at).toISOString();
 function row(id: string, driver: "claude" | "codex", windows: PlanWindows): PlanProviderRow {
   return { id, name: driver === "claude" ? "Claude" : "Codex", driver, ok: true, error: null, ...windows };
 }
+
+it("a forced refresh waits for fresh usage after an in-flight cached read", async () => {
+  let complete!: (usage: PlanUsageReport) => void;
+  const pending = new Promise<PlanUsageReport>((resolve) => { complete = resolve; });
+  const fresh = report(codex([0, NOW + HOUR], [10, NOW + 168 * HOUR]));
+  const loadUsage = vi.fn((_accounts: PlanAccount[], force: boolean) => force ? Promise.resolve(fresh) : pending);
+  const clock = new LimitResetClock({ accounts: () => [{ id: "codex", name: "Codex", driver: "codex", environment: {} }], now: () => NOW, loadUsage });
+  const background = clock.refresh(false);
+  const refresh = clock.refresh(true);
+  const secondRefresh = clock.refresh(true);
+  complete(report(codex([0, NOW + HOUR], [100, NOW + 90 * HOUR])));
+  await Promise.all([background, refresh, secondRefresh]);
+  expect(clock.limit("codex")).toMatchObject({ usedPercent: 10, blocked: false });
+  expect(loadUsage).toHaveBeenCalledTimes(2);
+});
+
+it("can refresh after an initial read with no configured accounts", async () => {
+  const accounts: PlanAccount[] = [];
+  const loadUsage = vi.fn(async () => report(codex([0, NOW + HOUR], [10, NOW + 168 * HOUR])));
+  const clock = new LimitResetClock({ accounts: () => accounts, now: () => NOW, loadUsage });
+  await clock.refresh(false);
+  accounts.push({ id: "codex", name: "Codex", driver: "codex", environment: {} });
+  await clock.refresh(true);
+  expect(clock.limit("codex")).toMatchObject({ usedPercent: 10, blocked: false });
+});
 /** As the Claude usage endpoint answers (utilization, resets_at). */
 const claude = (fiveHour: [number, number | null], weekly: [number, number | null]) => row("claude", "claude", parseClaudeUsage({
   five_hour: { utilization: fiveHour[0], resets_at: fiveHour[1] === null ? null : iso(fiveHour[1]) },
@@ -28,6 +53,37 @@ const codex = (primary: [number, number], secondary: [number, number]) => row("c
     secondary_window: { used_percent: secondary[0], limit_window_seconds: 7 * 86400, reset_at: Math.floor(secondary[1] / 1000) },
   },
 }));
+
+it("a recovered account cannot clear another account's refusal", () => {
+  const clock = new LimitResetClock({ accounts: () => [], now: () => NOW });
+  const exhausted = codex([0, NOW + HOUR], [100, NOW + 90 * HOUR]);
+  clock.noteUsage(report(exhausted, { ...exhausted, id: "codex-work" }));
+  clock.noteRefusal("codex", NOW + 90 * HOUR);
+  clock.noteRefusal("codex-work", NOW + 90 * HOUR);
+  clock.noteUsage(report(codex([0, NOW + HOUR], [10, NOW + 168 * HOUR])));
+  expect(clock.blockedUntil("codex")).toBeNull();
+  expect(clock.blockedUntil("codex-work")).toBe(NOW + 90 * HOUR);
+  clock.stop();
+});
+
+it("keeps refusal evidence through failed provider reads and learns its window after the refusal", () => {
+  const clock = new LimitResetClock({ accounts: () => [], now: () => NOW });
+  clock.noteRefusal("codex", NOW + 90 * HOUR);
+  clock.noteUsage(report(codex([0, NOW + HOUR], [100, NOW + 90 * HOUR])));
+  clock.noteUsage(report({ ...codex([0, NOW + HOUR], [10, NOW + 168 * HOUR]), ok: false, error: "Unavailable" }));
+  expect(clock.blockedUntil("codex")).toBe(NOW + 90 * HOUR);
+  clock.noteUsage(report(codex([0, NOW + HOUR], [10, NOW + 168 * HOUR])));
+  expect(clock.blockedUntil("codex")).toBeNull();
+  clock.stop();
+});
+
+it("preserves a refusal when no exhausted window was matched", () => {
+  const clock = new LimitResetClock({ accounts: () => [], now: () => NOW });
+  clock.noteRefusal("codex", NOW + 90 * HOUR);
+  clock.noteUsage(report(codex([0, NOW + HOUR], [10, NOW + 168 * HOUR])));
+  expect(clock.blockedUntil("codex")).toBe(NOW + 90 * HOUR);
+  clock.stop();
+});
 
 it("releases a Codex refusal when its exhausted weekly window advances with capacity", () => {
   const clock = new LimitResetClock({ accounts: () => [], now: () => NOW });
