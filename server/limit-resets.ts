@@ -80,10 +80,10 @@ export class LimitResetClock {
   private readonly options: LimitClockOptions;
   private readonly now: () => number;
   private usage = new Map<string, EngineLimit>();
-  private readonly refusals = new Map<string, number>();
+  private readonly refusals = new Map<string, { resetsAt: number; window: LimitWindowName | null }>();
   private readonly turnEngines = new Map<string, string>();
   private checkedAt = 0;
-  private loading: Promise<void> | null = null;
+  private loading: { promise: Promise<void>; force: boolean } | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private soon: ReturnType<typeof setTimeout> | null = null;
 
@@ -138,8 +138,9 @@ export class LimitResetClock {
 
   /** A turn on this engine was refused by its usage limit; `resetsAt` is when the engine said it resets. */
   noteRefusal(engine: string | undefined, resetsAt: number | undefined): void {
-    if (!engine || resetsAt === undefined || !Number.isFinite(resetsAt) || resetsAt <= this.now() || this.refusals.get(engine) === resetsAt) return;
-    this.refusals.set(engine, resetsAt);
+    if (!engine || resetsAt === undefined || !Number.isFinite(resetsAt) || resetsAt <= this.now() || this.refusals.get(engine)?.resetsAt === resetsAt) return;
+    const usage = this.usage.get(engine);
+    this.refusals.set(engine, { resetsAt, window: usage?.blocked && usage.resetsAt === resetsAt ? usage.window : null });
     this.options.onChange?.();
     if (this.soon) clearTimeout(this.soon);
     this.soon = setTimeout(() => { this.soon = null; void this.refresh(true); }, SOON_AFTER_REFUSAL_MS);
@@ -150,7 +151,14 @@ export class LimitResetClock {
     const next = new Map<string, EngineLimit>();
     for (const row of report.providers) {
       const limit = engineLimitFromUsage(row);
-      if (limit) next.set(limit.engine, limit);
+      if (!limit) continue;
+      const refused = this.refusals.get(limit.engine);
+      if (refused && !refused.window && limit.blocked && limit.resetsAt === refused.resetsAt) refused.window = limit.window;
+      if (refused?.window) {
+        const current = windowLine(refused.window, refused.window === "weekly" ? row.weekly : row.fiveHour);
+        if (current && current.used < 100 && current.resetsAt !== null && current.resetsAt > refused.resetsAt) this.refusals.delete(limit.engine);
+      }
+      next.set(limit.engine, limit);
     }
     this.usage = next;
     this.checkedAt = this.now();
@@ -164,19 +172,25 @@ export class LimitResetClock {
   }
 
   async refresh(force: boolean): Promise<void> {
-    if (this.loading) return this.loading;
+    if (this.loading) {
+      const pending = this.loading;
+      if (!force || pending.force) return pending.promise;
+      await pending.promise;
+      return this.refresh(true);
+    }
     const accounts = this.options.accounts();
-    this.loading = (async () => {
+    const promise = (async () => {
       try {
         if (accounts.length) this.noteUsage(await this.load(accounts, force));
         else this.checkedAt = this.now();
       } catch {
         this.checkedAt = this.now();
-      } finally {
-        this.loading = null;
       }
-    })();
-    return this.loading;
+    })().finally(() => {
+      this.loading = null;
+    });
+    this.loading = { promise, force };
+    return promise;
   }
 
   start(): void {
@@ -199,7 +213,7 @@ export class LimitResetClock {
   }
 
   private refusal(engine: string): number | null {
-    const at = this.refusals.get(engine);
+    const at = this.refusals.get(engine)?.resetsAt;
     if (at === undefined) return null;
     if (at < this.now() - REFUSAL_GRACE_MS) {
       this.refusals.delete(engine);

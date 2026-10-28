@@ -44,8 +44,9 @@ export function createLimitResetRoutes(deps: LimitResetRouteDeps): RouteHandler 
   return async ({ req, res, url, path, method, auth, json, readBody }) => {
     if (path === "/api/limit-resets" && method === "GET") {
       res.setHeader("cache-control", "no-store");
-      const fresh = deps.clock.ensureFresh();
-      if (url.searchParams.get("refresh") === "1" || deps.clock.report().checkedAt === 0) await fresh;
+      const refresh = url.searchParams.get("refresh") === "1";
+      const fresh = refresh ? deps.clock.refresh(true) : deps.clock.ensureFresh();
+      if (refresh || deps.clock.report().checkedAt === 0) await fresh;
       return json(res, 200, deps.clock.report());
     }
     if (path === "/api/limit-resets/continue" && method === "POST") {

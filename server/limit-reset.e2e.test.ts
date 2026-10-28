@@ -100,6 +100,49 @@ async function withLimitFixture(setup: { recovery?: unknown; secondClaude?: bool
   }
 }
 
+it("refresh clears a saved refusal after its exhausted usage window advances", async () => {
+  await withLimitFixture({}, async ({ api, control, limit, dataDir, evidence }) => {
+    const resetsAt = Math.floor(Date.now() / 1000) + 4 * 86_400;
+    const usageFile = join(dataDir, "plan-usage.json");
+    const usage = (usedPercent: number, reset: number) => ({ providers: [{
+      id: "claude", name: "Claude", driver: "claude", ok: true,
+      fiveHour: { available: false, remainingPercent: null, usedPercent: null, resetsAt: null },
+      weekly: { available: true, remainingPercent: 100 - usedPercent, usedPercent, resetsAt: new Date(reset * 1000).toISOString() },
+    }] });
+    limit(resetsAt);
+    const { bot } = await control("new-bot", "--name", "Scout");
+    await control("send", "--bot", bot.id, "--task", bot.activeTaskId, "--text", "Write the report");
+    expect((await control("wait", "--bot", bot.id, "--task", bot.activeTaskId, "--timeout", "30")).status).toBe("failed");
+    writeFileSync(usageFile, JSON.stringify(usage(100, resetsAt)));
+    const refused = await api("GET", "/api/limit-resets?refresh=1");
+    expect(refused.engines).toContainEqual(expect.objectContaining({ engine: "claude", blocked: true, resetsAt: resetsAt * 1000 }));
+    writeFileSync(usageFile, JSON.stringify(usage(10, resetsAt + 3 * 86_400)));
+    const refreshed = await api("GET", "/api/limit-resets?refresh=1");
+    evidence.push({ refused, refreshed });
+    expect(refreshed.engines).toContainEqual(expect.objectContaining({ engine: "claude", usedPercent: 10, blocked: false }));
+  });
+}, 60_000);
+
+it("explicit limit refresh replaces cached exhausted Codex usage after a reset", async () => {
+  await withLimitFixture({}, async ({ api, dataDir, evidence }) => {
+    const usageFile = join(dataDir, "plan-usage.json");
+    const usage = (usedPercent: number) => ({ providers: [{
+      id: "codex", name: "Codex", driver: "codex", ok: true,
+      fiveHour: { available: false, remainingPercent: null, usedPercent: null, resetsAt: null },
+      weekly: { available: true, remainingPercent: 100 - usedPercent, usedPercent, resetsAt: new Date(Date.now() + 7 * 86_400_000).toISOString() },
+    }] });
+    writeFileSync(usageFile, JSON.stringify(usage(100)));
+    const exhausted = await api("GET", "/api/limit-resets?refresh=1");
+    expect(exhausted.engines).toContainEqual(expect.objectContaining({ engine: "codex", usedPercent: 100, blocked: true }));
+    writeFileSync(usageFile, JSON.stringify(usage(10)));
+    const cached = await api("GET", "/api/limit-resets");
+    expect(cached.engines).toContainEqual(expect.objectContaining({ engine: "codex", usedPercent: 100, blocked: true }));
+    const refreshed = await api("GET", "/api/limit-resets?refresh=1");
+    evidence.push({ exhausted, cached, refreshed });
+    expect(refreshed.engines).toContainEqual(expect.objectContaining({ engine: "codex", usedPercent: 10, blocked: false }));
+  });
+}, 60_000);
+
 const messagesOf = async (api: Fixture["api"], threadId: string) => (await api("GET", `/api/threads/${threadId}/messages?limit=200`)).messages as any[];
 const recoveryLines = (messages: any[]) => messages.filter((message) => message.tool?.name?.startsWith("recovery:")).map((message) => message.tool.name as string);
 
