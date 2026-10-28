@@ -28,6 +28,29 @@ const codex = (primary: [number, number], secondary: [number, number]) => row("c
     secondary_window: { used_percent: secondary[0], limit_window_seconds: 7 * 86400, reset_at: Math.floor(secondary[1] / 1000) },
   },
 }));
+
+it("releases a Codex refusal when its exhausted weekly window advances with capacity", () => {
+  const clock = new LimitResetClock({ accounts: () => [], now: () => NOW });
+  clock.noteUsage(report(codex([0, NOW + HOUR], [100, NOW + 90 * HOUR])));
+  clock.noteRefusal("codex", NOW + 90 * HOUR);
+  clock.noteUsage(report(codex([50, NOW + 5 * HOUR], [10, NOW + 90 * HOUR])));
+  expect(clock.blockedUntil("codex")).toBe(NOW + 90 * HOUR);
+  clock.noteUsage(report(codex([50, NOW + 5 * HOUR], [10, NOW + 168 * HOUR])));
+  expect(clock.blockedUntil("codex")).toBeNull();
+  expect(clock.limit("codex")).toMatchObject({ blocked: false, usedPercent: 50, window: "5-hour" });
+  clock.stop();
+});
+
+it("keeps a refusal when another window advances or its own window is still exhausted", () => {
+  const clock = new LimitResetClock({ accounts: () => [], now: () => NOW });
+  clock.noteUsage(report(codex([100, NOW + HOUR], [10, NOW + 90 * HOUR])));
+  clock.noteRefusal("codex", NOW + HOUR);
+  clock.noteUsage(report(codex([10, NOW + HOUR], [20, NOW + 168 * HOUR])));
+  expect(clock.blockedUntil("codex")).toBe(NOW + HOUR);
+  clock.noteUsage(report(codex([100, NOW + 5 * HOUR], [20, NOW + 168 * HOUR])));
+  expect(clock.blockedUntil("codex")).toBe(NOW + 5 * HOUR);
+  clock.stop();
+});
 const report = (...providers: PlanProviderRow[]): PlanUsageReport => ({ fetchedAt: iso(NOW), providers });
 
 describe("engineLimitFromUsage", () => {
