@@ -79,6 +79,7 @@ Use only mapped, tested commands:
 - [In-chat team coordination](room-coordination.md)
 - [Chief access to additional departments](team-access.md)
 - [Engines and Doctor](engines.md)
+- [ZCode CLI turns against the real binary](zcode-cli.md)
 - [ZCode server mode: one shared server, one home per bot](zcode-server.md)
 - [Cline engine and native loopback qualification](cline.md)
 - [Claude coordination and turn-scoped tools](claude-tool-lifecycle.md)
