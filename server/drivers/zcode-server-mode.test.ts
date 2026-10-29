@@ -133,7 +133,8 @@ describe("ZcodeDriver in server mode (fake ZCode server)", () => {
       const { turnId } = await instance.adapter.sendTurn({ threadId: "cli-thread", text: "Continue", cwd: scratch, resumeCursor: "sess_old" });
       await completed(turnId);
       const seen = JSON.parse(readFileSync(process.env.FAKE_ZCODE_DUMP!, "utf8"));
-      expect(seen.calls.map((call: { method: string }) => call.method)).toEqual(["session/resume", "session/setMode", "session/subscribe", "session/send"]);
+      expect(seen.calls.map((call: { method: string; params: { type?: string } }) => call.params?.type ?? call.method))
+        .toEqual(["session/resume", "v4/conversation/subscribe", "sendText"]);
       expect(seen.calls[0].params.sessionId).toBe("sess_old");
     } finally {
       delete process.env.FAKE_ZCODE_MODE;
@@ -241,7 +242,7 @@ describe("ZcodeDriver in server mode (fake ZCode server)", () => {
       expect(await completed(fresh.turnId)).toMatchObject({ ok: true });
       expect(recorder.events).toContainEqual(expect.objectContaining({ type: "runtime.notice", message: expect.stringContaining("ZCode server unavailable") }));
       const seen = JSON.parse(readFileSync(process.env.FAKE_ZCODE_DUMP!, "utf8"));
-      expect(seen.calls[0].method).toBe("session/create");
+      expect(seen.calls[0].params.type).toBe("createSession");
 
       const resumed = await instance.adapter.sendTurn({ threadId: "gone", text: "Continue", cwd: scratch, resumeCursor: "session_fake_1" });
       expect(await completed(resumed.turnId)).toMatchObject({ ok: false, stopReason: "setup_failed" });

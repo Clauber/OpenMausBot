@@ -1,30 +1,18 @@
-// ZCode driver — the `zcode` CLI headless over its app-server ("ZCode
-// Protocol") transport: newline-delimited JSON on stdio, plain
-// {id, method, params} envelopes (no `jsonrpc` field). Verified against the
-// open-source tree (github.com/zai-org/ZCode, packages/shared/src/
-// zcode-protocol + apps/zcode-cli/packages/bootstrap/src/zcode-protocol)
-// and against a live app-server: the legacy session/* surface is still
-// served alongside the v4 conversation channel, and is what this driver
-// speaks. One app-server process per turn, like codex: session/create (or
-// session/resume on the resumeCursor = zcode session id), session/subscribe,
-// then session/send. Completion is the `turn.completed` session event (usage
-// rides its payload); `turn.failed` settles the turn with its error.
-// Permission asks arrive as server→client `interaction/requestPermission`
-// requests answered with {decision} — the wire answer must be one of the
-// request's own options (each option carries its exact response payload),
-// so Full access only ever echoes an allow option the CLI itself offered; a
-// synthesised `{decision:"allow"}` without one fails closed into a card.
+// ZCode driver — the `zcode` CLI headless. A CLI turn runs on its own
+// `zcode app-server` child over ZCode Protocol v4 through
+// @clauber/zcode-adapter; server mode keeps its channel transport. The
+// session id is the resume cursor across turns.
 //
-// MCP integrations ride session params (mcpServers), not argv: harness-owned
-// stdio/HTTP servers merge over the person's own zcode config servers by
-// name. Models: the protocol serves only the current selection's settings
-// state (the full market never crosses the wire), so the catalog comes from
-// a throwaway deferred session's subscribe snapshot and a turn's model is
-// reasserted each turn via create params or session/setModel — ids are the
-// CLI's own picker format `provider/model[$reasoning-level]`, and a model
-// that requires a reasoning level rejects setModel without one. There is no
-// machine-readable sign-in status, so the snapshot infers auth from the
-// credential files `zcode login` writes.
+// MCP integrations ride session params (mcpServers), not argv. A non-empty
+// list replaces the servers ZCode would load from its config files, so a CLI
+// turn sends those too, with the harness's own servers winning by name.
+// Models: the protocol serves only the current selection's settings state
+// (the full market never crosses the wire), so the catalog comes from a
+// throwaway deferred session's subscribe snapshot. Ids are the CLI's own
+// picker format `provider/model[$reasoning-level]`, and a model that requires
+// a reasoning level rejects a switch without one. There is no machine-readable
+// sign-in status, so the snapshot infers auth from the credential files
+// `zcode login` writes.
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -33,14 +21,16 @@ import { basename, join } from "node:path";
 import { DATA_DIR, stripWorkspaceCredentialEnv } from "../config.ts";
 import { augmentedPath } from "../env-path.ts";
 import { execCli, killCliTree, spawnCli } from "../procs.ts";
+import type { McpServer } from "@clauber/zcode-adapter";
 import { isHarnessOwnedMcpEnvName } from "../mcp-registry.ts";
 import { classifyError } from "./retry.ts";
 import { commandSummary, toolDetailPreview } from "../tool-summary.ts";
+import { DENY_TIMEOUT_NOTE, startZcodeStdioTurn, zcodeRequestSummary } from "./zcode-stdio-turn.ts";
 import { gateServer } from "../mcp-gate-config.ts";
 import { canUseMcpServer } from "../../shared/tool-scope.ts";
 import { assertToolScopeSupported } from "../../shared/tool-scope-support.ts";
 import { announcesAction, CONTINUATION_NUDGE } from "./announced-action.ts";
-import { openStdioTransport, ZCODE_DEFAULT_REQUEST_TIMEOUT_MS, type ZcodeTransport, type ZcodeTransportHandlers } from "./zcode-transport.ts";
+import { ZCODE_DEFAULT_REQUEST_TIMEOUT_MS, type ZcodeTransport, type ZcodeTransportHandlers } from "./zcode-transport.ts";
 import type { ZcodeServerTransport } from "./zcode-server/connection.ts";
 import { createZcodeServerMode, type ZcodeServerMode } from "./zcode-server/mode.ts";
 import { zcodeTurnModel } from "./zcode-server/models.ts";
@@ -68,9 +58,6 @@ const NOT_CONNECTED: ZcodeTransport = {
   terminate: async () => true,
   close: async () => true,
 };
-
-const DENY_TIMEOUT_NOTE =
-  "Legion: nobody answered this permission request in time. Skip this action and finish what you can without it.";
 
 import type {
   DriverCreateInput,
@@ -417,7 +404,7 @@ export function zcodeCatalogFromSnapshot(settings: {
 
 /** Harness-owned servers become protocol env pairs; a user-configured
  * server keeps its env values verbatim. */
-export function zcodeMcpServerParam(name: string, server: McpServerSpec): Record<string, unknown> {
+export function zcodeMcpServerParam(name: string, server: McpServerSpec): McpServer {
   if ("url" in server) {
     return {
       name,
@@ -436,41 +423,19 @@ export function zcodeMcpServerParam(name: string, server: McpServerSpec): Record
 
 /** The only safe Full-access answer is an option the CLI itself offered:
  * each permission option carries its exact response payload, and answering
- * with a fabricated one is a protocol guess. Null when no allow option
- * exists — the ask becomes a card instead (fail closed). */
+ * with a fabricated one is a protocol guess. An always-allow option is never
+ * picked: ZCode stores it as a standing project rule. Null when no other allow
+ * option exists — the ask becomes a card instead (fail closed). */
 export function zcodeAllowOption(params: {
   options?: Array<{ optionId?: unknown; kind?: unknown; name?: unknown; response?: { decision?: unknown } }>;
 }): Record<string, unknown> | null {
   for (const option of Array.isArray(params.options) ? params.options : []) {
+    if (option?.kind === "allowAlways" || option?.kind === "allow_always") continue;
     if (option && typeof option === "object" && option.response?.decision === "allow" && typeof option.response === "object") {
       return option.response as Record<string, unknown>;
     }
   }
   return null;
-}
-
-/** A zcode permission request's input is usually the tool arguments object
- * (Bash carries `command`). Only a plain string command becomes the card's
- * exact-command line — anything else falls back to the reason text. */
-export function zcodeRequestSummary(params: { toolName?: unknown; reason?: unknown; input?: unknown }): {
-  tool: string;
-  summary: string;
-  command?: { command: string; cwd: string };
-} {
-  const tool = typeof params.toolName === "string" && params.toolName ? params.toolName : "tool";
-  const input = params.input && typeof params.input === "object" && !Array.isArray(params.input)
-    ? params.input as Record<string, unknown>
-    : null;
-  const rawCommand = input?.command;
-  const command = typeof rawCommand === "string" && rawCommand.trim() ? rawCommand.trim() : null;
-  const rawCwd = input?.cwd;
-  const inputCwd = typeof rawCwd === "string" ? rawCwd : "";
-  const reason = typeof params.reason === "string" && params.reason.trim() ? params.reason.trim() : "";
-  return {
-    tool,
-    summary: (command ? commandSummary({ command }) : undefined) ?? (reason || tool),
-    ...(command ? { command: { command, cwd: inputCwd } } : {}),
-  };
 }
 
 export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
@@ -756,7 +721,7 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
       const mode = zcodePermissionMode(approvalMode);
 
       const env = childEnv();
-      const mcpServers: Record<string, unknown>[] = [];
+      const mcpServers: McpServer[] = [];
       const scopedServer = (name: string, server: McpServerSpec, discovery: boolean): McpServerSpec | null => {
         if (!canUseMcpServer(turn.toolScope, name)) return null;
         if (turn.toolScope === undefined && !discovery) return server;
@@ -1139,8 +1104,39 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
           void settle(false, stopReason);
         },
       };
-      const openCli = () => openStdioTransport({ cli: config.cli, cwd, env, threadId }, handlers);
-      if (!useServer) transport = openCli();
+      const runCli = () => {
+        const cliTurn = startZcodeStdioTurn({
+          cli: config.cli,
+          cwd,
+          env,
+          threadId,
+          resumeSessionId: cursor,
+          harnessMcpServers: mcpServers,
+          allowMcpServer: (name) => canUseMcpServer(turn.toolScope, name),
+          mode,
+          autoAllow: approvalMode === "full",
+          model: selection
+            ? { provider: selection.providerId, model: selection.modelId, ...(selection.options ? { thought: selection.options.reasoningLevel } : {}) }
+            : null,
+          text: promptText,
+          images: turn.images ?? [],
+          retryScale,
+        }, {
+          base: () => base(threadId, turnId),
+          emit,
+          finish: (ok, stopReason, usage) => {
+            if (active.get(threadId)?.turnId !== turnId) return;
+            active.delete(threadId);
+            emit({ ...base(threadId, turnId), type: "turn.completed", ok, stopReason, cost: null, ...(usage ? { usage } : {}) });
+          },
+        });
+        active.set(threadId, { turnId, stop: cliTurn.stop, asks: cliTurn.asks, steer: async () => "refused" });
+      };
+      if (!useServer) {
+        runCli();
+        emit({ ...base(threadId, turnId), type: "turn.started" });
+        return { turnId };
+      }
 
       // Mid-turn input goes only to a server transport, and only into a prompt the engine has accepted.
       const steer = async (text: string): Promise<SteerOutcome> => {
@@ -1152,23 +1148,22 @@ export const ZcodeDriver: ProviderDriver<ZcodeConfig> = {
       emit({ ...base(threadId, turnId), type: "turn.started" });
 
       try {
-        if (useServer) {
-          try {
-            transport = await server!.openTransport({ workspacePath: cwd, threadId }, handlers);
-          } catch (error) {
-            if (state.stopRequested) {
-              await settle(true, "interrupted");
-              return { turnId };
-            }
-            // A conversation that already lives on the server cannot move to the CLI; a new one can.
-            if (cursor) throw error;
-            emit({ ...base(threadId, turnId), type: "runtime.notice", message: `ZCode server unavailable (${error instanceof Error ? error.message : String(error)}). Running this turn through the CLI.` });
-            transport = openCli();
-          }
+        try {
+          transport = await server!.openTransport({ workspacePath: cwd, threadId }, handlers);
+        } catch (error) {
           if (state.stopRequested) {
             await settle(true, "interrupted");
             return { turnId };
           }
+          // A conversation that already lives on the server cannot move to the CLI; a new one can.
+          if (cursor) throw error;
+          emit({ ...base(threadId, turnId), type: "runtime.notice", message: `ZCode server unavailable (${error instanceof Error ? error.message : String(error)}). Running this turn through the CLI.` });
+          runCli();
+          return { turnId };
+        }
+        if (state.stopRequested) {
+          await settle(true, "interrupted");
+          return { turnId };
         }
         // Resume into the exact native session first: a refusal here fails
         // the turn (strictResume) instead of silently starting a blank one.

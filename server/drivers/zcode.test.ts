@@ -1,9 +1,6 @@
 // ZCode driver contract tests, run against the scripted fake app-server in
-// server/testing/fake-zcode-app-server.ts — the driver must drive the
-// session/create (or resume) → subscribe → send handshake, normalize
-// session/event payloads into canonical events, answer permission and
-// user-input asks through request.opened cards, and fail a refused resume
-// instead of silently starting a blank session.
+// server/testing/fake-zcode-app-server.ts. CLI turns run over ZCode Protocol
+// v4 through @clauber/zcode-adapter.
 //
 // The fake is a shebang script — the same constraint the zcode wrapper
 // itself hits on Windows. resolveCliSpawn covers both, so these run everywhere.
@@ -17,7 +14,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ProviderInstance, RuntimeEvent } from "../contracts.ts";
 import { recordEvents, type EventRecorder } from "../testing/events.ts";
-import { ZcodeDriver, zcodeAllowOption, zcodeBotHomeEnv, zcodeCatalogFromSnapshot, zcodeConfigModels, zcodeMergePersonalConfigs, zcodeMcpServerParam, zcodeModelId, zcodeParseModelId, zcodePermissionMode, zcodeRequestSummary, zcodeWorkspaceRef } from "./zcode.ts";
+import { ZcodeDriver, zcodeAllowOption, zcodeBotHomeEnv, zcodeCatalogFromSnapshot, zcodeConfigModels, zcodeMergePersonalConfigs, zcodeMcpServerParam, zcodeModelId, zcodeParseModelId, zcodePermissionMode, zcodeWorkspaceRef } from "./zcode.ts";
+import { zcodeRequestSummary } from "./zcode-stdio-turn.ts";
 import { removeTempDir } from "../testing/cleanup.ts";
 import { CONTINUATION_NUDGE } from "./announced-action.ts";
 import { ZCODE_MAX_TURN_RESUMES, ZCODE_RESUME_PROMPT } from "./zcode-turn-recovery.ts";
@@ -146,6 +144,10 @@ describe("ZcodeDriver config and pure helpers", () => {
     expect(zcodeAllowOption(options)).toEqual({ decision: "allow" });
     expect(zcodeAllowOption({ options: [{ optionId: "d", response: { decision: "deny" } }] })).toBeNull();
     expect(zcodeAllowOption({})).toBeNull();
+    const always = { optionId: "allowAlways", kind: "allowAlways", response: { decision: "allow" } };
+    const once = { optionId: "allowOnce", kind: "allowOnce", response: { decision: "allow" } };
+    expect(zcodeAllowOption({ options: [always, once] })).toBe(once.response);
+    expect(zcodeAllowOption({ options: [always] })).toBeNull();
   });
 
   it("builds the permission card from the request's command input, falling back to the reason", () => {
@@ -251,6 +253,14 @@ describe("ZcodeDriver turns (fake app-server)", () => {
     return path;
   };
 
+  type Dump = { calls: Array<{ method: string; params: any }>; answers: Record<string, unknown>; v1Replies: Record<string, unknown>; env: Record<string, string> };
+  /** The wire steps a turn took: v4 commands by type, other requests by method. */
+  const stepsOf = (seen: Dump) => seen.calls
+    .map((call) => call.method === "v4/command" ? call.params.type : call.method)
+    .filter((step) => !step.startsWith("v4/attachment/") && step !== "v4/conversation/unsubscribe");
+  const commandsOf = (seen: Dump, type: string) => seen.calls.filter((call) => call.method === "v4/command" && call.params.type === type).map((call) => call.params);
+  const commandOf = (seen: Dump, type: string) => commandsOf(seen, type)[0];
+
   beforeEach(() => {
     chmodSync(FAKE_CLI, 0o755);
     scratch = mkdtempSync(join(tmpdir(), "omb-zcode-test-"));
@@ -266,7 +276,7 @@ describe("ZcodeDriver turns (fake app-server)", () => {
     removeTempDir(scratch);
   });
 
-  it("drives the create → subscribe → send handshake and normalizes the scripted turn", async () => {
+  it("drives the v4 create → subscribe → sendText handshake and normalizes the scripted turn", async () => {
     const dump = newDump();
     await create();
     const cwd = scratch;
@@ -274,22 +284,21 @@ describe("ZcodeDriver turns (fake app-server)", () => {
     const completed = await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
     expect(completed).toMatchObject({ ok: true, usage: { input: 100, output: 7, cachedInput: 40 } });
     const seen = JSON.parse(readFileSync(dump, "utf8"));
-    const methods = seen.calls.map((call: { method: string }) => call.method);
-    expect(methods).toEqual(["session/create", "session/setMode", "session/subscribe", "session/send"]);
-    expect(seen.calls[0].params.mode).toBe("build");
-    expect(seen.calls[0].params.workspace.workspacePath).toBe(cwd);
-    expect(seen.calls[0].params.workspace.workspaceKey).toBe(cwd);
+    expect(stepsOf(seen)).toEqual(["createSession", "v4/conversation/subscribe", "sendText"]);
+    expect(commandOf(seen, "createSession")).toMatchObject({ sessionId: null, payload: { workspaceId: cwd, config: { mode: "build" } } });
+    const send = commandOf(seen, "sendText");
+    expect(send.sessionId).toBe("sess_fake_1");
+    expect(send.payload.mode).toBe("build");
     // The persona rides the first prompt of a fresh session.
-    expect(seen.calls[3].params.content).toContain("You are a fixture bot.");
-    expect(seen.calls[3].params.content).toContain("Fixture");
-    expect(seen.calls[3].params.sessionId).toBe("sess_fake_1");
+    expect(send.payload.text).toContain("You are a fixture bot.");
+    expect(send.payload.text).toContain("Fixture");
+    expect(recorder.events).toContainEqual(expect.objectContaining({ type: "session.started", sessionId: "sess_fake_1" }));
     const kinds = recorder.events.map((event) => event.type);
     expect(kinds).toContain("session.started");
     const deltas = recorder.events.filter((event) => event.type === "content.delta");
     expect(deltas.some((event) => event.streamKind === "reasoning_text" && event.delta === "thinking ")).toBe(true);
     expect(deltas.filter((event) => event.streamKind === "assistant_text").map((event) => event.delta).join("")).toBe("Hello");
-    // One chip per call, with the input the model stream carried (the
-    // scheduled update omits it), and a failed call settles as failed.
+    // One chip per call, and a failed call settles as failed.
     const started = recorder.events.filter((event) => event.type === "item.started" && event.itemType === "tool");
     expect(started.map((event) => event.type === "item.started" && event.itemId)).toEqual(["call_1", "call_2"]);
     expect(started[0]).toMatchObject({ title: "Bash", summary: "ls" });
@@ -329,7 +338,7 @@ describe("ZcodeDriver turns (fake app-server)", () => {
       },
     });
     await recorder.until(event => event.type === "turn.completed" && event.turnId === turnId);
-    const mounts = JSON.parse(readFileSync(dump, "utf8")).calls[0].params.mcpServers;
+    const mounts = commandOf(JSON.parse(readFileSync(dump, "utf8")), "createSession").payload.mcpServers;
     const notes = mounts.find((mount: { name: string }) => mount.name === "notes");
     expect(notes.command).toBe(process.execPath);
     expect(notes.args[0]).toContain("mcp-gate");
@@ -347,14 +356,65 @@ describe("ZcodeDriver turns (fake app-server)", () => {
     }
   });
 
-  it("sends pasted images as native session/send attachments, even with no text", async () => {
+  it.skipIf(process.platform === "win32")("keeps the workspace's own and the user's ZCode MCP servers next to the harness's, which win by name", async () => {
+    const dump = newDump();
+    await create();
+    const project = join(scratch, "project");
+    mkdirSync(join(project, ".zcode"), { recursive: true });
+    mkdirSync(join(project, ".git"));
+    writeFileSync(join(project, ".zcode", "config.json"), JSON.stringify({ mcp: { servers: {
+      "project-notes": { type: "http", url: "https://example.com/project" },
+      agents: { command: "shadowed-agents" },
+    } } }));
+    // The CLI runs with the bot home as HOME, so its user scope is the bot home's ZCode config.
+    const userConfig = join(DATA_DIR, "providers", "zcode", createHash("sha256").update("zcode-test").digest("hex"), "home", ".zcode", "cli", "config.json");
+    mkdirSync(dirname(userConfig), { recursive: true });
+    writeFileSync(userConfig, JSON.stringify({ mcp: { servers: { "user-notes": { command: "user-notes-fixture" } } } }));
+    try {
+      const { turnId } = await instance.adapter.sendTurn({
+        threadId: "file-mcp", text: "Fixture", cwd: project,
+        integrations: { agents: { command: "agents-fixture", args: [], env: {} } },
+      });
+      await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
+    } finally {
+      rmSync(userConfig);
+    }
+    const mounts = commandOf(JSON.parse(readFileSync(dump, "utf8")), "createSession").payload.mcpServers;
+    expect(mounts.map((mount: { name: string }) => mount.name).sort()).toEqual(["agents", "project-notes", "user-notes"]);
+    expect(mounts.find((mount: { name: string }) => mount.name === "agents").command).toBe("agents-fixture");
+    expect(mounts.find((mount: { name: string }) => mount.name === "project-notes")).toMatchObject({ type: "http", url: "https://example.com/project" });
+  });
+
+  it("says so and keeps the harness's servers when the workspace's ZCode MCP config cannot be read", async () => {
+    const dump = newDump();
+    await create();
+    mkdirSync(join(scratch, ".zcode"), { recursive: true });
+    writeFileSync(join(scratch, ".zcode", "config.json"), "{ not json");
+    const { turnId } = await instance.adapter.sendTurn({
+      threadId: "broken-mcp", text: "Fixture", cwd: scratch,
+      integrations: { agents: { command: "agents-fixture", args: [], env: {} } },
+    });
+    await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
+    expect(recorder.events).toContainEqual(expect.objectContaining({ type: "runtime.notice", message: expect.stringContaining("config.json") }));
+    const mounts = commandOf(JSON.parse(readFileSync(dump, "utf8")), "createSession").payload.mcpServers;
+    expect(mounts.map((mount: { name: string }) => mount.name)).toEqual(["agents"]);
+  });
+
+  it("uploads pasted images as native v4 attachments, even with no text", async () => {
     const dump = newDump();
     await create();
     const path = join(scratch, "shot.png");
-    const { turnId } = await instance.adapter.sendTurn({ threadId: "image", text: "", images: [{ path, mime: "image/png", bytes: 10 }] });
+    writeFileSync(path, Buffer.from("not-a-real-png"));
+    const { turnId } = await instance.adapter.sendTurn({ threadId: "image", text: "", images: [{ path, mime: "image/png", bytes: 14 }] });
     await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
-    const send = JSON.parse(readFileSync(dump, "utf8")).calls.find((call: { method: string }) => call.method === "session/send");
-    expect(send.params.attachments).toEqual([{ kind: "image", filename: "shot.png", mimeType: "image/png", localPath: path }]);
+    const seen = JSON.parse(readFileSync(dump, "utf8")) as Dump;
+    const begin = seen.calls.find((call) => call.method === "v4/attachment/begin")!;
+    expect(begin.params).toMatchObject({ sessionId: "sess_fake_1", fileName: "shot.png", mime: "image/png", totalBytes: 14 });
+    const chunk = seen.calls.find((call) => call.method === "v4/attachment/chunk")!;
+    expect(Buffer.from(chunk.params.dataBase64, "base64").toString()).toBe("not-a-real-png");
+    expect(commandOf(seen, "sendText").payload.attachments).toEqual([
+      { ref: `zcode-artifact://sess_fake_1/upload-${begin.params.uploadId}`, fileName: "shot.png", mime: "image/png", bytes: 14 },
+    ]);
     expect(instance.adapter.capabilities).toMatchObject({ images: true, nativeImageInput: true });
   });
 
@@ -366,12 +426,12 @@ describe("ZcodeDriver turns (fake app-server)", () => {
     });
     const completed = await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
     expect(completed).toMatchObject({ ok: true, usage: { input: 200, output: 14, cachedInput: 80 } });
-    const { calls } = JSON.parse(readFileSync(dump, "utf8"));
-    const sends = calls.filter((call: { method: string }) => call.method === "session/send");
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    const sends = commandsOf(seen, "sendText");
     expect(sends).toHaveLength(2);
-    expect(sends[1].params).toEqual({ sessionId: sends[0].params.sessionId, content: CONTINUATION_NUDGE });
-    expect(calls.filter((call: { method: string }) => call.method === "session/setMode")).toHaveLength(1);
-    expect(calls.filter((call: { method: string }) => call.method === "session/setModel")).toHaveLength(1);
+    expect(sends[1].sessionId).toBe(sends[0].sessionId);
+    expect(sends[1].payload).toEqual({ text: CONTINUATION_NUDGE, mode: "yolo" });
+    expect(stepsOf(seen).filter((step) => step === "session/resume" || step === "createSession")).toHaveLength(1);
     expect(recorder.events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
     expect(recorder.events).toContainEqual(expect.objectContaining({ type: "item.completed", text: `Done — received: ${CONTINUATION_NUDGE}` }));
   });
@@ -388,23 +448,26 @@ describe("ZcodeDriver turns (fake app-server)", () => {
     const { turnId } = await instance.adapter.sendTurn({ threadId: "bounded", text: "Run the tests" });
     const completed = await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
     expect(completed).toMatchObject({ ok, stopReason });
-    const { calls } = JSON.parse(readFileSync(dump, "utf8"));
-    expect(calls.filter((call: { method: string }) => call.method === "session/send")).toHaveLength(sends);
+    expect(commandsOf(JSON.parse(readFileSync(dump, "utf8")), "sendText")).toHaveLength(sends);
     expect(recorder.events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
   });
 
-  it("resumes into the cursor's native session and reasserts the turn's mode", async () => {
+  it("resumes into the cursor's native session with its MCP servers and sends the turn's mode with the input", async () => {
     const dump = newDump();
     await create();
-    const { turnId } = await instance.adapter.sendTurn({ threadId: "resumed", text: "Continue", resumeCursor: "sess_old", approvalMode: "full" });
+    const { turnId } = await instance.adapter.sendTurn({
+      threadId: "resumed", text: "Continue", resumeCursor: "sess_old", approvalMode: "full", cwd: scratch, system: "You are a fixture bot.",
+      integrations: { agents: { command: "agents-fixture", args: [], env: {} } },
+    });
     await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
     const seen = JSON.parse(readFileSync(dump, "utf8"));
-    const methods = seen.calls.map((call: { method: string }) => call.method);
-    expect(methods).toEqual(["session/resume", "session/setMode", "session/subscribe", "session/send"]);
-    expect(seen.calls[0].params.sessionId).toBe("sess_old");
-    expect(seen.calls[1].params.mode).toBe("yolo");
+    expect(stepsOf(seen)).toEqual(["session/resume", "v4/conversation/subscribe", "sendText"]);
+    // A v4 cold resume drops the servers the session was created with (measured on 0.16.9), so v1 resume re-sends them.
+    expect(seen.calls[0].params).toMatchObject({ sessionId: "sess_old", workspace: { workspacePath: scratch, workspaceKey: scratch } });
+    expect(seen.calls[0].params.mcpServers.map((server: { name: string }) => server.name)).toEqual(["agents"]);
+    expect(seen.calls[1].params.topic).toBe("conversation/sess_old");
     // A resumed session does not resend the persona.
-    expect(seen.calls[3].params.content).toBe("Continue");
+    expect(commandOf(seen, "sendText").payload).toEqual({ text: "Continue", mode: "yolo" });
   });
 
   it("fails a refused resume instead of silently starting a blank session", async () => {
@@ -414,40 +477,32 @@ describe("ZcodeDriver turns (fake app-server)", () => {
     const completed = await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
     expect(completed).toMatchObject({ ok: false });
     expect(recorder.events.some((event) => event.type === "runtime.error")).toBe(true);
-    // strictResume: no session/create fallback behind the failed resume.
-    const seen = JSON.parse(readFileSync(dump, "utf8"));
-    expect(seen.calls.map((c: { method: string }) => c.method)).toEqual(["session/resume"]);
+    // strictResume: no createSession fallback behind the failed resume.
+    expect(stepsOf(JSON.parse(readFileSync(dump, "utf8")))).toEqual(["session/resume"]);
   });
 
-  it("carries a selected model into a fresh session and reasserts it with setModel on resume", async () => {
+  it("switches a fresh or resumed session to the selected model without the v1 setModel that rewrites the workspace default", async () => {
     const dump = newDump();
     await create();
-    const { turnId } = await instance.adapter.sendTurn({
-      threadId: "fresh-model",
-      text: "Fixture",
-      model: "zai-fake/glm-5.3-flash$max",
-    });
+    const { turnId } = await instance.adapter.sendTurn({ threadId: "fresh-model", text: "Fixture", model: "zai-fake/glm-5.3-flash$low" });
     await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
     const fresh = JSON.parse(readFileSync(dump, "utf8"));
-    expect(fresh.calls.map((c: { method: string }) => c.method)).toEqual(["session/create", "session/setMode", "session/setModel", "session/subscribe", "session/send"]);
-    expect(fresh.calls[0].params.model).toBeUndefined();
-    expect(fresh.calls[2].params.model).toEqual({ providerId: "zai-fake", modelId: "glm-5.3-flash", options: { reasoningLevel: "max" } });
+    expect(stepsOf(fresh)).toEqual(["createSession", "v4/conversation/subscribe", "switchModelConfig", "sendText"]);
+    expect(commandOf(fresh, "switchModelConfig").payload).toEqual({ provider: "zai-fake", model: "glm-5.3-flash", thought: "low" });
 
     recorder.events.length = 0;
     const dump2 = newDump();
-    const { turnId: resumedTurn } = await instance.adapter.sendTurn({
-      threadId: "resumed-model",
-      text: "Continue",
-      resumeCursor: "sess_old",
-      model: "zai-fake/glm-5.3-flash$max",
-    });
+    const { turnId: resumedTurn } = await instance.adapter.sendTurn({ threadId: "resumed-model", text: "Continue", resumeCursor: "sess_old", model: "zai-fake/glm-5.3-flash$low" });
     await recorder.until((event) => event.type === "turn.completed" && event.turnId === resumedTurn);
     const resumed = JSON.parse(readFileSync(dump2, "utf8"));
-    expect(resumed.calls.map((c: { method: string }) => c.method)).toEqual(["session/resume", "session/setMode", "session/setModel", "session/subscribe", "session/send"]);
-    // The reasoning level rides the selection: the registry rejects a
-    // level-less selection for models that require one, and create params
-    // drop the options entirely — setModel is the only path that honours them.
-    expect(resumed.calls[2].params.model).toEqual({ providerId: "zai-fake", modelId: "glm-5.3-flash", options: { reasoningLevel: "max" } });
+    expect(stepsOf(resumed)).toEqual(["session/resume", "v4/conversation/subscribe", "switchModelConfig", "sendText"]);
+
+    recorder.events.length = 0;
+    const dump3 = newDump();
+    const { turnId: sameTurn } = await instance.adapter.sendTurn({ threadId: "same-model", text: "Fixture", model: "zai-fake/glm-5.3-flash" });
+    await recorder.until((event) => event.type === "turn.completed" && event.turnId === sameTurn);
+    // A bare id on the session's current model keeps its level: nothing to switch.
+    expect(stepsOf(JSON.parse(readFileSync(dump3, "utf8")))).toEqual(["createSession", "v4/conversation/subscribe", "sendText"]);
   });
 
   it("refuses a turn whose model id is not a provider-qualified selection", async () => {
@@ -490,33 +545,33 @@ describe("ZcodeDriver turns (fake app-server)", () => {
     } finally { logged.mockRestore(); }
   });
 
-  it("echoes the CLI's own allow option under Full access without opening a card", async () => {
+  it("allows once under Full access without a card, never always, and never answers the v1 ask", async () => {
     const dump = newDump();
     await create({ mode: "approval" });
     const { turnId } = await instance.adapter.sendTurn({ threadId: "full-approval", text: "Fixture", approvalMode: "full" });
     await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
     expect(recorder.events.some((event) => event.type === "request.opened")).toBe(false);
-    const seen = JSON.parse(readFileSync(dump, "utf8"));
-    expect(Object.values(seen.answers)).toContainEqual({ decision: "allow" });
+    const seen = JSON.parse(readFileSync(dump, "utf8")) as Dump;
+    expect(Object.values(seen.answers)).toEqual([{ optionId: "allowOnce" }]);
+    expect(seen.v1Replies).toEqual({});
   });
 
-  it("opens a card even under Full access when the CLI offered no allow option, and denies on request", async () => {
+  it("opens a card under Full access when the only allow option is allowAlways, and denies on request", async () => {
     const dump = newDump();
     await create({ mode: "approval-no-allow" });
     const { turnId } = await instance.adapter.sendTurn({ threadId: "fail-closed", text: "Fixture", approvalMode: "full" });
     const opened = (await recorder.until((event) => event.type === "request.opened")) as Extract<RuntimeEvent, { type: "request.opened" }>;
     expect(opened.requestType).toBe("permission");
     expect(opened.summary).toContain("rm -rf");
-    const outcome = await instance.adapter.respondToRequest("fail-closed", opened.requestId!, { behavior: "deny" });
+    const outcome = await instance.adapter.respondToRequest("fail-closed", opened.requestId!, { behavior: "deny", message: "Not that one" });
     expect(outcome).toBe("rejected");
     await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
-    const seen = JSON.parse(readFileSync(dump, "utf8"));
-    expect(Object.values(seen.answers)).toContainEqual(expect.objectContaining({ decision: "deny" }));
-    const resolved = recorder.events.find((event) => event.type === "request.resolved");
-    expect(resolved).toMatchObject({ behavior: "deny", source: "user" });
+    const seen = JSON.parse(readFileSync(dump, "utf8")) as Dump;
+    expect(Object.values(seen.answers)).toEqual([{ optionId: "deny", freeText: "Not that one" }]);
+    expect(recorder.events.find((event) => event.type === "request.resolved")).toMatchObject({ behavior: "deny", source: "user" });
   });
 
-  it("surfaces an Ask-mode permission request as a card and answers allow-once", async () => {
+  it("opens one card for an Ask-mode permission ask however often it is re-announced, and allows once", async () => {
     const dump = newDump();
     await create({ mode: "approval" });
     const { turnId } = await instance.adapter.sendTurn({ threadId: "ask-approval", text: "Fixture", approvalMode: "ask" });
@@ -524,14 +579,19 @@ describe("ZcodeDriver turns (fake app-server)", () => {
     expect(opened.tool).toBe("Bash");
     // The ask carried an exact command with its cwd, so the card carries it too.
     expect(opened.command).toEqual({ command: "ls", cwd: "/tmp" });
+    // The fake re-announces the v1 ask every 30 ms while it is pending.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(recorder.events.filter((event) => event.type === "request.opened")).toHaveLength(1);
     const outcome = await instance.adapter.respondToRequest("ask-approval", opened.requestId!, { behavior: "allow" });
     expect(outcome).toBe("allowed-once");
     await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
-    const seen = JSON.parse(readFileSync(dump, "utf8"));
-    expect(Object.values(seen.answers)).toContainEqual({ decision: "allow" });
+    const seen = JSON.parse(readFileSync(dump, "utf8")) as Dump;
+    expect(Object.values(seen.answers)).toEqual([{ optionId: "allowOnce" }]);
+    expect(seen.v1Replies).toEqual({});
+    expect(recorder.events.filter((event) => event.type === "request.opened")).toHaveLength(1);
   });
 
-  it("routes the engine's structured ask through a question card with choices", async () => {
+  it("routes AskUserQuestion through a question card and answers it keyed by question text", async () => {
     const dump = newDump();
     await create({ mode: "question" });
     const { turnId } = await instance.adapter.sendTurn({ threadId: "question", text: "Fixture" });
@@ -541,8 +601,22 @@ describe("ZcodeDriver turns (fake app-server)", () => {
     const outcome = await instance.adapter.respondToRequest("question", opened.requestId!, { behavior: "answer", message: "alpha" });
     expect(outcome).toBe("answered");
     await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
-    const seen = JSON.parse(readFileSync(dump, "utf8"));
-    expect(Object.values(seen.answers)).toContainEqual(expect.objectContaining({ action: "accept", content: { value: "alpha" } }));
+    const seen = JSON.parse(readFileSync(dump, "utf8")) as Dump;
+    expect(Object.values(seen.answers)).toEqual([{ action: "accept", content: { answers: { "Pick one": "alpha" } } }]);
+    expect(seen.v1Replies).toEqual({});
+  });
+
+  it("stops a running turn through the session and settles it as interrupted", async () => {
+    const dump = newDump();
+    await create({ mode: "hold" });
+    const { turnId } = await instance.adapter.sendTurn({ threadId: "hold", text: "Fixture" });
+    await recorder.until((event) => event.type === "session.started");
+    await vi.waitFor(() => expect(commandsOf(JSON.parse(readFileSync(dump, "utf8")), "sendText")).toHaveLength(1));
+    await instance.adapter.interruptTurn("hold", turnId);
+    const completed = await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
+    expect(completed).toMatchObject({ ok: true, stopReason: "interrupted" });
+    expect(commandsOf(JSON.parse(readFileSync(dump, "utf8")), "stop")).toHaveLength(1);
+    expect(instance.adapter.hasSession("hold")).toBe(false);
   });
 
   it("settles a mid-turn crash as a failed turn with the exit attributed", async () => {
@@ -551,12 +625,10 @@ describe("ZcodeDriver turns (fake app-server)", () => {
     const { turnId } = await instance.adapter.sendTurn({ threadId: "crash", text: "Fixture" });
     const completed = await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
     expect(completed).toMatchObject({ ok: false });
-    expect(recorder.events.some((event) => event.type === "runtime.error" && /exited 1/.test(event.message))).toBe(true);
+    expect(recorder.events.some((event) => event.type === "runtime.error" && /exited \(code 1\).*synthetic mid-turn crash/.test(event.message))).toBe(true);
   });
   describe("transient provider failures", () => {
-    const sendsOf = (dump: string) =>
-      (JSON.parse(readFileSync(dump, "utf8")).calls as Array<{ method: string; params: { sessionId?: string; content?: string } }>)
-        .filter((call) => call.method === "session/send");
+    const sendsOf = (dump: string) => commandsOf(JSON.parse(readFileSync(dump, "utf8")), "sendText");
     const notices = () => recorder.events.filter((event) => event.type === "runtime.notice");
 
     afterEach(() => {
@@ -572,7 +644,8 @@ describe("ZcodeDriver turns (fake app-server)", () => {
       expect(completed).toMatchObject({ ok: true });
       const sends = sendsOf(dump);
       expect(sends).toHaveLength(2);
-      expect(sends[1]!.params).toEqual({ sessionId: sends[0]!.params.sessionId, content: ZCODE_RESUME_PROMPT });
+      expect(sends[1]!.sessionId).toBe(sends[0]!.sessionId);
+      expect(sends[1]!.payload).toEqual({ text: ZCODE_RESUME_PROMPT, mode: "build" });
       expect(notices()).toHaveLength(1);
       expect(notices()[0]).toMatchObject({ message: expect.stringMatching(/network_error.*resume 1 of 5/) });
       expect(recorder.events.some((event) => event.type === "runtime.error")).toBe(false);
@@ -654,9 +727,9 @@ describe("ZcodeDriver turns (fake app-server)", () => {
         ZCODE_DATA_BASE_DIR: sourceHome,
         ZCODE_SESSION_DB_PATH: join(sourceHome, ".zcode", "cli", "db", "db.sqlite"),
       });
-      const create = seen.calls.find((call: { method: string }) => call.method === "session/create");
-      expect(create.params.mcpServers.map((server: { name: string }) => server.name)).toEqual(["notes"]);
-      const env = Object.fromEntries(create.params.mcpServers[0].env.map(({ name, value }: { name: string; value: string }) => [name, value]));
+      const create = commandOf(seen, "createSession");
+      expect(create.payload.mcpServers.map((server: { name: string }) => server.name)).toEqual(["notes"]);
+      const env = Object.fromEntries(create.payload.mcpServers[0].env.map(({ name, value }: { name: string; value: string }) => [name, value]));
       expect(env.HOME).toBe(sourceHome);
       const gate = JSON.parse(env[`OMB_GATE_CONFIG_${createHash("sha256").update("notes").digest("hex")}`]);
       expect(gate.OMB_GATE_DISCOVERY).toBe("1");
@@ -666,11 +739,11 @@ describe("ZcodeDriver turns (fake app-server)", () => {
     it("anchors on an explicitly configured HOME and keeps explicit storage across a resumed model turn", async () => {
       const sourceHome = join(scratch, "custom-home");
       await launchThroughWrapper(sourceHome, { HOME: sourceHome, ZCODE_SESSION_DB_PATH: "~/kept/db.sqlite" }, "zcode-custom-home");
-      const { completed, seen } = await runTurn({ resumeCursor: "sess_old", model: "zai-fake/glm-5.3-flash$max", approvalMode: "edits" });
+      const { completed, seen } = await runTurn({ resumeCursor: "sess_old", model: "zai-fake/glm-5.3-flash$low", approvalMode: "edits" });
       expect(completed).toMatchObject({ ok: true });
-      expect(seen.calls.map((call: { method: string }) => call.method)).toEqual(["session/resume", "session/setMode", "session/setModel", "session/subscribe", "session/send"]);
-      expect(seen.calls[1].params.mode).toBe("edit");
-      expect(seen.calls[2].params.model).toEqual({ providerId: "zai-fake", modelId: "glm-5.3-flash", options: { reasoningLevel: "max" } });
+      expect(stepsOf(seen)).toEqual(["session/resume", "v4/conversation/subscribe", "switchModelConfig", "sendText"]);
+      expect(commandOf(seen, "sendText").payload.mode).toBe("edit");
+      expect(commandOf(seen, "switchModelConfig").payload).toEqual({ provider: "zai-fake", model: "glm-5.3-flash", thought: "low" });
       expect(seen.env).toMatchObject({
         ZCODE_DATA_BASE_DIR: sourceHome,
         ZCODE_SESSION_DB_PATH: join(sourceHome, "kept", "db.sqlite"),
