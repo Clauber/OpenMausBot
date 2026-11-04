@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { FilePreviewButtonProps } from "./FilePreviewButton";
 import { Code2, Download, Eye, LoaderCircle, RotateCcw } from "lucide-react";
 import { requestMessageFile, useLocalFileSave, type MessageAttachmentContext } from "./AttachmentPreview";
 import { TableDialog } from "./RichTable";
@@ -19,11 +20,11 @@ export function htmlPreviewDocument(source: string): string {
   return `<meta http-equiv="Content-Security-Policy" content="${HTML_PREVIEW_CSP}"><base target="_blank">${source}`;
 }
 
-export function HtmlFileButton({ path, name, message }: { path: string; name: string; message: MessageAttachmentContext }) {
+export function HtmlFileButton({ path, name, message, children, className }: FilePreviewButtonProps) {
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
   return <>
-    <button ref={trigger} type="button" className="table-action" title={t("html.preview", { name })} aria-label={t("html.preview", { name })} onClick={() => setOpen(true)}><Eye size={14} /></button>
+    <button ref={trigger} type="button" className={className ?? "table-action"} title={t("html.preview", { name })} aria-label={t("html.preview", { name })} onClick={() => setOpen(true)}>{children ?? <Eye size={14} />}</button>
     {open && <TableDialog title={name} returnFocus={trigger.current} onClose={() => setOpen(false)}><HtmlFileContent key={`${message.threadId}:${message.messageId}:${path}`} path={path} name={name} message={message} /></TableDialog>}
   </>;
 }

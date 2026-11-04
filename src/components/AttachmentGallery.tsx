@@ -8,6 +8,7 @@ import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import { windowsPathDestinations } from "../../shared/markdown-windows-paths";
 import { localFilePath } from "./ChatMarkdown";
+import { DocumentFileCard } from "./DocumentFileCard";
 import {
   AttachedFileChip,
   AttachmentPreviewDialog,
@@ -202,8 +203,8 @@ function VideoAttachment({ file, message }: { file: GalleryFile; message: Messag
   };
 
   return (
-    <div className="min-w-0 overflow-hidden rounded-xl border border-hairline/40 bg-inset/40">
-      <div className="relative flex aspect-[4/3] items-center justify-center bg-inset">
+    <div className="w-full max-w-[26rem] min-w-0 overflow-hidden rounded-xl border border-hairline/40 bg-inset/40">
+      <div className="relative flex aspect-video max-h-60 items-center justify-center bg-inset">
         {preview && !error ? (
           <video
             ref={videoRef}
@@ -213,7 +214,7 @@ function VideoAttachment({ file, message }: { file: GalleryFile; message: Messag
             playsInline
             preload="metadata"
             aria-label={t("attach.previewVideo", { name: file.name })}
-            className="max-h-full max-w-full"
+            className="size-full max-h-60 object-contain"
             onError={() => setError(t("attach.videoUnavailable"))}
           />
         ) : (
@@ -226,6 +227,7 @@ function VideoAttachment({ file, message }: { file: GalleryFile; message: Messag
             className="flex size-full flex-col items-center justify-center gap-2 p-3 text-center text-ink-secondary transition-colors hover:bg-raised/60 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60 disabled:cursor-wait disabled:hover:bg-transparent"
           >
             {loading ? <LoaderCircle size={24} className="animate-spin" /> : <Play size={24} />}
+            <span className="max-w-full truncate text-[13px] font-medium text-ink">{file.name}</span>
             <span className="text-[12px]">{loading ? t("attach.videoLoading") : error ? t("chat.retry") : t("attach.loadVideo")}</span>
             {!error && !loading && <span className="text-[11px]">{t("attach.videoHint")}</span>}
           </button>
@@ -400,10 +402,10 @@ export function AttachmentGallery({ images = [], files = [], message, eager = fa
           </div>
         )}
         {(rest.length > 0 || items.length > limit) && (
-          <div className="flex max-w-full flex-wrap items-start gap-1.5">
+          <div className="flex w-full max-w-full flex-col items-start gap-1.5">
             {rest.map((item) => item.kind === "audio" && message
               ? <AudioAttachment key={`${message.threadId}:${message.messageId}:${item.key}`} file={item.file} message={message} />
-              : item.kind === "file" && <AttachedFileChip key={item.key} file={item.file} linked={item.file.linked} message={message} compact />)}
+              : item.kind === "file" && <DocumentFileCard key={item.key} path={item.file.path} name={item.file.name} available={Boolean(item.file.private || item.file.linked)} message={message} />)}
             {items.length > limit && (
               <button type="button" onClick={() => setExpanded(!expanded)} aria-expanded={expanded} className="inline-flex h-7 items-center rounded-full px-2.5 text-[13px] leading-none text-ink-secondary transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus">
                 {expanded ? t("attach.showLess") : t("attach.moreCount", { count: items.length - limit })}
@@ -430,10 +432,10 @@ export function AttachmentGallery({ images = [], files = [], message, eager = fa
         </div>
       )}
       {documents.length > 0 && (
-        <div className="flex flex-col items-start gap-1.5">
+        <div className="flex w-full min-w-0 flex-col items-start gap-1.5">
           {documents.map((item) => item.kind === "audio" && message
             ? <AudioAttachment key={`${message.threadId}:${message.messageId}:${item.key}`} file={item.file} message={message} />
-            : item.kind === "file" && <AttachedFileChip key={item.key} file={item.file} linked={item.file.linked} message={message} className="max-w-none rounded-xl border-hairline/25 bg-transparent" />)}
+            : item.kind === "file" && <DocumentFileCard key={item.key} path={item.file.path} name={item.file.name} available={Boolean(item.file.private || item.file.linked)} message={message} />)}
         </div>
       )}
       {items.length > limit && (

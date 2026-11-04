@@ -38,12 +38,17 @@ describe("the group beneath a reply", () => {
   const files = Array.from({ length: 9 }, (_, index) => ({ path: `/store/f${index}.md`, name: index === 2 ? "أخبار الذكاء الاصطناعي 9 أكتوبر.md" : `file-${index}.md`, private: true }));
   const html = renderToStaticMarkup(createElement(AttachmentGallery, { files, message, beneath: true }));
 
-  it("sits under the text as wrapping 28px pills", () => {
+  it("sits under the text as stacked cards on one left edge", () => {
     expect(html).toMatch(/<section[^>]*class="mt-2\.5 /);
-    expect(html).toContain("flex max-w-full flex-wrap items-start gap-1.5");
-    expect(html).toContain("h-7");
-    expect(html).toContain("rounded-full");
-    expect(html).not.toContain("min-h-10");
+    expect(html).toContain("flex-col");
+    expect(html).not.toContain("flex-wrap");
+    expect(html).not.toContain('h-7"');
+  });
+
+  it("gives every card a touch-sized primary target that opens a preview", () => {
+    expect(html).toContain("min-h-14");
+    expect(html.match(/aria-label="Preview /g)).toHaveLength(6);
+    expect(html).toContain("focus-visible:ring-accent/60");
   });
 
   it("shows six, then +N more", () => {
@@ -52,7 +57,7 @@ describe("the group beneath a reply", () => {
   });
 
   it("keeps a right to left file name in its own direction", () => {
-    expect(html).toContain('dir="auto" class="min-w-0 truncate text-ink [unicode-bidi:isolate]">أخبار الذكاء الاصطناعي 9 أكتوبر.md');
+    expect(html).toMatch(/dir="auto"[^>]*>أخبار الذكاء الاصطناعي 9 أكتوبر\.md/);
   });
 
   it("draws images as small thumbnails", () => {

@@ -4,7 +4,7 @@ import Markdown, { defaultUrlTransform, type Components, type ExtraProps, type O
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { fromMarkdown, type Options as MarkdownParseOptions } from "mdast-util-from-markdown";
-import { Check, Copy, Download, LoaderCircle, RotateCcw, WrapText, X } from "lucide-react";
+import { Check, Copy, WrapText, X } from "lucide-react";
 import { useCopyFeedback } from "@/lib/copy-text";
 import { t } from "@/lib/i18n";
 import { cn } from "@/lib/cn";
@@ -22,12 +22,13 @@ import { githubRefFromProps, remarkGithubRefs } from "@/lib/github-refs";
 import { GITHUB_REF_ICONS, LinkHoverCard } from "@/components/LinkHoverCard";
 import { useThreadLinkMenu } from "@/components/ThreadLinkMenu";
 import { looksLikeThreadRefUrl, parseThreadRefUrl, resolveThreadRefAddress, remarkThreadRefs } from "../lib/thread-refs";
-import { MarkdownImagePreview, MessageFolderFiles, OutsideWorkspaceFile, saveFailureText, useLocalFileSave, type MessageAttachmentContext } from "./AttachmentPreview";
+import { MarkdownImagePreview, type MessageAttachmentContext } from "./AttachmentPreview";
 import { ThreadLink, ThreadRefsContext, threadLinkFromProps, type ThreadRefsValue } from "./ThreadRefs";
 import { MarkdownTable } from "./MarkdownTable";
 import { CodeBlock, CodePlate, codeHash } from "./CodeBlock";
 export { CodeBlock, HIGHLIGHT_CACHE_MAX, HIGHLIGHT_CACHE_MAX_CHARS, HIGHLIGHT_MAX_CHARS, type CodeBlockProps } from "./CodeBlock";
-import { FilePreviewButton } from "./FilePreviewButton";
+import { isAudioAttachment, isVideoAttachment } from "./AttachmentGallery";
+import { DocumentFileCard } from "./DocumentFileCard";
 
 const mermaidCache = new Map<string, string>();
 const MERMAID_CACHE_MAX = 50;
@@ -320,56 +321,12 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
 // Security: no href at all, since an <a href="file://…"> reaches setWindowOpenHandler on a middle or modifier click,
 // which calls shell.openExternal without main's containment check.
 function LocalFileLink({ filePath, name, children, message }: { filePath: string; name?: string; children?: ReactNode; message?: MessageAttachmentContext }) {
-  const save = useLocalFileSave(filePath, name, message);
-  if (!message) {
-    return <span title="Unavailable legacy file reference" className="break-words text-ink-secondary">{children}</span>;
+  if (!message) return <span title={t("attach.legacyFileReference")} className="break-words text-ink-secondary">{children}</span>;
+  // replyAttachmentGroup keeps a linked clip so the gallery can give it a player, so a card here would show it twice.
+  if (isVideoAttachment(filePath) || isAudioAttachment(filePath)) {
+    return <span title={name ?? fileName(filePath)} className="break-words text-ink-secondary">{children}</span>;
   }
-  const label = save.state === "saving"
-    ? "Saving…"
-    : save.state === "saved"
-      ? "Saved"
-      : save.state === "failed"
-        ? "Retry"
-        : null;
-
-  return (
-    <span dir="ltr" className="inline-flex flex-wrap items-center gap-x-1.5 [unicode-bidi:isolate]">
-      <FilePreviewButton path={filePath} name={name ?? fileName(filePath)} message={message} />
-      <button
-        type="button"
-        onClick={() => void save.save()}
-        disabled={save.state === "saving"}
-        title="Save a copy"
-        className="inline-flex items-center gap-1 break-words text-start text-accent underline decoration-accent/40 hover:decoration-accent disabled:cursor-wait"
-      >
-        {children}
-        {save.state === "saving" ? (
-          <LoaderCircle size={12} className="shrink-0 animate-spin" aria-hidden="true" />
-        ) : save.state === "saved" ? (
-          <Check size={12} className="shrink-0 text-success" aria-hidden="true" />
-        ) : save.state === "failed" ? (
-          !save.outsideWorkspace && <RotateCcw size={12} className="shrink-0" aria-hidden="true" />
-        ) : (
-          <Download size={12} className="shrink-0" aria-hidden="true" />
-        )}
-      </button>
-      {label && (
-        <span
-          role={save.state === "failed" ? "alert" : "status"}
-          title={save.state === "saved" ? save.savedTo : undefined}
-          className={`text-[12px] ${save.state === "saved" ? "text-success" : save.state === "failed" ? "text-danger" : "text-ink-secondary"}`}
-        >
-          {save.state === "failed" ? saveFailureText(save) : label}
-        </span>
-      )}
-      {save.state === "failed" && save.outsideWorkspace && (
-        <span className="inline-flex flex-wrap items-center gap-x-1.5 text-[12px]">
-          <OutsideWorkspaceFile filePath={filePath} />
-        </span>
-      )}
-      {save.folder && <MessageFolderFiles folderPath={filePath} listing={save.folder} message={message} />}
-    </span>
-  );
+  return <DocumentFileCard path={filePath} name={name ?? fileName(filePath)} message={message} />;
 }
 
 function Spoiler({ children }: { children?: ReactNode }) {
