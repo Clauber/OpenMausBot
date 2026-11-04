@@ -142,11 +142,11 @@ describe("a fading bar", () => {
     expect(glass).not.toContain("data-glass-fade");
   });
 
-  it("fades into the canvas with no tint or blur: hidden at the edge, full strength over its last 60px", () => {
+  it("fades into the canvas with no tint or blur: hidden at the edge, full strength over its reach", () => {
     const fade = rule('.glass-bar[data-glass-fade]::before');
     expect(fade).toContain("linear-gradient(to bottom, var(--color-app), var(--color-app) calc(100% - var(--glass-fade)), transparent)");
     expect(fade).toMatch(/[^-]backdrop-filter: none/);
     expect(fade).toContain("mask-image: none");
-    expect(rule('.glass-bar[data-glass-fade]')).toContain("--glass-fade: 60px");
+    expect(rule('.glass-bar[data-glass-fade]')).toContain("--glass-fade: var(--glass-reach, 24px)");
   });
 });
