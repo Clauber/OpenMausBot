@@ -430,7 +430,23 @@ export function AttachmentGallery({ images = [], files = [], message, eager = fa
         )}
         {(rest.length > 0 || items.length > limit) && (
           <div className="flex w-full max-w-full flex-col items-start gap-1.5">
-            {rest.map((item) => item.kind === "audio" && message
+            {rest.length > 1 ? (
+              // One container for a multi-file reply, the way WhatsApp sends a file dump.
+              <div className="flex w-full max-w-[26rem] flex-col overflow-hidden rounded-xl border border-hairline/40 bg-inset/50">
+                {rest.map((item) => item.kind === "audio" && message
+                  ? <AudioAttachment key={`${message.threadId}:${message.messageId}:${item.key}`} file={item.file} message={message} />
+                  : item.kind === "file" && (
+                    <DocumentFileCard
+                      key={item.key}
+                      path={item.file.path}
+                      name={item.file.name}
+                      available={Boolean(item.file.private || item.file.linked)}
+                      message={message}
+                      grouped
+                    />
+                  ))}
+              </div>
+            ) : rest.map((item) => item.kind === "audio" && message
               ? <AudioAttachment key={`${message.threadId}:${message.messageId}:${item.key}`} file={item.file} message={message} />
               : item.kind === "file" && <DocumentFileCard key={item.key} path={item.file.path} name={item.file.name} available={Boolean(item.file.private || item.file.linked)} message={message} />)}
             {items.length > limit && (
@@ -460,7 +476,22 @@ export function AttachmentGallery({ images = [], files = [], message, eager = fa
       )}
       {documents.length > 0 && (
         <div className="flex w-full min-w-0 flex-col items-start gap-1.5">
-          {documents.map((item) => item.kind === "audio" && message
+          {documents.length > 1 ? (
+            <div className="flex w-full max-w-[26rem] flex-col overflow-hidden rounded-xl border border-hairline/40 bg-inset/50">
+              {documents.map((item) => item.kind === "audio" && message
+                ? <AudioAttachment key={`${message.threadId}:${message.messageId}:${item.key}`} file={item.file} message={message} />
+                : item.kind === "file" && (
+                  <DocumentFileCard
+                    key={item.key}
+                    path={item.file.path}
+                    name={item.file.name}
+                    available={Boolean(item.file.private || item.file.linked)}
+                    message={message}
+                    grouped
+                  />
+                ))}
+            </div>
+          ) : documents.map((item) => item.kind === "audio" && message
             ? <AudioAttachment key={`${message.threadId}:${message.messageId}:${item.key}`} file={item.file} message={message} />
             : item.kind === "file" && <DocumentFileCard key={item.key} path={item.file.path} name={item.file.name} available={Boolean(item.file.private || item.file.linked)} message={message} />)}
         </div>

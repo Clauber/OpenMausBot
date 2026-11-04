@@ -12,11 +12,13 @@ const FILE_ICONS: Partial<Record<string, typeof File>> = {
   mp4: Film, mov: Film, webm: Film,
 };
 
-export function DocumentFileCard({ path, name, message, available = true }: {
+export function DocumentFileCard({ path, name, message, available = true, grouped = false }: {
   path: string;
   name: string;
   message?: MessageAttachmentContext;
   available?: boolean;
+  /** Inside a shared container the card draws no rule of its own, the way a WhatsApp file list does. */
+  grouped?: boolean;
 }) {
   const save = useLocalFileSave(path, name, message);
   const extension = /\.([a-z0-9]+)$/i.exec(name)?.[1]?.toLowerCase() ?? /\.([a-z0-9]+)$/i.exec(path)?.[1]?.toLowerCase() ?? "";
@@ -37,7 +39,11 @@ export function DocumentFileCard({ path, name, message, available = true }: {
     : save.state === "saved" ? <Check size={17} className="text-success" />
       : failed && !save.outsideWorkspace ? <RotateCcw size={17} /> : <Download size={17} />;
 
-  return <span dir="ltr" className="flex w-full max-w-[26rem] flex-col overflow-hidden rounded-xl border border-hairline/40 bg-inset/50 text-start align-middle [unicode-bidi:isolate]">
+  return <span dir="ltr" className={cn(
+    "flex w-full max-w-full flex-col overflow-hidden text-start align-middle [unicode-bidi:isolate]",
+    // The card is a row, not a box: consecutive files read as one list instead of four framed panels.
+    grouped ? "min-w-0" : "border-t border-hairline/30 first:border-t-0",
+  )}>
     <span className="flex min-w-0 items-center">
       {!accessibleMessage ? <span title={t("attach.legacyFile", { name })} className={cn(targetClass, "hover:bg-transparent")}>{content}</span>
         : preview ? <>
