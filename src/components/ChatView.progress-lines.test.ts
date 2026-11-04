@@ -75,15 +75,15 @@ describe("a finished turn in a conversation", () => {
     } finally { unmount(); }
   });
 
-  it("folds only its tool steps into one Worked-for chip when steps are shown", () => {
+  it("attaches its tool steps to the answer when steps are shown", () => {
     vi.stubGlobal("fetch", () => new Promise(() => {}));
     const { container, unmount } = mount(true);
     try {
       expect(rows(container)).toEqual(["ask", "ack", "helper", "answer"]);
-      const chips = [...transcript(container).querySelectorAll<HTMLButtonElement>("button.ui-pill")];
-      expect(chips.map((chip) => chip.textContent)).toEqual(["Worked for 29s"]);
-      flushSync(() => chips[0]!.click());
-      expect(rows(container)).toEqual(["ask", "ack", "search", "fetch", "fetch-2", "helper", "answer"]);
+      const summary = transcript(container).querySelector<HTMLButtonElement>('[data-testid="turn-activity"] button')!;
+      expect(summary.textContent).toBe("Worked for 29s · 3 steps");
+      flushSync(() => summary.click());
+      expect(rows(container)).toEqual(["ask", "ack", "helper", "answer", "search", "fetch", "fetch-2"]);
     } finally { unmount(); }
   });
 });

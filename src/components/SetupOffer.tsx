@@ -125,9 +125,11 @@ export function SetupOffer({ botId, threadId, message, transcript }: { botId: st
         className={cn("mt-1.5 flex flex-col", updating ? "motion-safe:animate-pulse" : waitedOnce.current && "motion-safe:animate-msg-in")}>
         {options.map((option, index) => (
           <button key={option.label} type="button" data-ask-choice="" disabled={quiet || busy} onClick={option.pick}
+            aria-keyshortcuts={LETTERS[index]}
             className={cn("group flex min-h-10 items-center gap-3 rounded-xl px-3 py-2 text-start",
               quiet ? "cursor-default" : "hover:bg-ink/[0.05] disabled:cursor-default")}>
-            <kbd className={cn("flex size-6 shrink-0 items-center justify-center rounded-md font-sans text-[12px] font-medium",
+            {/* The letter is announced through aria-keyshortcuts; in the name it would run into the label. */}
+            <kbd aria-hidden="true" className={cn("flex size-6 shrink-0 items-center justify-center rounded-md font-sans text-[12px] font-medium",
               quiet ? "bg-ink/[0.04] text-ink-tertiary" : "bg-ink/[0.07] text-ink-secondary group-hover:bg-ink/[0.1]")}>
               {LETTERS[index]}
             </kbd>

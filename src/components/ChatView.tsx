@@ -111,6 +111,8 @@ import { StatusActivityRow } from "@/components/StatusActivityRow";
 import { CancelledTurnRow } from "./CancelledTurnRow";
 import { ActivityRun } from "./ActivityRun";
 import { TurnNarrationRun } from "./TurnNarrationRun";
+import { TurnActivity } from "./TurnActivity";
+import { consolidateTurnActivity } from "@/lib/chat-turn-activity";
 import { BubbleEditor } from "./BubbleEditor";
 import { ReplyBlocks } from "./ReplyBlocks";
 import { webhookMessageView } from "@/lib/webhook-message";
@@ -433,7 +435,7 @@ const Bubble = memo(function Bubble({
   );
 
   return (
-    <div {...{ [MESSAGE_ROW]: "" }} className={cn("group flex w-full flex-col", user ? "animate-msg-in items-end" : "items-start", simple && join?.above && SIMPLE_STACKED)}>
+    <div {...{ [MESSAGE_ROW]: "" }} className={cn("group flex w-full flex-col", user ? "animate-msg-in items-end" : "items-start", join?.above && SIMPLE_STACKED)}>
       {message.relay ? <RelayLabel message={message} /> : peer && <PeerLabel peer={peer} />}
       {speaker && <div className="mb-0.5 px-1 text-[12px] font-medium text-ink-secondary">{speaker}</div>}
       <div className={cn("flex w-full items-center gap-1.5", user ? "justify-end" : "justify-start")}>
@@ -469,7 +471,7 @@ const Bubble = memo(function Bubble({
                   : formatted
                     ? cn(formattedReplyWidth(text), "px-1 text-ink")
                     : simple ? SIMPLE_BOT_BUBBLE : "bg-card px-4 py-2.5 text-ink",
-            simple && join && !split && !attachmentsOnly && !tabled && joinedCorners(user ? "end" : "start", join),
+            join && !split && !attachmentsOnly && !tabled && joinedCorners(user ? "end" : "start", join),
           )}
           style={user && !webhookView && !attachmentsOnly ? ownBubbleStyle : undefined}
           title={workedFor === undefined ? new Date(message.at).toLocaleString() : `${workedLabel(workedFor)} · ${new Date(message.at).toLocaleString()}`}
@@ -566,15 +568,17 @@ const Bubble = memo(function Bubble({
           )}
         </div>
         {!tabled && botActions}
-        <span
-          className={cn(
-            "self-end pb-1 text-[11px] tabular-nums text-ink-tertiary opacity-0 transition-opacity group-hover:opacity-100",
-            user ? "order-first mr-2" : "ml-2",
-          )}
-        >
-          {formatTime(message.at)}
-        </span>
       </div>
+      {/* Under the group, the way iMessage closes one. Beside the bubble it fell outside a phone viewport, and the
+          hover actions reserved width between the two. Only a bubble continuing into the next one hides its time. */}
+      <span
+        className={cn(
+          "px-1 pt-1 text-[11px] tabular-nums text-ink-tertiary transition-opacity",
+          joinBelow ? "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-md:opacity-100" : "opacity-100",
+        )}
+      >
+        {formatTime(message.at)}
+      </span>
       <ReactionChips threadId={threadId} message={message} bots={bots} align={user ? "end" : "start"} canReact={canReact} />
       {forks.length > 1 && (
         <div className="mt-1 flex items-center gap-0.5 pr-1 text-[12px] text-ink-secondary">
@@ -684,8 +688,8 @@ const MessagesList = memo(function MessagesList({
   onReply: (message: Message) => void;
 }) {
   const { botId, threadId, botName, botColor, bots, hasMore, focus, showToolCalls, locale, simple = false } = useChatRows(), busy = use(ChatBusyContext);
-  // A finished turn keeps the bot's progress lines and folds only its tool steps under "Worked for", in both modes.
-  const items = useMemo(() => groupTranscript(messages), [messages, locale]);
+  const activity = useMemo(() => consolidateTurnActivity(messages), [messages]);
+  const items = useMemo(() => groupTranscript(activity.messages), [activity, locale]);
   const newestMessageId = messages.at(-1)?.id;
   let newestUserMessageId: string | undefined;
   for (let i = messages.length - 1; i >= 0 && !newestUserMessageId; i--) {
@@ -694,7 +698,8 @@ const MessagesList = memo(function MessagesList({
   const focusedId = focus && !focus.consumed ? focus.messageId : null;
   const unreadIds = useMemo(() => unreadMessageIds(messages, unreadDividerId), [messages, unreadDividerId]);
   let dividerPlaced = false;
-  const layout = useMemo(() => simple ? simpleRowLayout(items, { botId, showToolCalls, unreadIds }) : null, [simple, items, unreadIds, showToolCalls, botId]);
+  // Grouping is the grammar of a conversation, so Advanced reads as a chat too, not only Simple.
+  const layout = useMemo(() => simpleRowLayout(items, { botId, showToolCalls, unreadIds }), [items, unreadIds, showToolCalls, botId]);
   const joins = layout?.joins;
   const durations = useMemo(() => simple ? turnDurations(messages) : null, [messages, simple]);
   const dividerAbove = (rows: readonly Message[]) => {
@@ -709,7 +714,8 @@ const MessagesList = memo(function MessagesList({
         const prev = previous && (previous.kind === "message" ? previous.message : previous.messages.at(-1));
         const first = item.kind === "message" ? item.message : item.messages[0];
         const newDay = needsStamp(prev, first, simple);
-        const divider = dividerAbove(item.kind === "message" ? [item.message] : item.messages);
+        const turnActivity = item.kind === "message" ? activity.byAnswerId.get(item.message.id) : undefined;
+        const divider = dividerAbove(item.kind === "message" ? [...(turnActivity?.steps ?? []), item.message, ...(turnActivity?.digestMessage ? [turnActivity.digestMessage] : [])] : item.messages);
         if (item.kind === "turn" || item.kind === "run") {
           if (!showToolCalls) return divider && <div key={item.id} className="contents">{divider}</div>;
           const forceOpen = item.messages.some((step) => step.id === focusedId);
@@ -784,7 +790,7 @@ const MessagesList = memo(function MessagesList({
                   eagerAttachments={m.id === newestMessageId || m.id === newestUserMessageId}
                   joinAbove={joins?.[i]?.above}
                   joinBelow={joins?.[i]?.below}
-                  workedFor={durations?.get(m.id)}
+                  workedFor={turnActivity?.durationMs ?? durations?.get(m.id)}
                   editing={editingId === m.id}
                   pinned={m.id === pinnedMessageId}
                   versions={lookups.editVersions(m)}
@@ -805,7 +811,11 @@ const MessagesList = memo(function MessagesList({
             {newDay && <DaySeparator at={m.at} today={today} simple={simple} />}
             {divider}
             {m.automation && <AutomationCaption message={m} line={m.automation} botId={botId} />}{m.inbox && <InboxCaption message={m} />}
-            {row}{m.inbox?.answers && <InboxAnswers message={m} />}{m.inbox && <InboxCardSlot threadId={threadId} messageId={m.id} />}{m.setupOffer && <SetupOffer botId={botId} threadId={threadId} message={m} transcript={transcript} />}{m.savedSteps && <SavedStepsChip botId={botId} message={m} />}
+            {row}
+            {showToolCalls && turnActivity && <TurnActivity activity={turnActivity} forceOpen={turnActivity.steps.some((step) => step.id === focusedId) || turnActivity.digestMessage?.id === focusedId}>
+              {turnActivity.steps.map((step) => <div key={step.id} className="contents" data-mid={step.id}><ActivityChip message={step} place={place} /></div>)}
+            </TurnActivity>}
+            {m.inbox?.answers && <InboxAnswers message={m} />}{m.inbox && <InboxCardSlot threadId={threadId} messageId={m.id} />}{m.setupOffer && <SetupOffer botId={botId} threadId={threadId} message={m} transcript={transcript} />}{m.savedSteps && <SavedStepsChip botId={botId} message={m} />}
           </div>
         );
       })}
@@ -1170,7 +1180,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
         <div
           ref={transcriptRef}
           // Simple mode spaces groups 16px apart, Advanced 12px.
-          data-simple-rows={advanced ? undefined : ""}
+          data-simple-rows=""
           className="glass-scroller-content chat-column relative flex w-full flex-col gap-3 data-[simple-rows]:gap-4"
           style={{ paddingBottom: composerDock.pad }}
           role="log"
