@@ -1709,6 +1709,8 @@
   "attach.saveFailed": "無法儲存該檔案",
   "attach.previewAria": "預覽 {name}",
   "attach.imagePreview": "圖片預覽",
+  "attach.loadingImage": "正在載入圖片…",
+  "attach.loadFailed": "無法載入此圖片。",
   "attach.position": "第 {index} 張，共 {count} 張",
   "attach.downloadAria": "下載 {name}",
   "attach.download": "下載",

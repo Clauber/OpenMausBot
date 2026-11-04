@@ -2405,6 +2405,8 @@
   "attach.saveFailed": "Nie udało się zapisać tego pliku",
   "attach.previewAria": "Podgląd: {name}",
   "attach.imagePreview": "Podgląd obrazu",
+  "attach.loadingImage": "Wczytywanie obrazu…",
+  "attach.loadFailed": "Nie można wczytać tego obrazu.",
   "attach.position": "{index} z {count}",
   "attach.downloadAria": "Pobierz {name}",
   "attach.download": "Pobierz",

@@ -2348,6 +2348,8 @@
   "attach.saveFailed": "Não foi possível salvar esse arquivo",
   "attach.previewAria": "Pré-visualizar {name}",
   "attach.imagePreview": "Pré-visualização da imagem",
+  "attach.loadingImage": "Carregando imagem…",
+  "attach.loadFailed": "Não foi possível carregar esta imagem.",
   "attach.position": "{index} de {count}",
   "attach.downloadAria": "Baixar {name}",
   "attach.download": "Baixar",

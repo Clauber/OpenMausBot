@@ -1009,6 +1009,8 @@
   "attach.saveFailed": "वह फ़ाइल सहेजी नहीं जा सकी",
   "attach.previewAria": "{name} की झलक",
   "attach.imagePreview": "छवि की झलक",
+  "attach.loadingImage": "छवि लोड हो रही है…",
+  "attach.loadFailed": "यह छवि लोड नहीं की जा सकी।",
   "attach.position": "{count} में से {index}",
   "attach.downloadAria": "{name} डाउनलोड करें",
   "attach.download": "डाउनलोड",

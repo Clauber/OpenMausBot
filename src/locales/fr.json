@@ -1009,6 +1009,8 @@
   "attach.saveFailed": "Ce fichier n'a pas pu être enregistré",
   "attach.previewAria": "Aperçu de {name}",
   "attach.imagePreview": "Aperçu de l'image",
+  "attach.loadingImage": "Chargement de l’image…",
+  "attach.loadFailed": "Impossible de charger cette image.",
   "attach.position": "{index} sur {count}",
   "attach.downloadAria": "Télécharger {name}",
   "attach.download": "Télécharger",

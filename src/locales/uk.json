@@ -1177,6 +1177,8 @@
   "attach.saveFailed": "Цей файл не вдалося зберегти",
   "attach.previewAria": "Попередній перегляд {name}",
   "attach.imagePreview": "Перегляд зображення",
+  "attach.loadingImage": "Завантаження зображення…",
+  "attach.loadFailed": "Не вдалося завантажити це зображення.",
   "attach.position": "{index} з {count}",
   "attach.downloadAria": "Завантажити {name}",
   "attach.download": "Завантажити",

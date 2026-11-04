@@ -1105,6 +1105,8 @@
   "attach.saveFailed": "Diese Datei konnte nicht gespeichert werden",
   "attach.previewAria": "{name} ansehen",
   "attach.imagePreview": "Bildvorschau",
+  "attach.loadingImage": "Bild wird geladen…",
+  "attach.loadFailed": "Dieses Bild konnte nicht geladen werden.",
   "attach.position": "{index} von {count}",
   "attach.downloadAria": "{name} herunterladen",
   "attach.download": "Herunterladen",

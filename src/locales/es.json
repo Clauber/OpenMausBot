@@ -2287,6 +2287,8 @@
   "attach.saveFailed": "No se pudo guardar ese archivo",
   "attach.previewAria": "Vista previa de {name}",
   "attach.imagePreview": "Vista previa de la imagen",
+  "attach.loadingImage": "Cargando imagen…",
+  "attach.loadFailed": "No se pudo cargar esta imagen.",
   "attach.position": "{index} de {count}",
   "attach.downloadAria": "Descargar {name}",
   "attach.download": "Descargar",

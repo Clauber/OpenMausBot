@@ -2461,6 +2461,8 @@
   "attach.saveFailed": "そのファイルを保存できませんでした",
   "attach.previewAria": "{name} をプレビュー",
   "attach.imagePreview": "画像のプレビュー",
+  "attach.loadingImage": "画像を読み込んでいます…",
+  "attach.loadFailed": "この画像を読み込めませんでした。",
   "attach.position": "{count} 件中 {index} 件目",
   "attach.downloadAria": "{name} をダウンロード",
   "attach.download": "ダウンロード",

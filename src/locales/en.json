@@ -2756,6 +2756,8 @@
   "attach.saveFailed": "That file could not be saved",
   "attach.previewAria": "Preview {name}",
   "attach.imagePreview": "Image preview",
+  "attach.loadingImage": "Loading image…",
+  "attach.loadFailed": "This image could not be loaded.",
   "attach.position": "{index} of {count}",
   "attach.downloadAria": "Download {name}",
   "attach.download": "Download",

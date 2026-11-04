@@ -1996,6 +1996,8 @@
   "attach.saveFailed": "Không thể lưu tệp đó",
   "attach.previewAria": "Xem trước {name}",
   "attach.imagePreview": "Xem trước hình ảnh",
+  "attach.loadingImage": "Đang tải hình ảnh…",
+  "attach.loadFailed": "Không thể tải hình ảnh này.",
   "attach.position": "{index}/{count}",
   "attach.downloadAria": "Tải xuống {name}",
   "attach.download": "Tải xuống",

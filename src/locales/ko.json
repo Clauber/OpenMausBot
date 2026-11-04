@@ -2592,6 +2592,8 @@
   "attach.saveFailed": "파일을 저장하지 못했어요",
   "attach.previewAria": "{name} 미리보기",
   "attach.imagePreview": "이미지 미리보기",
+  "attach.loadingImage": "이미지를 불러오는 중…",
+  "attach.loadFailed": "이 이미지를 불러올 수 없습니다.",
   "attach.position": "{count}개 중 {index}번째",
   "attach.downloadAria": "{name} 다운로드",
   "attach.download": "다운로드",

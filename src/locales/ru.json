@@ -2443,6 +2443,8 @@
   "attach.saveFailed": "Не удалось сохранить этот файл",
   "attach.previewAria": "Предпросмотр {name}",
   "attach.imagePreview": "Предпросмотр изображения",
+  "attach.loadingImage": "Загрузка изображения…",
+  "attach.loadFailed": "Не удалось загрузить это изображение.",
   "attach.position": "{index} из {count}",
   "attach.downloadAria": "Скачать {name}",
   "attach.download": "Скачать",

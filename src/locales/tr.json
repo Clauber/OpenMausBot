@@ -1996,6 +1996,8 @@
   "attach.saveFailed": "Bu dosya kaydedilemedi",
   "attach.previewAria": "{name} önizlemesi",
   "attach.imagePreview": "Resim önizlemesi",
+  "attach.loadingImage": "Görsel yükleniyor…",
+  "attach.loadFailed": "Bu görsel yüklenemedi.",
   "attach.position": "{count} içinden {index}",
   "attach.downloadAria": "{name} indir",
   "attach.download": "İndir",

@@ -2715,6 +2715,8 @@
   "attach.saveFailed": "该文件无法保存",
   "attach.previewAria": "预览 {name}",
   "attach.imagePreview": "图片预览",
+  "attach.loadingImage": "正在加载图片…",
+  "attach.loadFailed": "无法加载此图片。",
   "attach.position": "第 {index} / {count} 张",
   "attach.downloadAria": "下载 {name}",
   "attach.download": "下载",
