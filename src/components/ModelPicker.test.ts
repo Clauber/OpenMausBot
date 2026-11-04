@@ -312,7 +312,9 @@ describe("ModelPicker trigger", () => {
     expect(markup).toContain("GPT-5.6");
     expect(effortChip(markup)).toBeUndefined();
     expect(markup).not.toContain("effort");
-    expect(markup).toContain("@max-4xl/chathead:size-[30px]");
+    // The chip keeps the model name at every width, so it is never a bare icon.
+    expect(markup).toContain("data-model-name-compact");
+    expect(markup).not.toContain("@max-4xl/chathead:size-[30px]");
     expect(markup).not.toContain("data-model-account-compact");
   });
 
@@ -326,7 +328,7 @@ describe("ModelPicker trigger", () => {
     }));
     expect(markup).toMatch(/<span data-model-account[^>]*>Work · <\/span>/);
     expect(markup).not.toMatch(/<span data-model-account[^>]*>Personal/);
-    expect(markup).toMatch(/<span data-model-account-compact="true" class="hidden max-w-20 truncate @max-4xl\/chathead:inline">Work<\/span><span class="[^"]*@max-4xl\/chathead:hidden"/);
+    expect(markup).toMatch(/<span data-model-account-compact="true" class="[^"]*">Work<\/span>/);
     expect(markup).not.toContain("@max-4xl/chathead:size-[30px]");
   });
 });

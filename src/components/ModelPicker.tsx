@@ -30,7 +30,7 @@ import { useAdvancedMode } from "@/lib/interface-mode";
 import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
 
 import { t } from "@/lib/i18n";
-import { COMPACT_SQUARE } from "@/lib/compact-chip";
+
 import { useAiSwitch } from "@/lib/ai-switch";
 import { usePickerPane } from "@/lib/model-picker-pane";
 import { threadsOnOwnModel } from "../../shared/thread-model";
@@ -617,7 +617,8 @@ export function ModelPicker({
         contained
           ? "hover:bg-ink/[0.06] aria-expanded:bg-ink/[0.08] disabled:opacity-50 disabled:hover:bg-transparent"
           : cn(ELEVATED_FLOAT, ELEVATED_HOVER, "disabled:text-ink-tertiary disabled:hover:bg-composer"),
-        !contained && active && !showActiveAccount && COMPACT_SQUARE,
+        // The chip keeps the model name at every width, so the current model is never a bare icon.
+        !contained && active && !showActiveAccount && "max-md:max-w-[10rem]",
       )}
     >
       {active && (contained
@@ -626,8 +627,14 @@ export function ModelPicker({
       {!contained && active && showActiveAccount && (
         <span data-model-account-compact className="hidden max-w-20 truncate @max-4xl/chathead:inline">{active.displayName}</span>
       )}
-      <span className={cn("flex min-w-0 items-center gap-1", !contained && active && "@max-4xl/chathead:hidden")}>
-        <span className="max-w-[160px] truncate">
+      <span className="flex min-w-0 items-center gap-1">
+        {/* On a narrow header the chip shows the model name alone; the account and provider are dropped. */}
+        {!contained && active && (
+          <span data-model-name-compact className="max-w-24 truncate max-md:inline">
+            {modelLabel(active, selection.model)}
+          </span>
+        )}
+        <span className={cn("max-w-[160px] truncate", !contained && active && "max-md:hidden")}>
           {active && showActiveAccount && (
             <span data-model-account className="text-ink-secondary">{active.displayName} · </span>
           )}
@@ -637,9 +644,9 @@ export function ModelPicker({
           )}
         </span>
         {selectedVariantLabel !== undefined ? (
-          <span data-model-variant className="max-w-[120px] truncate text-ink-secondary">· {selectedVariantLabel}</span>
+          <span data-model-variant className="max-w-[120px] truncate text-ink-secondary max-md:hidden">· {selectedVariantLabel}</span>
         ) : selection.effort && (
-          <span data-model-effort className="shrink-0 text-ink-secondary">
+          <span data-model-effort className="shrink-0 text-ink-secondary max-md:hidden">
             · {effortLabel(selection.effort)}
           </span>
         )}
