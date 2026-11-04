@@ -393,6 +393,9 @@ const Bubble = memo(function Bubble({
     [message.attachments],
   );
   const join: BubbleJoin = { above: joinAbove, below: joinBelow };
+  // iMessage puts the sender's avatar beside the first bubble of a group, so the reader can tell
+  // which bot is talking without reading a name on every row.
+  const bot = bots.find((candidate) => candidate.id === botId);
   const reply = useReplySegments(conversational && !user && !peer && !viewRaw && !replyTarget && message.kind === "text", text, message.at, openedAt);
   const split = reply.segments.length > 1;
   // Simple mode draws each table of a reply as its own card between the reply's prose bubbles.
@@ -441,7 +444,12 @@ const Bubble = memo(function Bubble({
     <div {...{ [MESSAGE_ROW]: "" }} className={cn("group flex w-full flex-col", user ? "animate-msg-in items-end" : "items-start", join?.above && SIMPLE_STACKED)}>
       {message.relay ? <RelayLabel message={message} /> : peer && <PeerLabel peer={peer} />}
       {speaker && <div className="mb-0.5 px-1 text-[12px] font-medium text-ink-secondary">{speaker}</div>}
-      <div className={cn("flex w-full items-center gap-1.5", user ? "justify-end" : "justify-start")}>
+      <div className={cn("flex w-full items-start gap-1.5", user ? "justify-end" : "justify-start")}>
+        {!user && !peer && bot && (
+          <span className={cn("shrink-0", join?.above && "invisible")} aria-hidden="true">
+            <BotAvatar bot={bot} state={normalizeState(bot.mascotExpression) ?? "happy"} size={28} motion="none" motionKey={0} animated={false} />
+          </span>
+        )}
         {user && (
           <MessageActions
             side="user"
@@ -469,7 +477,11 @@ const Bubble = memo(function Bubble({
             user && webhookView
               ? cn("overflow-hidden border border-accent/25 bg-card text-ink", simple ? cn("rounded-[18px]", SIMPLE_BUBBLE_TEXT) : "shadow-[0_10px_30px_rgba(0,0,0,0.18)]")
               : attachmentsOnly || split || tabled
-                ? cn("text-ink", simple && SIMPLE_BUBBLE_TEXT)
+                ? cn(
+                  // A reply that carries files is still a bubble, so it keeps the rounded shape and the padding.
+                  "text-ink",
+                  simple ? cn("rounded-[18px] bg-card px-3 py-[7px]", SIMPLE_BUBBLE_TEXT) : "rounded-2xl bg-card px-4 py-2.5",
+                )
                 : user
                   ? cn("whitespace-pre-wrap [overflow-wrap:anywhere] text-ink", simple ? SIMPLE_USER_BUBBLE : "bg-bubble-user px-4 py-2.5", ownBubbleStyle && "user-bubble-colored", simple && ownBubbleStyle && "antialiased")
                   : formatted
