@@ -6,6 +6,7 @@ import { useShowThreads } from "@/lib/thread-preferences";
 import { AlertTriangle, ChevronLeft, ChevronRight, Copy, Monitor, RefreshCw, Reply, Square, Webhook } from "lucide-react";
 import { WorkingDots } from "@/components/WorkingIndicator";
 import { ACTION_ICON, ChatBusyContext, CopyButton, MESSAGE_ROW, MessageActions, messageActionClass, ReplyAction, type MessageMenuItem } from "@/components/MessageActions";
+import { MessageDeliveryStatus } from "@/components/MessageDeliveryStatus";
 import { copyText } from "@/lib/copy-text";
 import { ReactAction, ReactionChips } from "@/components/Reactions";
 import { useBotMessageMenu, userMessageMenu } from "@/components/message-menu";
@@ -325,6 +326,7 @@ const Bubble = memo(function Bubble({
   onCancelEdit,
   onSubmitEdit,
   onRegenerate,
+  onRetryMessage,
   replyTarget,
   onReply,
 }: {
@@ -343,6 +345,7 @@ const Bubble = memo(function Bubble({
   onCancelEdit: () => void;
   onSubmitEdit: (messageId: string, text: string) => void;
   onRegenerate?: () => void;
+  onRetryMessage?: (message: Message) => void;
   replyTarget?: Message;
   onReply: (message: Message) => void;
 }) {
@@ -425,10 +428,10 @@ const Bubble = memo(function Bubble({
   const togglePin = () =>
     dispatch({ type: "updateTask", botId, threadId, patch: { pinnedMessageId: pinned ? "" : message.id } });
   const botActions = !user && (
-    <MessageActions side="bot" forceOpen={viewRaw || speaking} menu={simple ? [...replyAndCopy(() => onReply(message), text), ...botMenu] : botMenu}>
-      {!simple && <ReplyAction onReply={() => onReply(message)} />}
+    <MessageActions side="bot" forceOpen={viewRaw || speaking} context={botName} menu={simple ? [...replyAndCopy(() => onReply(message), text), ...botMenu] : botMenu}>
+      {!simple && <ReplyAction onReply={() => onReply(message)} context={botName} />}
       {canReact && !peer && <ReactAction threadId={threadId} message={message} />}
-      {!simple && text && <CopyButton text={text} className={messageActionClass} />}
+      {!simple && text && <CopyButton text={text} className={messageActionClass} context={botName} />}
       {text && viewRaw && <RawToggleAction active onToggle={() => setViewRaw(false)} className={messageActionClass} />}
       {text && speaking && <SpeakButton text={text} botId={botId} messageId={message.id} voiceId={voiceId} tts={tts} localVoice={localVoice} className={cn(messageActionClass, "text-accent")} />}
     </MessageActions>
@@ -442,6 +445,7 @@ const Bubble = memo(function Bubble({
         {user && (
           <MessageActions
             side="user"
+            context={t("chat.yourMessage")}
             menu={[
               ...(simple ? replyAndCopy(() => onReply(message), visibleText) : []),
               ...userMessageMenu({
@@ -452,8 +456,8 @@ const Bubble = memo(function Bubble({
               }),
             ]}
           >
-            {!simple && <ReplyAction onReply={() => onReply(message)} />}
-            {!simple && Boolean(visibleText.trim()) && <CopyButton text={visibleText} className={messageActionClass} />}
+            {!simple && <ReplyAction onReply={() => onReply(message)} context={t("chat.yourMessage")} />}
+            {!simple && Boolean(visibleText.trim()) && <CopyButton text={visibleText} className={messageActionClass} context={t("chat.yourMessage")} />}
           </MessageActions>
         )}
         <div
@@ -573,10 +577,11 @@ const Bubble = memo(function Bubble({
           hover actions reserved width between the two. Only a bubble continuing into the next one hides its time. */}
       <span
         className={cn(
-          "px-1 pt-1 text-[11px] tabular-nums text-ink-tertiary transition-opacity",
+          "flex items-center gap-1.5 px-1 pt-1 text-[11px] tabular-nums text-ink-tertiary transition-opacity",
           joinBelow ? "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-md:opacity-100" : "opacity-100",
         )}
       >
+        {user && <MessageDeliveryStatus message={message} onRetry={onRetryMessage ? () => onRetryMessage(message) : undefined} />}
         {formatTime(message.at)}
       </span>
       <ReactionChips threadId={threadId} message={message} bots={bots} align={user ? "end" : "start"} canReact={canReact} />
@@ -666,6 +671,7 @@ const MessagesList = memo(function MessagesList({
   onCancelEdit,
   onSubmitEdit,
   onRegenerate,
+  onRetryMessage,
   onReply,
 }: {
   messages: Message[];
@@ -685,6 +691,7 @@ const MessagesList = memo(function MessagesList({
   onCancelEdit: () => void;
   onSubmitEdit: (id: string, text: string) => void;
   onRegenerate: () => void;
+  onRetryMessage?: (message: Message) => void;
   onReply: (message: Message) => void;
 }) {
   const { botId, threadId, botName, botColor, bots, hasMore, focus, showToolCalls, locale, simple = false } = useChatRows(), busy = use(ChatBusyContext);
@@ -798,6 +805,7 @@ const MessagesList = memo(function MessagesList({
                   onCancelEdit={onCancelEdit}
                   onSubmitEdit={onSubmitEdit}
                   onRegenerate={m.id === lastBotTextId && !m.automation ? onRegenerate : undefined}
+                  onRetryMessage={onRetryMessage}
                   replyTarget={lookups.replyTarget(m)}
                   onReply={onReply}
                 />
@@ -1004,6 +1012,12 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
     }
   }, [lastUserMessage, bot.busy, bot.id, bot.threadId, dispatch]);
 
+  // A failed send keeps its bubble and its text, so retrying re-sends exactly what was written.
+  const retryMessage = useCallback((message: Message) => {
+    if (!message.text || bot.busy) return;
+    dispatch({ type: "editMessage", botId: bot.id, threadId: bot.threadId, messageId: message.id, text: message.text });
+  }, [bot.busy, bot.id, bot.threadId, dispatch]);
+
   const currentLink = profile.tasks?.find((task) => task.threadId === bot.threadId)?.link;
   const threadLink = useMemo(() => canWrite !== false
     ? { link: currentLink, assign: (link: string | null) => dispatch({ type: "updateTask", botId: bot.id, threadId: bot.threadId, patch: { link } }) }
@@ -1046,7 +1060,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
                 onClick={() => dispatch({ type: "toggleSettings", open: true })}
                 className="flex shrink-0 items-center justify-center rounded-full"
                 title={t("chat.openProfile")}
-                aria-label={t("chat.openProfileAria", { name: bot.name })}
+                aria-label={t("chat.openAvatarAria", { name: bot.name })}
               >
                 <BotAvatar
                   bot={bot}
@@ -1217,6 +1231,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
               onCancelEdit={cancelEdit}
               onSubmitEdit={submitEdit}
               onRegenerate={regenerate}
+              onRetryMessage={retryMessage}
               onReply={selectReply}
             />
           </ChatBusyContext></LiveToolsContext></ChatRowsContext.Provider>

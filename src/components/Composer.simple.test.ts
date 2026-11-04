@@ -288,25 +288,27 @@ describe("the Simple composer in a group chat", () => {
 });
 
 describe("the Advanced composer", () => {
-  it("keeps the paperclip, the approval shield and the split call button, with no +, on Simple's floating surface", () => {
+  it("keeps the approval shield and the split call button, with attach inside the add menu, on Simple's floating surface", () => {
     fixture.advanced = true;
     render({ bot });
-    expect(plus()).toBeNull();
+    expect(plus()).not.toBeNull();
     expect(container.querySelector('[data-tour="composer"]')!.className.split(" ")).toEqual(expect.arrayContaining(["rounded-2xl", "bg-composer", "ring-[0.5px]", "shadow-(--shadow-float)"]));
-    expect(container.querySelector('button[aria-label="Attach a file"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Attach a file"]')).toBeNull();
     expect(container.querySelector('[aria-haspopup="menu"][aria-label$="for Claude"]')).not.toBeNull();
     expect(fixture.call).toMatchObject({ placement: "composer" });
     expect(fixture.call?.fill).toBeUndefined();
     expect(container.querySelector("[data-composer-backdrop]")!.className.split(" ")).toContain("top-1/2");
   });
 
-  it("offers Teach a task as its own button, which starts a /learn draft ahead of anything typed", () => {
+  it("offers Teach a task from the add menu, which starts a /learn draft ahead of anything typed", () => {
     fixture.advanced = true;
     restoreComposerDraft(`bot:${bot.id}:${bot.threadId}`, { text: "how I file expenses", attachments: [] });
     render({ bot });
-    const teach = container.querySelector<HTMLButtonElement>('button[aria-label="Teach a task"]');
-    expect(teach).not.toBeNull();
-    click(teach);
+    click(plus()!);
+    const teach = [...container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+      .find((item) => item.textContent?.includes("Teach"));
+    expect(teach).toBeDefined();
+    click(teach!);
     expect(container.querySelector("textarea")!.value).toBe("/learn how I file expenses");
   });
 

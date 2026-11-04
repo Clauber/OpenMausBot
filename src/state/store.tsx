@@ -157,6 +157,8 @@ export interface Message extends Pick<import("../../shared/wire").WireMessage, "
   dataResult?: import("../../shared/wire").WireMessage["dataResult"];
   queued?: boolean;
   queueId?: string;
+  failed?: boolean;
+  error?: string;
 }
 
 export type GroupDefaultResponder = import("../../shared/wire").GroupDefaultResponder;
@@ -771,6 +773,7 @@ export type Action =
   | { type: "messageAdded"; threadId: string; message: Message }
   | { type: "messagePatched"; threadId: string; message: Message }
   | { type: "optimisticMessageRemoved"; threadId: string; sendId: string; restoreLeafId?: string | null }
+  | { type: "sendFailed"; botId: string; threadId: string; sendId: string; error?: string }
   | { type: "computerStart"; botId: string; start: ComputerStart | null }
   | ({ type: "computerControl"; botId: string } & ComputerControlState)
   | { type: "dataSheet"; sheet: DataSheet; tables?: DataTable[] }
@@ -1689,7 +1692,16 @@ export function reducer(state: AppState, action: Action): AppState {
       const bot = animated.bots.find((candidate) => candidate.id === action.botId);
       const threadId = action.threadId ?? bot?.threadId;
       if (!bot || threadId !== bot.threadId) return animated;
-      if (bot.messages.some((message) => message.sendId === action.sendId)) return animated;
+      const existing = bot.messages.find((message) => message.sendId === action.sendId);
+      if (existing) {
+        if (existing.failed) {
+          return bumpThreadUpdatedAt(updateBot(animated, bot.id, (current) => ({
+            ...current,
+            messages: current.messages.map((m) => m.sendId === action.sendId ? { ...m, failed: false, error: undefined, at: Date.now() } : m),
+          })), threadId, Date.now(), true);
+        }
+        return animated;
+      }
       const message = optimisticUserMessage(
         action.text,
         action.sendId,
@@ -1702,6 +1714,26 @@ export function reducer(state: AppState, action: Action): AppState {
         messages: [...current.messages, message],
         activeLeafId: message.id,
       })), threadId, message.at, true);
+    }
+    case "sendFailed": {
+      const id = optimisticMessageId(action.sendId);
+      const markFailed = (messages: Message[]) =>
+        messages.map((m) => (m.id === id || m.sendId === action.sendId ? { ...m, failed: true, error: action.error } : m));
+      const bot = state.bots.find((candidate) => candidate.id === action.botId || candidate.threadId === action.threadId);
+      if (bot) {
+        return updateBot(state, bot.id, (current) => ({
+          ...current,
+          messages: markFailed(current.messages),
+        }));
+      }
+      const group = state.groups.find((candidate) => candidate.threadId === action.threadId || candidate.id === action.botId);
+      if (group) {
+        return {
+          ...state,
+          groups: state.groups.map((g) => (g.id === group.id ? { ...g, messages: markFailed(g.messages) } : g)),
+        };
+      }
+      return state;
     }
     case "editMessage": {
       const animated = withMascotMotion(state, action.botId, "working");
@@ -1818,7 +1850,21 @@ export function reducer(state: AppState, action: Action): AppState {
       const group = state.groups.find((candidate) => candidate.id === action.groupId);
       if (!group) return state;
       const threadId: string = action.threadId ?? group.threadId;
-      if (threadId === group.threadId && group.messages.some((message) => message.sendId === action.sendId)) return state;
+      if (threadId === group.threadId) {
+        const existing = group.messages.find((message) => message.sendId === action.sendId);
+        if (existing) {
+          if (existing.failed) {
+            return {
+              ...state,
+              groups: state.groups.map((g) => g.id === group.id ? {
+                ...g,
+                messages: g.messages.map((m) => m.sendId === action.sendId ? { ...m, failed: false, error: undefined, at: Date.now() } : m),
+              } : g),
+            };
+          }
+          return state;
+        }
+      }
       const message = optimisticUserMessage(
         action.text,
         action.sendId,
@@ -2483,9 +2529,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             })
             .catch((error) => {
               if (threadId) {
-                rawDispatch({ type: "optimisticMessageRemoved", threadId, sendId });
+                rawDispatch({
+                  type: "sendFailed",
+                  botId: action.botId,
+                  threadId,
+                  sendId,
+                  error: error instanceof Error ? error.message : String(error),
+                });
               }
-              showError(error);
               action.onError?.();
             });
           break;
