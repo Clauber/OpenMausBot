@@ -13,6 +13,7 @@ import {
   isExternalImageSource,
   messageImagePreviewUrl,
   previewImage,
+  opaqueAttachmentName,
   previewKeyAction,
   safeDownloadFilename,
   saveFailureText,
@@ -24,6 +25,13 @@ describe("attachment image navigation", () => {
     expect(wrappedImageIndex(0, -1, 3)).toBe(2);
     expect(wrappedImageIndex(2, 1, 3)).toBe(0);
     expect(wrappedImageIndex(0, 1, 0)).toBe(0);
+  });
+
+  it("treats a generated attachment id as no name worth showing", () => {
+    expect(opaqueAttachmentName("699a1b4f-cb0e-4079-8fad-61035ee39803.png")).toBe(true);
+    expect(opaqueAttachmentName("4feb2760cb0e40798fad61035ee39803")).toBe(true);
+    expect(opaqueAttachmentName("dense-infographic.png")).toBe(false);
+    expect(opaqueAttachmentName("Demo recording")).toBe(false);
   });
 
   it("maps preview keys only when the action is available", () => {

@@ -214,18 +214,38 @@ function ServerEngineInstall({ instance, mode, command, quiet = false }: { insta
   );
 }
 
-/** `quiet` keeps an optional update from competing with a card's main action (Sign in). */
+/** `quiet` keeps an optional update from competing with a card's main action (Sign in).
+    `inline` reduces it to one line, so a picker that leads with the choices can carry it as a footnote. */
 export function EngineUpdateNotice({
   update,
   instance,
   className,
   quiet = false,
+  inline = false,
 }: {
   update: NonNullable<InstanceInfo["snapshot"]["update"]>;
   instance?: InstanceInfo;
   className?: string;
   quiet?: boolean;
+  inline?: boolean;
 }) {
+  if (inline) {
+    return (
+      <div data-engine-update-notice className={cn("rounded-lg border border-warning/20 bg-warning/[0.04] px-2.5 py-1.5", className)}>
+        <details>
+          <summary className="flex cursor-pointer list-none items-center gap-2 text-[12px] leading-4 text-ink-secondary hover:text-ink">
+            <AlertTriangle size={13} className="shrink-0 text-warning" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">{update.title}</span>
+            <span className="shrink-0 text-ink-tertiary">{t("engineSetup.updateDetails")}</span>
+          </summary>
+          <p className="mt-1.5 text-[12px] leading-relaxed text-ink-secondary">{update.message}</p>
+          {instance?.install?.server
+            ? <ServerEngineInstall instance={instance} mode="update" command={update.command} quiet={quiet} />
+            : <CommandRow command={update.command} actionLabel={t("engineSetup.openUpdate")} compact />}
+        </details>
+      </div>
+    );
+  }
   return (
     <div
       data-engine-update-notice

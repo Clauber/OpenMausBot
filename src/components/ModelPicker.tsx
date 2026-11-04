@@ -705,22 +705,6 @@ export function ModelPicker({
           onAddApiKeys={remote ? undefined : openApiKeys} />}
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
-          {threadId && (
-            <div className="shrink-0 border-b-[0.5px] border-ink/10 px-3.5 py-2">
-              <div role="group" aria-label={t("model.scope.label")} className="flex gap-1">
-                {(["thread", "bot"] as const).map((value) => (
-                  <button key={value} type="button" aria-pressed={scope === value} onClick={() => setScope(value)}
-                    className={cn("h-6 rounded-full px-2.5 text-[12px] leading-4",
-                      scope === value ? "bg-ink/[0.08] font-medium text-ink" : "text-ink-secondary hover:bg-ink/[0.06] hover:text-ink")}>
-                    {value === "bot" ? t("model.scope.bot") : t("model.scope.thread")}
-                  </button>
-                ))}
-              </div>
-              <p className="mt-1.5 text-[12px] leading-4 text-ink-tertiary">
-                {scope === "bot" ? t("model.scope.botHelp") : t("model.scope.threadHelp")}
-              </p>
-            </div>
-          )}
           {railInstance ? (
             <>
               <div className="shrink-0 px-3.5 pb-2 pt-3">
@@ -836,9 +820,6 @@ export function ModelPicker({
                       </div>
                     ) : pane === "main" ? (
                       <>
-                        {railInstance.snapshot.update && (
-                          <EngineUpdateNotice update={railInstance.snapshot.update} instance={railInstance} className="mx-0.5 mb-1.5" />
-                        )}
                         <div className={MENU_LABEL}>
                           {query
                             ? t("model.results", { count: filteredOfficial.length })
@@ -863,6 +844,9 @@ export function ModelPicker({
                             <span className="min-w-0 flex-1 truncate">{t("model.showSuggested")}</span>
                             <ChevronUp size={16} strokeWidth={MENU_STROKE} className={MENU_TRAILING} aria-hidden="true" />
                           </button>
+                        )}
+                        {railInstance.snapshot.update && (
+                          <EngineUpdateNotice inline update={railInstance.snapshot.update} instance={railInstance} className="mx-0.5 mt-2" />
                         )}
                       </>
                     ) : (
@@ -929,6 +913,18 @@ export function ModelPicker({
           )}
           {!remote && (
             <div className="flex h-9 shrink-0 items-center gap-1 border-t-[0.5px] border-ink/10 px-1.5">
+              {threadId && (
+                <div role="group" aria-label={t("model.scope.label")} className="flex shrink-0 items-center gap-0.5">
+                  {(["thread", "bot"] as const).map((value) => (
+                    <button key={value} type="button" aria-pressed={scope === value} onClick={() => setScope(value)}
+                      title={value === "bot" ? t("model.scope.botHelp") : t("model.scope.threadHelp")}
+                      className={cn("h-7 rounded-md px-2 text-[12px] leading-4",
+                        scope === value ? "bg-ink/[0.08] font-medium text-ink" : "text-ink-secondary hover:bg-ink/[0.06] hover:text-ink")}>
+                      {value === "bot" ? t("model.scope.botShort") : t("model.scope.threadShort")}
+                    </button>
+                  ))}
+                </div>
+              )}
               <button type="button" onClick={openEngines}
                 className="h-7 min-w-0 flex-1 truncate rounded-md px-2 text-left text-[12px] leading-4 text-ink-secondary hover:bg-ink/[0.06] hover:text-ink">
                 {t("settings.engines.title")}

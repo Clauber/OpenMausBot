@@ -472,7 +472,7 @@ describe("the model picker in Simple mode", () => {
     fixture.advanced = true;
     const forBot = bot();
     const full = open(forBot);
-    click(full.nodes.find((node) => node.type === "button" && node.props.children === "Thread + bot default"));
+    click(full.nodes.find((node) => node.type === "button" && node.props.children === "Also the bot"));
     fixture.advanced = false;
     pane(render(forBot))!.props.onPick(instance("claude"), "claude-sonnet-5-5");
     expect(fixture.dispatch).toHaveBeenLastCalledWith(expect.objectContaining({ updateBotDefault: false }));
@@ -497,7 +497,7 @@ describe("the model picker in Simple mode", () => {
     fixture.advanced = true;
     const opened = open(bot());
     expect(pane(opened)).toBeUndefined();
-    expect(opened.html).toContain("Only this thread");
+    expect(opened.html).toContain("This thread");
   });
 
   it("opens the same floating menu from bot settings' Default model, without a second Thinking control, and edits the bot's default", () => {
@@ -971,7 +971,7 @@ describe("every capability of the picker stays reachable", () => {
     const behind = {
       "the full picker opens in place, with a way back": pane(full) === undefined && fullHtml.includes("data-model-back"),
       "engine rail with API keys": full.nodes.some((node) => node.type === ModelEngineRail) && fullHtml.includes(">API keys<"),
-      "this thread or the bot's default": fullHtml.includes("Only this thread") && fullHtml.includes("Thread + bot default"),
+      "this thread or the bot's default": fullHtml.includes("This thread") && fullHtml.includes("Also the bot"),
       "engine status and refresh": fullHtml.includes("Sign-in required") && fullHtml.includes("data-model-refresh"),
       "the account select": fullHtml.includes('<option value="claude-work" selected="">Work</option>'),
       "install and sign-in help": full.nodes.some((node) => node.type === EngineSetup),
@@ -1019,7 +1019,7 @@ describe("every capability of the picker stays reachable", () => {
       "use the bot's model, checked while following": opened.nodes.some((node) => node.type === FollowBotModelRow),
       "engine rail with Cloud, API keys and Local, and a way to add keys": html.includes(">Cloud<") && html.includes(">API keys<") && html.includes(">Local<") && html.includes("data-rail-add-api-key"),
       "a managed engine stays on the rail, dimmed": html.includes("Managed by Acme") && html.includes("opacity-40"),
-      "this thread or the bot's default": html.includes("Only this thread"),
+      "this thread or the bot's default": html.includes("This thread") && html.includes("Also the bot"),
       "engine name, refresh and version": html.includes("data-model-refresh") && html.includes("2.1.300"),
       "the Claude account select": html.includes('aria-label="Account"'),
       "the engine's update notice": html.includes("Update Claude"),

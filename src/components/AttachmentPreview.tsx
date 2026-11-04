@@ -64,6 +64,15 @@ export function wrappedImageIndex(index: number, step: -1 | 1, count: number): n
   return (index + step + count) % count;
 }
 
+const OPAQUE_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** An attachment stored under a generated id has no name worth showing as a title. */
+export function opaqueAttachmentName(name: string): boolean {
+  const trimmed = name.trim();
+  const stem = trimmed.replace(/\.[a-z0-9]+$/i, "");
+  return OPAQUE_NAME.test(stem) || /^[0-9a-f]{32,}$/i.test(stem);
+}
+
 export type PreviewKeyAction = "close" | "previous" | "next" | "zoomIn" | "zoomOut" | "fit" | null;
 
 export function previewKeyAction(key: string, count: number, zoomed: boolean): PreviewKeyAction {
@@ -801,7 +810,9 @@ export function AttachmentPreviewDialog({
       </div>
       <header className="absolute inset-x-0 top-0 z-20 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 bg-gradient-to-b from-black/90 via-black/60 to-transparent px-3 pb-10 pt-3 sm:px-4">
         <div className="min-w-0 flex-1 basis-40">
-          <div className="truncate text-[13px] font-medium text-white">{current.name}</div>
+          <div className="truncate text-[13px] font-medium text-white">
+            {opaqueAttachmentName(current.name) ? t("attach.untitledImage") : current.name}
+          </div>
           <div className="text-[11px] text-white/70">
             {items.length > 1
               ? t("attach.position", { index: index + 1, count: items.length })
