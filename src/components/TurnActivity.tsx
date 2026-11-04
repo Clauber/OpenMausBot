@@ -15,12 +15,16 @@ export function TurnActivity({ activity, forceOpen = false, children }: {
   const [tracing, setTracing] = useState(false);
   const detailId = useId();
   const digest = activity.digestMessage?.digest;
-  const failures = Math.max(activity.steps.filter((step) => step.tool?.ok === false).length, digest?.tools.reduce((count, tool) => count + tool.failed, 0) ?? 0);
+  const failedSteps = activity.steps.filter((step) => step.tool?.ok === false);
+  const failures = Math.max(failedSteps.length, digest?.tools.reduce((count, tool) => count + tool.failed, 0) ?? 0);
   const count = digest?.toolCalls ?? Math.max(activity.steps.length, digest?.tools.reduce((count, tool) => count + tool.count, 0) ?? 0);
+  // The resting line names the failed step, so the reader knows what went wrong without expanding.
+  const failedNames = [...new Set(failedSteps.map((step) => step.tool?.name).filter((name): name is string => Boolean(name)))];
   const summary = [
     activity.durationMs === undefined ? null : t("trace.workedFor", { duration: formatDuration(activity.durationMs) }),
     t(count === 1 ? "chat.activity.step" : "chat.activity.steps", { count }),
     failures ? t("chat.activity.failed", { count: failures }) : null,
+    failedNames.length ? t("chat.activity.failedSteps", { names: failedNames.join(", ") }) : null,
   ].filter(Boolean).join(" · ");
   useEffect(() => {
     if (forceOpen) setOpen(true);

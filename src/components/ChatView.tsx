@@ -578,7 +578,8 @@ const Bubble = memo(function Bubble({
       <span
         className={cn(
           "flex items-center gap-1.5 px-1 pt-1 text-[11px] tabular-nums text-ink-tertiary transition-opacity",
-          joinBelow ? "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-md:opacity-100" : "opacity-100",
+          // A failed send must never hide behind a hover, or the reader cannot see that it failed.
+          joinBelow && !message.failed ? "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-md:opacity-100" : "opacity-100",
         )}
       >
         {user && <MessageDeliveryStatus message={message} onRetry={onRetryMessage ? () => onRetryMessage(message) : undefined} />}

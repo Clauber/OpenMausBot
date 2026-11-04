@@ -911,20 +911,25 @@ export function ModelPicker({
           ) : (
             <div className="px-3.5 py-5 text-[13px] leading-[18px] text-ink-secondary">{t("model.noProviders")}</div>
           )}
+          {threadId && (
+            <div className="flex h-9 shrink-0 items-center gap-2 border-t-[0.5px] border-ink/10 px-3">
+              <div role="group" aria-label={t("model.scope.label")} className="flex shrink-0 items-center gap-0.5">
+                {(["thread", "bot"] as const).map((value) => (
+                  <button key={value} type="button" aria-pressed={scope === value} onClick={() => setScope(value)}
+                    title={value === "bot" ? t("model.scope.botHelp") : t("model.scope.threadHelp")}
+                    className={cn("h-7 rounded-md px-2 text-[12px] leading-4",
+                      scope === value ? "bg-ink/[0.08] font-medium text-ink" : "text-ink-secondary hover:bg-ink/[0.06] hover:text-ink")}>
+                    {value === "bot" ? t("model.scope.botShort") : t("model.scope.threadShort")}
+                  </button>
+                ))}
+              </div>
+              <span className="min-w-0 flex-1 truncate text-[11px] text-ink-tertiary">
+                {scope === "bot" ? t("model.scope.botHelp") : t("model.scope.threadHelp")}
+              </span>
+            </div>
+          )}
           {!remote && (
             <div className="flex h-9 shrink-0 items-center gap-1 border-t-[0.5px] border-ink/10 px-1.5">
-              {threadId && (
-                <div role="group" aria-label={t("model.scope.label")} className="flex shrink-0 items-center gap-0.5">
-                  {(["thread", "bot"] as const).map((value) => (
-                    <button key={value} type="button" aria-pressed={scope === value} onClick={() => setScope(value)}
-                      title={value === "bot" ? t("model.scope.botHelp") : t("model.scope.threadHelp")}
-                      className={cn("h-7 rounded-md px-2 text-[12px] leading-4",
-                        scope === value ? "bg-ink/[0.08] font-medium text-ink" : "text-ink-secondary hover:bg-ink/[0.06] hover:text-ink")}>
-                      {value === "bot" ? t("model.scope.botShort") : t("model.scope.threadShort")}
-                    </button>
-                  ))}
-                </div>
-              )}
               <button type="button" onClick={openEngines}
                 className="h-7 min-w-0 flex-1 truncate rounded-md px-2 text-left text-[12px] leading-4 text-ink-secondary hover:bg-ink/[0.06] hover:text-ink">
                 {t("settings.engines.title")}
