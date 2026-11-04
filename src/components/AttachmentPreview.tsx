@@ -675,7 +675,7 @@ export function AttachmentPreviewDialog({
       aria-modal="true"
       aria-label={t("attach.previewAria", { name: current.name })}
       tabIndex={-1}
-      className="fixed inset-0 z-[70] overflow-hidden bg-black/85 outline-none"
+      className="fixed inset-0 z-[70] overflow-hidden bg-black outline-none"
     >
       <div
         ref={layerRef}
