@@ -75,7 +75,7 @@ export const MessageDeliveryStatus = memo(function MessageDeliveryStatus({
             onClick={onRetry}
             aria-label={t("chat.delivery.retryAria")}
             title={t("chat.retry")}
-            className="font-medium underline hover:text-danger-hover min-h-[44px] min-w-[44px] inline-flex items-center justify-center p-1 relative before:absolute before:inset-0"
+            className="relative inline-flex min-h-[44px] min-w-[44px] items-center justify-center p-1 font-medium underline hover:text-danger"
           >
             {t("chat.retry")}
           </button>

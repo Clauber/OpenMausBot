@@ -628,7 +628,7 @@ export function ModelPicker({
         <span data-model-account-compact className="hidden max-w-20 truncate @max-4xl/chathead:inline">{active.displayName}</span>
       )}
       <span className="flex min-w-0 items-center gap-1">
-        {/* On a narrow header the chip shows the model name alone; the account and provider are dropped. */}
+        {/* One name element, so the chip never shows the model twice. */}
         {!contained && active && (
           <span data-model-name-compact className="hidden max-w-24 truncate max-md:inline">
             {modelLabel(active, selection.model)}
