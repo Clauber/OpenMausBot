@@ -1041,6 +1041,17 @@ describe("config status frames", () => {
     expect(status.anthropic).toEqual({ configured: true, everyClaudeBot: false });
   });
 
+  it("keeps every saved key's hint through a live config update, so a masked key never empties", () => {
+    const status = configStatusFromFrame({
+      openai: { configured: true, last4: "a1b2" },
+      box: { configured: true, last4: "c3d4" },
+      savedKeys: { ttsKey: { configured: true, last4: "e5f6" }, openaiLiveKey: { configured: false } },
+    } as ConfigStatusFrame);
+    expect(status.openai).toEqual({ configured: true, last4: "a1b2" });
+    expect(status.box).toEqual({ configured: true, last4: "c3d4" });
+    expect(status.savedKeys).toEqual({ ttsKey: { configured: true, last4: "e5f6" }, openaiLiveKey: { configured: false } });
+  });
+
   it("keeps thread capacity and room timeout with the existing config fields", () => {
     expect(
       configStatusFromFrame({
@@ -1122,6 +1133,17 @@ describe("task rename", () => {
     );
     expect(next.groups[0]?.tasks?.find((task) => task.threadId === "room-task-1")?.title).toBe("Renamed");
     expect(next.groups[0]?.tasks?.find((task) => task.threadId === "room-task-2")?.title).toBe("Other");
+  });
+
+  it("archives and unarchives a channel task in local state immediately", () => {
+    const group = {
+      id: "room", threadId: "room-task-1", name: "Launch", memberIds: [], defaultResponder: { kind: "everyone" }, bulletin: "", unread: false, createdAt: 1, messages: [],
+      tasks: [{ threadId: "room-task-1", title: "Open", createdAt: 1 }, { threadId: "room-task-2", title: "Done", createdAt: 2 }],
+    } satisfies Group;
+    const archived = reducer({ ...initialState, groups: [group] }, { type: "archiveGroupTask", groupId: "room", threadId: "room-task-2", archivedAt: 1234 });
+    expect(archived.groups[0]?.tasks?.map((task) => task.archivedAt)).toEqual([undefined, 1234]);
+    const unarchived = reducer(archived, { type: "archiveGroupTask", groupId: "room", threadId: "room-task-2", archivedAt: null });
+    expect(unarchived.groups[0]?.tasks?.[1]?.archivedAt).toBeUndefined();
   });
 });
 
@@ -1281,6 +1303,60 @@ describe("optimistic sent messages", () => {
     expect(removed.bots[0]?.activeLeafId).toBe(root.id);
   });
 
+  describe("a failed send", () => {
+    it("keeps the bubble, marks it failed, and clears the failure when it is retried", () => {
+      const sent = reducer(
+        { ...initialState, bots: [bot] },
+        { type: "send", botId: bot.id, sendId: "send-failed", text: "later" },
+      );
+      const failed = reducer(sent, {
+        type: "sendFailed",
+        botId: bot.id,
+        threadId: bot.threadId,
+        sendId: "send-failed",
+        error: "network down",
+      });
+      const bubble = failed.bots[0]?.messages.find((message) => message.sendId === "send-failed");
+      expect(bubble?.failed).toBe(true);
+      expect(bubble?.error).toBe("network down");
+
+      const retried = reducer(failed, {
+        type: "retrySend",
+        botId: bot.id,
+        threadId: bot.threadId,
+        sendId: "send-failed",
+        text: "later",
+      });
+      const again = retried.bots[0]?.messages.find((message) => message.sendId === "send-failed");
+      expect(again?.failed).toBe(false);
+      // A retry in flight is sending again, so the optimistic id comes back until the server answers.
+      expect(again?.id).toBe("optimistic-send-failed");
+    });
+
+    it("fails the retry without losing the message", () => {
+      const sent = reducer(
+        { ...initialState, bots: [bot] },
+        { type: "send", botId: bot.id, sendId: "send-failed", text: "later" },
+      );
+      const failed = reducer(sent, {
+        type: "sendFailed",
+        botId: bot.id,
+        threadId: bot.threadId,
+        sendId: "send-failed",
+      });
+      const again = reducer(failed, {
+        type: "sendFailed",
+        botId: bot.id,
+        threadId: bot.threadId,
+        sendId: "send-failed",
+        error: "still down",
+      });
+      const bubble = again.bots[0]?.messages.find((message) => message.sendId === "send-failed");
+      expect(bubble?.failed).toBe(true);
+      expect(bubble?.error).toBe("still down");
+    });
+  });
+
   describe("edits", () => {
     const question: Message = { id: "q1", role: "user", kind: "text", text: "first try", at: 2, parentId: root.id };
     const answer: Message = { id: "a1", role: "bot", kind: "text", text: "old answer", at: 3, parentId: question.id };
@@ -1322,6 +1398,14 @@ describe("optimistic sent messages", () => {
       });
       expect(visibleMessages(restored.bots[0]!).map((message) => message.text)).toEqual(["Ready", "first try", "old answer"]);
       expect(restored.bots[0]?.messages).toEqual([root, question, answer]);
+    });
+
+    it("hands back the same branch for the same transcript and leaf", () => {
+      const shown = conversation().bots[0]!;
+      const branch = visibleMessages(shown);
+      expect(visibleMessages({ messages: shown.messages, activeLeafId: answer.id })).toBe(branch);
+      expect(visibleMessages({ messages: shown.messages, activeLeafId: question.id }).map((message) => message.id)).toEqual([root.id, question.id]);
+      expect(visibleMessages({ messages: [...shown.messages], activeLeafId: answer.id })).not.toBe(branch);
     });
   });
 
@@ -1635,6 +1719,27 @@ describe("browser profile announcements", () => {
     });
     expect(next.bots[0]?.browserProfile).toBe(profile);
     expect(next.bots[0]?.messages).toBe(messages);
+  });
+});
+
+describe("phone grant announcements", () => {
+  const granted: Bot = {
+    id: "phone-bot", threadId: "phone-thread", name: "Pepper", title: "", description: "",
+    notifications: true, color: "green", unread: false,
+    modelSelection: { instanceId: "codex", model: "default" }, phoneApps: { location: "read" },
+    messages: [{ id: "message", role: "user", kind: "text", at: 1, text: "Keep this conversation" }],
+  };
+  const { messages, phoneApps: _old, ...announcement } = granted;
+
+  it("clears a stale grant when a complete frame omits it", () => {
+    const next = reducer({ ...initialState, bots: [granted] }, { type: "botPatched", bot: announcement });
+    expect(next.bots[0]?.phoneApps).toBeUndefined();
+    expect(next.bots[0]?.messages).toBe(messages);
+  });
+
+  it("clears it on the thread-snapshot path too", () => {
+    const next = reducer({ ...initialState, bots: [{ ...granted, awaitingThreadSnapshot: true }] }, { type: "botPatched", bot: { ...announcement, messages } });
+    expect(next.bots[0]?.phoneApps).toBeUndefined();
   });
 });
 
@@ -2504,6 +2609,14 @@ describe("activity panel", () => {
     expect(reducer(suggested, { type: "showFiles", suggest: [] }).filesSuggest).toBeNull();
     expect(reducer(suggested, { type: "showTeamMap" })).toMatchObject({ activeView: "team-map", filesSuggest: null });
   });
+
+  it("a pinned web panel replaces the main view like the team map, and chat comes back", () => {
+    const open = { ...initialState, activityOpen: true, computerOpen: true, settingsOpen: true };
+    const panel = reducer(open, { type: "showWebPanel", id: "panel-1" });
+    expect(panel).toMatchObject({ activeView: "web-panel", webPanelId: "panel-1", activityOpen: false, computerOpen: false, settingsOpen: false });
+    expect(reducer(panel, { type: "showTeamMap" })).toMatchObject({ activeView: "team-map", webPanelId: "panel-1" });
+    expect(reducer(panel, { type: "showChat" }).activeView).toBe("chat");
+  });
 });
 
 describe("live config frames", () => {
@@ -2520,6 +2633,12 @@ describe("live config frames", () => {
     const automaticRecovery = { enabled: true, backup: { instanceId: "backup", model: "fixture-model" } };
     expect(configStatusFromFrame({ ...baseFrame, automaticRecovery }).automaticRecovery).toEqual(automaticRecovery);
     expect(configStatusFromFrame({ ...baseFrame, automaticRecovery: { enabled: false } }).automaticRecovery).toEqual({ enabled: false });
+  });
+
+  it("keeps a Team Cloud's team through live config refreshes, so its people stay in the @ list", () => {
+    const team = { id: "team-acme", name: "Acme", cloudPage: "https://cloud.example.test/cloud" };
+    expect(configStatusFromFrame({ ...baseFrame, team }).team).toEqual(team);
+    expect(configStatusFromFrame(baseFrame)).not.toHaveProperty("team");
   });
 
   it("keeps an OMB Cloud home's flag through live config refreshes, and adds none elsewhere", () => {
@@ -2835,7 +2954,7 @@ describe("restoring the open conversation", () => {
       });
       vi.stubGlobal("EventSource", FixtureEventSource);
       vi.stubGlobal("fetch", (path: string) =>
-        path.startsWith("/api/bots?") ? json({ bots: [first, second], groups: [room] }) : json(answers[path] ?? {}),
+        path.startsWith("/api/bots?") ? json({ bots: [first, second], groups: [room] }) : json(answers[path.replace(/\?since=[^&]*$/, "")] ?? {}),
       );
 
       container = document.createElement("div");
@@ -2875,7 +2994,7 @@ describe("restoring the open conversation", () => {
         "/api/groups/room-1/queue/q-room/steer": { ok: true, queued: true, threadId: "room-thread", blockedBy: "images" },
         "/api/bots/bot-1/queue/q-plain/steer": { ok: true, queued: true, threadId: "bot-1-thread" },
       };
-      vi.stubGlobal("fetch", (path: string) => Promise.resolve(new Response(JSON.stringify(answers[path] ?? {}))));
+      vi.stubGlobal("fetch", (path: string) => Promise.resolve(new Response(JSON.stringify(answers[path.replace(/\?since=[^&]*$/, "")] ?? {}))));
 
       const settled = vi.fn();
       flushSync(() => dispatch({ type: "steerQueued", botId: "bot-1", queueId: "q-plain", onSettled: settled }));

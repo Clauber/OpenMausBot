@@ -3,6 +3,7 @@
 // session/prompt and scripted session/update streams) for driver tests. Env knobs:
 //   FAKE_ACP_LOAD_NULL  session/load returns null, so the driver falls through to session/new
 //   FAKE_ACP_REJECT_LIVE_LOAD_FILE  while it exists, load/resume of a session live in this process errors
+//     (FAKE_ACP_REJECT_LIVE_LOAD_DSH=1: with dsh 0.2's -32602 "session is already active" instead of -32000)
 //   FAKE_ACP_CACHED_LIVE_LOAD  a live session/load is acknowledged but keeps the old MCP credentials, like Qwen
 //   FAKE_ACP_TEXT_REPLY  answer every session/prompt with only this text
 //   FAKE_ACP_MODE  happy (default) | image | empty-reply | reasoning-only | exit-early | fail-after-text | crash-in-prompt | hang
@@ -16,9 +17,10 @@
 //       MCP; FAKE_ACP_REDELEGATE_FILE, FAKE_ACP_TASKID_FILE; a hand-off result wake gets a fixed line)
 //     | echo-gated (echo the whole prompt; hold until FAKE_ACP_GATE_FILE exists) | safe-agent-reads
 //     | stall-after-text | stall-after-tool (then silent forever) | slow-tool (silent for FAKE_ACP_TOOL_MS, or until
-//       FAKE_ACP_TOOL_GATE exists when set)
+//       FAKE_ACP_TOOL_GATE exists when set; FAKE_ACP_TOOL_OUTPUT is the text its running call shows meanwhile)
 //     | quiet-then-answer (silent for FAKE_ACP_QUIET_MS; with QWEN_HOME, append FAKE_ACP_QWEN_LOG lines to
-//       Qwen's debug log every FAKE_ACP_LOG_EVERY_MS) | mcp-tools (list each mcpServers entry's tools with
+//       Qwen's debug log every FAKE_ACP_LOG_EVERY_MS; with XDG_DATA_HOME, append FAKE_ACP_OPENCODE_LOG lines once to
+//       OpenCode's shared log, {session} replaced by the session id) | mcp-tools (list each mcpServers entry's tools with
 //       grok 1.0.25's initialize, or FAKE_ACP_MCP_HANDSHAKE; FAKE_ACP_MCP_SCHEMA_BYTES=1 adds each schema's length)
 //     | lend-question (list_shared_computers around a question)
 //     | list-peers (list_bots through the agents MCP; keeps the first agents server it is offered, like Hermes)
@@ -37,9 +39,15 @@
 //   FAKE_ACP_MODELS  model ids: opencode-shaped configOptions and set_config_option (-32602 for others);
 //     a new session starts on AGY_ACP_DEFAULT_MODEL when set, taken unchecked as agy_acp_server 1.1.1 does
 //   FAKE_ACP_MODELS_FILE  the same list, read once at startup, as `opencode acp` never re-reads a login
+//   FAKE_ACP_MODELS_REFRESH_FROM  `models --refresh` copies this file over FAKE_ACP_MODELS_FILE, as OpenCode 1.19.4
+//     refetches its models.dev cache only then; OPENCODE_CONFIG_CONTENT's provider models join any model list
 //   FAKE_ACP_MODELS_LIST=v2  OpenCode 2: `models` answers empty with exit 0, `models --verbose` exits 1
+//   FAKE_ACP_MODELS_LIST=auto-only  Cursor CLI 2026.10.22: `models` lists only `auto`
 //   FAKE_ACP_VERBOSE_FAIL_ONCE  marker path: the first `models --verbose` fails, like a new OpenCode home's first run
 //   FAKE_ACP_MODEL_STICKS  set_config_option succeeds but keeps the old model
+//   FAKE_ACP_OMIT_MODEL_VALUE  when the live model equals this id, the model option has no currentValue
+//     (Copilot CLI 1.0.105 does this for auto)
+//   FAKE_ACP_EXIT_ON_MODEL  the process exits when set_config_option selects this model
 //   FAKE_ACP_VARIANTS  JSON map model -> {id?, currentValue?, options} of ACP select values
 //   FAKE_ACP_CONFIG_UPDATES  JSON [{after, sessionId?, configOptions, replay?}] emitted after the named response
 //   FAKE_ACP_USAGE_ROOT  usage at the prompt result's root, as opencode 1.18.18 sends it
@@ -49,8 +57,13 @@
 //   FAKE_ACP_HANG_ON  a prompt whose text holds this hangs as in mode hang; others answer
 //   FAKE_ACP_CURSOR_FAST=1  a `fast` select ("true") once initialize declares _meta.parameterizedModelPicker, as Cursor CLI 2026.10.19; =stuck acknowledges set_config_option but keeps "true"
 //   FAKE_ACP_SESSION_CLOSE=1  initialize advertises sessionCapabilities.close (OpenCode 1.19); session/close answers {}
+//     after FAKE_ACP_SESSION_CLOSE_MS; =error advertises it and answers every session/close with an error
+//   FAKE_ACP_IGNORE_CANCEL=1  session/cancel is ignored: a hanging prompt keeps running
 //   FAKE_ACP_TOOL_LIMIT  session/prompt lists the session's MCP tools and refuses, as OpenCode Zen does, past this many;
 //     under it the reply is "tools: <server>=<count>,…"
+//   FAKE_ACP_CANCEL_STOP_REASON  the stopReason a cancelled hanging prompt answers (default cancelled; OpenCode answers end_turn)
+//   FAKE_ACP_HANG_ONCE_FILE  with FAKE_ACP_HANG_ON, only the first matching prompt hangs; it writes this file
+//   FAKE_ACP_HOLD_FILE  while this file exists, a session/prompt waits before it is answered
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
@@ -74,6 +87,12 @@ const modelsText = process.env.FAKE_ACP_MODELS_FILE && existsSync(process.env.FA
   : process.env.FAKE_ACP_MODELS ?? "";
 // One id per line when the list holds a newline (DeepSeek's wire values are JSON pairs with commas); else comma-separated.
 const models = modelsText.split(modelsText.includes("\n") ? "\n" : ",").map((id) => id.trim()).filter(Boolean);
+try {
+  const declared = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT || "{}")?.provider ?? {};
+  for (const [provider, entry] of Object.entries<any>(declared)) {
+    for (const id of Object.keys(entry?.models ?? {})) if (models.length && !models.includes(`${provider}/${id}`)) models.push(`${provider}/${id}`);
+  }
+} catch {}
 const defaultModelEnv = process.env.AGY_ACP_DEFAULT_MODEL;
 if (models.length && defaultModelEnv && !models.includes(defaultModelEnv)) models.push(defaultModelEnv);
 let currentModel: string | null = models.length && defaultModelEnv ? defaultModelEnv : models[0] ?? null;
@@ -88,14 +107,18 @@ let currentMode: string | null = modes[0] ?? null;
 let currentFast: string | null = null;
 const taskIdFile = process.env.FAKE_ACP_TASKID_FILE ?? "";
 const peerIdOf = (list: string): string => /id: ([\w-]+)/.exec(list)?.[1] ?? "";
-function handoffCall(message: string, options: { consult?: boolean; reason?: string } = {}): { name: string; args: (list: string) => object } {
+function handoffCall(message: string, options: { consult?: boolean; reason?: string; doneWhen?: string } = {}): { name: string; args: (list: string) => object } {
   const reason = options.reason ? { reason: options.reason } : {};
-  return { name: "coordinate_bots", args: (list) => ({ bot_ids: [peerIdOf(list)], message, ...(options.consult ? { consult: true } : {}), ...reason }) };
+  const doneWhen = options.doneWhen ? { done_when: options.doneWhen } : {};
+  return { name: "coordinate_bots", args: (list) => ({ bot_ids: [peerIdOf(list)], message, ...(options.consult ? { consult: true } : {}), ...reason, ...doneWhen }) };
 }
 const handoffIdOf = (reply: string): string => /"requestId":"([\w-]+)"/.exec(reply)?.[1] ?? "";
 const statusCall = (id: string): { name: string; args: () => object } => ({ name: "assignment_status", args: () => ({ id }) });
 const logFile = process.env.FAKE_ACP_LOG_FILE ?? "";
 const rejectLiveLoadFile = process.env.FAKE_ACP_REJECT_LIVE_LOAD_FILE ?? "";
+const liveLoadError = (sessionId: string) => process.env.FAKE_ACP_REJECT_LIVE_LOAD_DSH === "1"
+  ? { code: -32602, message: `Invalid params: session is already active: ${sessionId}` }
+  : { code: -32000, message: "session already active in this agent" };
 function fakeLog(line: string): void {
   if (!logFile) return;
   try {
@@ -129,7 +152,7 @@ const configOptions = () => {
           name: "Model",
           category: "model",
           type: "select",
-          currentValue: currentModel,
+          ...(process.env.FAKE_ACP_OMIT_MODEL_VALUE === currentModel ? {} : { currentValue: currentModel }),
           options: models.map((value) => ({ value, name: value })),
         },
       ] : []),
@@ -187,6 +210,7 @@ const dumpEnv = Object.fromEntries(
     "TEST_POLICY",
     "OPENCODE_API_KEY",
     "OPENCODE_PERMISSION",
+    "OPENCODE_DISABLE_AUTOUPDATE",
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
     "ANTHROPIC_API_KEY",
@@ -223,6 +247,10 @@ const dumpEnv = Object.fromEntries(
     "GEMINI_API_KEY",
     "MISTRAL_API_KEY",
     "OMB_ANTHROPIC_API_KEY",
+    "COPILOT_ALLOW_ALL",
+    "COPILOT_GITHUB_TOKEN",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
   ].flatMap((key) => (process.env[key] === undefined ? [] : [[key, process.env[key]]] as const)),
 );
 const dumpState: Record<string, unknown> = { argv, env: dumpEnv, pid: process.pid };
@@ -267,6 +295,12 @@ if (argv[0] === "status" || argv[0] === "whoami") {
   console.log(JSON.stringify({ isAuthenticated: authenticated }));
   process.exit(0);
 }
+if (argv[0] === "models" && argv.includes("--refresh")) {
+  if (process.env.FAKE_ACP_MODELS_REFRESH_FROM && process.env.FAKE_ACP_MODELS_FILE) {
+    writeFileSync(process.env.FAKE_ACP_MODELS_FILE, readFileSync(process.env.FAKE_ACP_MODELS_REFRESH_FROM));
+  }
+  process.exit(0);
+}
 if (argv[0] === "models" || argv.includes("--list-models")) {
   const failOnce = process.env.FAKE_ACP_VERBOSE_FAIL_ONCE;
   if (failOnce && argv.includes("--verbose") && !existsSync(failOnce)) {
@@ -279,6 +313,10 @@ if (argv[0] === "models" || argv.includes("--list-models")) {
       console.error("Unrecognized flag: --verbose");
       process.exit(1);
     }
+    process.exit(0);
+  }
+  if (process.env.FAKE_ACP_MODELS_LIST === "auto-only") {
+    console.log(["Available models", "", "auto - Auto (default)"].join("\n"));
     process.exit(0);
   }
   if (models.length) {
@@ -347,12 +385,12 @@ const resultAndConfigUpdates = (id: unknown, res: unknown, after: string, sessio
   process.stdout.write([{ jsonrpc: "2.0", id, result: res }, ...updates].map((message) => JSON.stringify(message)).join("\n") + "\n");
 };
 const rpcMethods: string[] = [];
-const recordMethod = (method: string) => {
+const recordMethod = (method: string, sessionId?: unknown) => {
   rpcMethods.push(method);
   if (process.env.FAKE_ACP_RPC_DUMP) writeFileSync(process.env.FAKE_ACP_RPC_DUMP, JSON.stringify(rpcMethods));
   if (process.env.FAKE_ACP_RPC_APPEND_FILE) {
     try {
-      appendFileSync(process.env.FAKE_ACP_RPC_APPEND_FILE, JSON.stringify({ pid: process.pid, method, cwd: process.cwd() }) + "\n");
+      appendFileSync(process.env.FAKE_ACP_RPC_APPEND_FILE, JSON.stringify({ pid: process.pid, method, cwd: process.cwd(), sessionId }) + "\n");
     } catch {}
   }
 };
@@ -560,11 +598,25 @@ process.stdin.on("data", (c) => {
   }
 });
 
+function heldByHoldFile(msg: any): boolean {
+  const hold = process.env.FAKE_ACP_HOLD_FILE;
+  if (!hold || !existsSync(hold)) return false;
+  const poll = setInterval(() => {
+    if (existsSync(hold)) return;
+    clearInterval(poll);
+    handle(msg);
+  }, 50);
+  return true;
+}
+
 function handle(msg: any) {
   if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined) && msg.id === pendingAskQuestionId) {
     pendingAskQuestionId = null;
     if (process.env.FAKE_ACP_ASK_ANSWER) {
-      writeFileSync(process.env.FAKE_ACP_ASK_ANSWER, JSON.stringify(msg.error !== undefined ? { error: msg.error } : { result: msg.result }));
+      // Written aside and renamed in, so a test that sees the file never reads it half-written.
+      const partial = `${process.env.FAKE_ACP_ASK_ANSWER}.partial`;
+      writeFileSync(partial, JSON.stringify(msg.error !== undefined ? { error: msg.error } : { result: msg.result }));
+      renameSync(partial, process.env.FAKE_ACP_ASK_ANSWER);
     }
     onAskQuestionAnswered?.();
     return;
@@ -579,7 +631,8 @@ function handle(msg: any) {
     return;
   }
   if (!msg.method) return;
-  recordMethod(msg.method);
+  if (msg.method === "session/prompt" && heldByHoldFile(msg)) return;
+  recordMethod(msg.method, msg.params?.sessionId);
 
   switch (msg.method) {
     case "initialize": {
@@ -596,7 +649,7 @@ function handle(msg: any) {
       const agentName = process.env.FAKE_ACP_AGENT_NAME;
       const acceptsImages = process.env.FAKE_ACP_IMAGE_CAPABILITY === "1";
       const mcpTransports = (process.env.FAKE_ACP_MCP_TRANSPORTS ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
-      const closesSessions = process.env.FAKE_ACP_SESSION_CLOSE === "1";
+      const closesSessions = ["1", "error"].includes(process.env.FAKE_ACP_SESSION_CLOSE ?? "");
       if (["1", "stuck"].includes(process.env.FAKE_ACP_CURSOR_FAST ?? "") && msg.params?.clientCapabilities?._meta?.parameterizedModelPicker === true) {
         currentFast = "true";
       }
@@ -665,7 +718,9 @@ function handle(msg: any) {
       break;
     }
     case "session/close":
-      result(msg.id, {});
+      if (process.env.FAKE_ACP_SESSION_CLOSE === "error") out({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: "close failed" } });
+      else if (process.env.FAKE_ACP_SESSION_CLOSE_MS) setTimeout(() => result(msg.id, {}), Number(process.env.FAKE_ACP_SESSION_CLOSE_MS));
+      else result(msg.id, {});
       break;
     case "session/load": {
       if (process.env.FAKE_ACP_LOAD_ERROR) {
@@ -680,7 +735,7 @@ function handle(msg: any) {
         out({
           jsonrpc: "2.0",
           id: msg.id,
-          error: { code: -32000, message: "session already active in this agent" },
+          error: liveLoadError(msg.params.sessionId),
         });
         break;
       }
@@ -706,7 +761,7 @@ function handle(msg: any) {
         out({
           jsonrpc: "2.0",
           id: msg.id,
-          error: { code: -32000, message: "session already active in this agent" },
+          error: liveLoadError(msg.params.sessionId),
         });
         break;
       }
@@ -786,6 +841,7 @@ function handle(msg: any) {
         result(msg.id, process.env.FAKE_ACP_EMPTY_MODE_ACK ? {} : { configOptions: configOptions() });
         break;
       }
+      if (configId === "model" && value === process.env.FAKE_ACP_EXIT_ON_MODEL) process.exit(4);
       if (configId !== "model" || !models.includes(value)) {
         out({
           jsonrpc: "2.0",
@@ -843,7 +899,10 @@ function handle(msg: any) {
         return;
       }
       const fullPrompt = (Array.isArray(msg.params?.prompt) ? msg.params.prompt : []).map((block: any) => block?.text ?? "").join("");
-      if (mode === "hang" || (process.env.FAKE_ACP_HANG_ON && fullPrompt.includes(process.env.FAKE_ACP_HANG_ON))) {
+      const hangOn = process.env.FAKE_ACP_HANG_ON, hangOnce = process.env.FAKE_ACP_HANG_ONCE_FILE;
+      const held = Boolean(hangOn) && fullPrompt.includes(hangOn!) && !(hangOnce && existsSync(hangOnce));
+      if (held && hangOnce) writeFileSync(hangOnce, String(Date.now()));
+      if (mode === "hang" || held) {
         hangingPromptId = msg.id;
         hangKeepAlive = setInterval(() => {}, 1_000);
         return;
@@ -886,6 +945,15 @@ function handle(msg: any) {
             appendFileSync(`${dir}/${liveSession}.txt`, `${new Date().toISOString()} ${lines[Math.min(i++, lines.length - 1)]}\n`);
           }, Number(process.env.FAKE_ACP_LOG_EVERY_MS ?? 100));
         }
+        const openCodeLines: string[] = process.env.FAKE_ACP_OPENCODE_LOG ? JSON.parse(process.env.FAKE_ACP_OPENCODE_LOG) : [];
+        if (openCodeLines.length && process.env.XDG_DATA_HOME && liveSession) {
+          const dir = `${process.env.XDG_DATA_HOME}/opencode/log`;
+          mkdirSync(dir, { recursive: true });
+          const session = liveSession;
+          setTimeout(() => {
+            appendFileSync(`${dir}/opencode.log`, openCodeLines.map((line) => `${line.replaceAll("{session}", session)}\n`).join(""));
+          }, Number(process.env.FAKE_ACP_LOG_EVERY_MS ?? 100));
+        }
         setTimeout(() => {
           if (logTimer) clearInterval(logTimer);
           out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: "done" } } } });
@@ -898,7 +966,8 @@ function handle(msg: any) {
           out({ jsonrpc: "2.0", method: "session/update", params: { update: { toolCallId: "tc-slow", ...update } } });
         // ACP's default status is pending: this tool_call carries none.
         tool({ sessionUpdate: "tool_call", title: "sleep", kind: "execute", rawInput: { command: "sleep 45 && echo done" } });
-        tool({ sessionUpdate: "tool_call_update", status: "in_progress" });
+        const printed = process.env.FAKE_ACP_TOOL_OUTPUT;
+        tool({ sessionUpdate: "tool_call_update", status: "in_progress", ...(printed ? { content: [{ type: "content", content: { type: "text", text: printed } }] } : {}) });
         const finish = () => tool({ sessionUpdate: "tool_call_update", status: "completed", rawOutput: { output: "done" } });
         if (mode === "stall-after-tool") {
           finish();
@@ -951,7 +1020,7 @@ function handle(msg: any) {
       }
       const promptText = String(msg.params?.prompt?.[0]?.text ?? "");
       // A hand-off result wake is synthesized: the mode's usual flow would loop on an unprompted turn.
-      const runtimeReport = /\[OpenMausBot report from @[^\]\n]*: ([a-z_]+)/.exec(promptText);
+      const runtimeReport = /\[From @[^\]\n·]* \(bot\) · report on assignment [^\]\n·]*?: ([a-z_]+)/.exec(promptText);
       const wokeFromDelegation = promptText.includes("[A delegated task just completed]")
         || promptText.includes("[A delegated task failed]")
         || runtimeReport !== null;
@@ -1153,7 +1222,7 @@ function handle(msg: any) {
       if (mode === "delegate-peer" && agentsMcp) {
         void driveMcp(agentsMcp, [
           { name: "list_bots", args: () => ({}) },
-          handoffCall("delegated task", { reason: "followup" }),
+          handoffCall("delegated task", { reason: "followup", doneWhen: "the export opens in Numbers" }),
         ])
           .then((reply) => {
             out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: `delegated: ${reply}` } } } });
@@ -1310,8 +1379,8 @@ function handle(msg: any) {
       break;
     }
     case "session/cancel":
-      if (hangingPromptId !== null) {
-        result(hangingPromptId, { stopReason: "cancelled", _meta: {} });
+      if (hangingPromptId !== null && process.env.FAKE_ACP_IGNORE_CANCEL !== "1") {
+        result(hangingPromptId, { stopReason: process.env.FAKE_ACP_CANCEL_STOP_REASON ?? "cancelled", _meta: {} });
         if (hangKeepAlive) clearInterval(hangKeepAlive);
         hangingPromptId = null;
         hangKeepAlive = null;

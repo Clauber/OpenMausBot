@@ -6,7 +6,7 @@ import type { LocaleKey } from "@/locales";
 
 export const NEAR_LIMIT_PERCENT = 80;
 export const CARD_METERS = 2;
-const TEAM_TIERS: readonly string[] = ["team", "business"];
+export const TEAM_TIERS: readonly string[] = ["team", "business"];
 
 export type MeterBand = "ok" | "near" | "full";
 
@@ -14,6 +14,10 @@ export function meterPercent(meter: Pick<CloudUsageMeter, "used" | "max" | "used
   if (meter.usedUp || meter.used >= meter.max) return 100;
   if (!(meter.max > 0) || !(meter.used > 0)) return 0;
   return Math.min(99, Math.floor((meter.used / meter.max) * 100));
+}
+
+export function includedUsePercent(usage: Pick<CloudUsage, "meters">): number {
+  return usage.meters.reduce((most, meter) => Math.max(most, meterPercent(meter)), 0);
 }
 
 export function meterBand(percent: number): MeterBand {

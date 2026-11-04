@@ -1,4 +1,5 @@
-import { CARD_HEIGHT, CARD_WIDTH, GAP, HEADER_HEIGHT, TEAM_PADDING, type Point } from "./team-canvas";
+import { CARD_HEIGHT, CARD_WIDTH, GAP, HEADER_HEIGHT, TEAM_PADDING } from "./team-canvas";
+import type { Point } from "./pan-zoom";
 
 export const MONITOR_WIDTH = 272;
 export const MONITOR_HEIGHT = 208;

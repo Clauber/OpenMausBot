@@ -6,7 +6,8 @@ import { highLevelConnected, preloadHighLevelStatus } from "@/lib/highlevel-stat
 import { t } from "@/lib/i18n";
 import { api, type Bot } from "@/state/store";
 import type { ConnectorScope } from "../../../shared/connector-scopes";
-import { preloadConnectedApps, type ConnectorInventory, type ToolkitCard } from "../PluginsPanel";
+import { preloadConnectedApps, type ConnectorInventory } from "@/lib/connected-apps";
+import type { ToolkitCard } from "../ServiceIcon";
 
 export interface BotApp {
   slug: string;
@@ -43,7 +44,7 @@ export function highLevelAppCard(): Pick<ToolkitCard, "logo" | "domain" | "label
 }
 
 export function botAppsFrom(
-  bot: Pick<Bot, "composio" | "connectorScopes">,
+  bot: Pick<Bot, "composio" | "connectorScopes" | "connectorTools">,
   inventory: ConnectorInventory | null,
   cards: ReadonlyMap<string, ToolkitCard>,
   highlevel: HighLevelStatus | null = null,

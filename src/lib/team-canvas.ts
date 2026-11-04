@@ -1,7 +1,6 @@
 import type { TeamMapSection } from "./team-map";
+import type { Point, View } from "./pan-zoom";
 
-export interface Point { x: number; y: number }
-export interface View extends Point { scale: number }
 export interface Tile extends Point { key: string; width: number; height: number }
 
 export const CARD_WIDTH = 236;
@@ -85,15 +84,6 @@ export function fitTeams(tiles: Tile[], width: number, height: number): View {
     x: (width - contentWidth * scale) / 2 - left * scale,
     y: (height - contentHeight * scale) / 2 - top * scale,
     scale,
-  };
-}
-
-export function zoomAt(view: View, nextScale: number, point: Point): View {
-  const ratio = nextScale / view.scale;
-  return {
-    x: point.x - (point.x - view.x) * ratio,
-    y: point.y - (point.y - view.y) * ratio,
-    scale: nextScale,
   };
 }
 

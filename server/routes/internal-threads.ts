@@ -3,6 +3,7 @@ import type { Coordinator } from "../coordinator.ts";
 import { reachablePeers } from "../peer-roster.ts";
 import type { BotRecord, Store, TaskRecord } from "../store.ts";
 import { PASS, type RouteHandler } from "./table.ts";
+import { conversationLanguage, serverLine } from "../server-lines.ts";
 
 type ThreadState = "running" | "waiting-on-you" | "queued" | "idle" | "closed";
 
@@ -55,7 +56,7 @@ export function createInternalThreadRoutes(deps: {
           const opener = task.openedBy;
           if (!opener || !deps.shown(task.threadId)) continue;
           const mine = opener.botId === from.id;
-          if (!mine && !chiefTidies(from, task, store.bot(opener.botId))) continue;
+          if (!mine && !chiefTidies(from, task, store.bot(opener.botId), peer)) continue;
           rows.push({
             threadId: task.threadId, botId: peer.id, botName: peer.name, title: task.title,
             state: stateOf(peer, task), unread: task.unread === true, openedAt: opener.at,
@@ -77,7 +78,7 @@ export function createInternalThreadRoutes(deps: {
     const owner = [from, ...reachablePeers(store.bots, from)].find((bot) => store.taskByThread(bot.id, threadId));
     const task = owner ? store.taskByThread(owner.id, threadId) : undefined;
     if (!owner || !task || !deps.shown(threadId)) return json(res, 404, { error: "no such thread — call list_threads for the ones you can see" });
-    if (owner.id !== from.id && task.openedBy?.botId !== from.id && !chiefTidies(from, task, task.openedBy ? store.bot(task.openedBy.botId) : undefined)) {
+    if (owner.id !== from.id && task.openedBy?.botId !== from.id && !chiefTidies(from, task, task.openedBy ? store.bot(task.openedBy.botId) : undefined, owner)) {
       return json(res, 403, { error: "that thread is not yours to close — only the bot that opened it, its own bot, or (for a thread a bot opened) a Chief of Staff can" });
     }
     if (threadId === fromThreadId) return json(res, 400, { error: "you cannot close the thread you are speaking in — finish your turn instead" });
@@ -94,7 +95,7 @@ export function createInternalThreadRoutes(deps: {
       role: "bot",
       kind: "activity",
       from: { botId: from.id, name: from.name, color: from.color },
-      tool: { name: `Closed by @${from.name}`, ok: true },
+      tool: { name: serverLine(conversationLanguage(threadId), "server.teammates.closedBy", { bot: from.name }), ok: true },
     });
     if (task.unread) store.patchTask(owner.id, threadId, { unread: false });
     store.setTaskClosedBy(owner.id, threadId, { botId: from.id, name: from.name, at: Date.now() });

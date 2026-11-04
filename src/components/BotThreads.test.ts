@@ -2,7 +2,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { initialState, StoreProvider, type Bot, type Group } from "@/state/store";
-import { BotThreadList, botRowProps, GroupThreadList } from "./Sidebar";
+import { BotThreadList, botRowProps } from "./Sidebar";
+import { GroupThreadList } from "./SidebarGroupThreadList";
 import { formatUpdatedAt } from "./SidebarThreadRow";
 import { GroupTaskPicker, TaskPicker } from "./TaskPicker";
 
@@ -25,7 +26,7 @@ const bot: Bot = {
 };
 
 const threadList = (candidate: Bot, query = "") => createElement(BotThreadList, {
-  ...botRowProps(initialState, vi.fn(), candidate, { density: "comfortable", quiet: false, query, onMenu: vi.fn() }),
+  ...botRowProps(initialState, vi.fn(), candidate, { density: "comfortable", query, onMenu: vi.fn() }),
   selected: true,
 });
 
@@ -139,5 +140,9 @@ describe("sidebar bot threads", () => {
     expect(picker).not.toContain("Tasks");
     const working = renderToStaticMarkup(createElement(StoreProvider, null, createElement(GroupThreadList, { group: { ...group, working: true }, selected: true })));
     expect(working).toContain(`title="Launch plan · ${formatUpdatedAt(3)} · Working"`);
+    const archived = { ...group, tasks: [group.tasks![0]!, { ...group.tasks![1]!, archivedAt: 5 }] };
+    const withArchived = renderToStaticMarkup(createElement(StoreProvider, null, createElement(GroupThreadList, { group: archived, selected: true })));
+    expect(withArchived).not.toContain("Previous review");
+    expect(withArchived).toContain("Show all");
   });
 });

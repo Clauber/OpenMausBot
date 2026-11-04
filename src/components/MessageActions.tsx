@@ -1,9 +1,10 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { createContext, use, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Check, Copy, Ellipsis, Reply, X } from "lucide-react";
 import { popoverClosesOnKey, usePopoverDismiss } from "@/hooks/use-popover-dismiss";
 import { cn } from "@/lib/cn";
 import { useCopyFeedback } from "@/lib/copy-text";
 import { t } from "@/lib/i18n";
+import { MENU_ITEM, MENU_SHEET } from "./menu-recipe";
 
 export const ACTION_ICON = { size: 17, strokeWidth: 1.5 } as const;
 
@@ -17,7 +18,13 @@ export type MessageMenuItem = {
   onSelect: () => void;
   title?: string;
   disabled?: boolean;
+  /** Offered only while the chat's turn is not running. */
+  idleOnly?: boolean;
 };
+
+/** Whether the chat's turn is running, apart from the row values every message reads: a turn starting or ending
+ * re-renders only the few rows that show it, not every message. */
+export const ChatBusyContext = createContext(false);
 
 export const MESSAGE_ROW = "data-message-row";
 
@@ -36,24 +43,30 @@ export function MessageActions({
   side,
   forceOpen = false,
   className,
-  menu = [],
+  menu: items = [],
   children,
+  context,
 }: {
   side: "user" | "bot";
   forceOpen?: boolean;
   className?: string;
   menu?: MessageMenuItem[];
   children?: ReactNode;
+  /** Distinguishes one message's controls from another's, so a screen reader does not hear three identical names. */
+  context?: string;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const rowRef = useRef<HTMLElement | null>(null);
   const moreRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuId = useId();
+  const [menuOpen, setMenuOpen] = useState(false);
+  // use() may run conditionally: a closed menu has no reason to follow the turn.
+  const busy = menuOpen && items.some((item) => item.idleOnly) ? use(ChatBusyContext) : false;
+  const menu = busy ? items.filter((item) => !item.idleOnly) : items;
   const [hovered, setHovered] = useState(false);
   const [keyboardFocus, setKeyboardFocus] = useState(false);
   const [tapped, setTapped] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
   const [menuAbove, setMenuAbove] = useState(false);
   const [menuFlipped, setMenuFlipped] = useState(false);
   const mirrored = side === "user";
@@ -176,8 +189,8 @@ export function MessageActions({
           ref={moreRef}
           type="button"
           onClick={() => setMenuOpen((value) => !value)}
-          aria-label={t("chat.messageActions")}
-          title={t("chat.messageActions")}
+          aria-label={context ? t("chat.messageActionsOf", { name: context }) : t("chat.messageActions")}
+          title={context ? t("chat.messageActionsOf", { name: context }) : t("chat.messageActions")}
           aria-haspopup="menu"
           aria-expanded={menuOpen}
           aria-controls={menuOpen ? menuId : undefined}
@@ -194,7 +207,7 @@ export function MessageActions({
           aria-label={t("chat.messageActions")}
           onKeyDown={moveFocus}
           className={cn(
-            "absolute z-40 min-w-52 max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-hairline/50 bg-menu py-1.5 shadow-2xl shadow-black/50",
+            "absolute z-40 min-w-52 max-w-[calc(100vw-2rem)] overflow-hidden", MENU_SHEET,
             menuAbove ? "bottom-full mb-1" : "top-full mt-1",
             mirrored !== menuFlipped ? "end-0" : "start-0",
           )}
@@ -211,9 +224,9 @@ export function MessageActions({
                 setMenuOpen(false);
                 moreRef.current?.focus();
               }}
-              className="flex w-full items-center gap-3 px-3.5 py-2 text-start text-[14px] text-ink hover:bg-raised/70 focus-visible:bg-raised/70 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+              className={cn(MENU_ITEM, "text-start text-ink hover:bg-menu-hover focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60")}
             >
-              <span className="flex size-5 shrink-0 items-center justify-center text-ink-secondary" aria-hidden="true">{item.icon}</span>
+              <span className="flex size-4 shrink-0 items-center justify-center text-ink-secondary [&>svg]:size-4" aria-hidden="true">{item.icon}</span>
               <span className="min-w-0 flex-1 truncate">{item.label}</span>
             </button>
           ))}
@@ -223,22 +236,23 @@ export function MessageActions({
   );
 }
 
-export function ReplyAction({ onReply }: { onReply: () => void }) {
+export function ReplyAction({ onReply, context }: { onReply: () => void; context?: string }) {
   return (
-    <button type="button" onClick={onReply} aria-label={t("chat.replyToMessage")} title={t("chat.reply")} className={messageActionClass}>
+    <button type="button" onClick={onReply} aria-label={context ? t("chat.replyToMessageOf", { name: context }) : t("chat.replyToMessage")} title={t("chat.reply")} className={messageActionClass}>
       <Reply {...ACTION_ICON} aria-hidden="true" />
     </button>
   );
 }
 
-export function CopyButton({ text, className }: { text: string; className?: string }) {
+export function CopyButton({ text, className, context }: { text: string; className?: string; context?: string }) {
   const { state, copy } = useCopyFeedback(text);
   const label = t(state === "copied" ? "chat.copyMessageDone" : state === "failed" ? "chat.copyMessageFailed" : "chat.copyMessage");
+  const named = context ? `${label}, ${context}` : label;
   return (
     <button
       onClick={copy}
-      aria-label={label}
-      title={label}
+      aria-label={named}
+      title={named}
       className={cn(
         "rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 touch:opacity-100",
         state !== "idle" && "opacity-100",

@@ -20,6 +20,8 @@ import {
   ImageOff,
   LoaderCircle,
   Maximize2,
+  Minus,
+  Plus,
   RotateCcw,
   X,
 } from "lucide-react";
@@ -32,7 +34,9 @@ import {
 } from "@/lib/composer-attachments";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
+import { actualSizeScale, clampPan, clampScale, FIT_VIEW, pinchScale, zoomAt, type Point, type View } from "@/lib/pan-zoom";
 import { FilePreviewButton } from "./FilePreviewButton";
+import { ImageLoading } from "./ImageLoading";
 
 export interface PreviewImage {
   src: string;
@@ -60,12 +64,24 @@ export function wrappedImageIndex(index: number, step: -1 | 1, count: number): n
   return (index + step + count) % count;
 }
 
-export type PreviewKeyAction = "close" | "previous" | "next" | null;
+const OPAQUE_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export function previewKeyAction(key: string, count: number): PreviewKeyAction {
+/** An attachment stored under a generated id has no name worth showing as a title. */
+export function opaqueAttachmentName(name: string): boolean {
+  const trimmed = name.trim();
+  const stem = trimmed.replace(/\.[a-z0-9]+$/i, "");
+  return OPAQUE_NAME.test(stem) || /^[0-9a-f]{32,}$/i.test(stem);
+}
+
+export type PreviewKeyAction = "close" | "previous" | "next" | "zoomIn" | "zoomOut" | "fit" | null;
+
+export function previewKeyAction(key: string, count: number, zoomed: boolean): PreviewKeyAction {
   if (key === "Escape") return "close";
-  if (count > 1 && key === "ArrowLeft") return "previous";
-  if (count > 1 && key === "ArrowRight") return "next";
+  if (key === "+" || key === "=") return "zoomIn";
+  if (key === "-" || key === "_") return "zoomOut";
+  if (key === "0") return "fit";
+  if (count > 1 && !zoomed && key === "ArrowLeft") return "previous";
+  if (count > 1 && !zoomed && key === "ArrowRight") return "next";
   return null;
 }
 
@@ -467,14 +483,79 @@ export function AttachmentPreviewDialog({
   const [index, setIndex] = useState(() => Math.min(Math.max(initialIndex, 0), items.length - 1));
   const current = items[index] ?? image;
   const dialogRef = useRef<HTMLDivElement>(null);
+  const layerRef = useRef<HTMLDivElement>(null);
+  const imageRef = useRef<HTMLImageElement>(null);
+  const naturalWidth = useRef(0);
   const closeRef = useRef(onClose);
   const [loadedSources, setLoadedSources] = useState<Set<string>>(() => new Set());
   const [failedSource, setFailedSource] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const [view, setView] = useState(FIT_VIEW);
+  const [animate, setAnimate] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const gesture = useRef<{ pointerId: number; start: Point; view: View; background: boolean; moved: boolean } | null>(null);
+  const pointers = useRef(new Map<number, Point>());
+  const pinch = useRef<{ view: View; distance: number } | null>(null);
+  const [fitRatio, setFitRatio] = useState(0);
+  const loaded = loadedSources.has(current.src);
+  const failed = failedSource === current.src;
+  const zoomed = view.scale > 1;
 
   useLayoutEffect(() => {
     closeRef.current = onClose;
   }, [onClose]);
+
+  useLayoutEffect(() => {
+    setView(FIT_VIEW);
+    setAnimate(false);
+    setDragging(false);
+    setFitRatio(0);
+    gesture.current = null;
+    pinch.current = null;
+    pointers.current.clear();
+  }, [current.src, index, attempt, failed]);
+
+  const measure = useCallback(() => {
+    const layer = layerRef.current;
+    const img = imageRef.current;
+    if (!layer || !img || !img.naturalWidth) return null;
+    // offsetWidth/offsetHeight ignore the CSS transform, so they are the object-contain size that scale 1 means.
+    return {
+      content: { width: img.offsetWidth, height: img.offsetHeight },
+      viewport: layer.getBoundingClientRect(),
+    };
+  }, []);
+
+  const pinchGrip = useCallback(() => {
+    const [a, b] = [...pointers.current.values()];
+    const layer = layerRef.current;
+    if (!a || !b || !layer) return null;
+    const box = layer.getBoundingClientRect();
+    return {
+      distance: Math.hypot(a.x - b.x, a.y - b.y),
+      center: { x: (a.x + b.x) / 2 - box.left - box.width / 2, y: (a.y + b.y) / 2 - box.top - box.height / 2 },
+    };
+  }, []);
+
+  const syncFitRatio = useCallback(() => {
+    const img = imageRef.current;
+    setFitRatio(img && img.naturalWidth > 0 ? img.offsetWidth / img.naturalWidth : 0);
+  }, []);
+
+  const fit = useCallback(() => {
+    setAnimate(true);
+    setView(FIT_VIEW);
+  }, []);
+
+  const zoom = useCallback((factor: number) => {
+    const sizes = measure();
+    if (!sizes) return;
+    setAnimate(true);
+    setView((previous) => clampPan(
+      zoomAt(previous, clampScale(previous.scale * factor), { x: 0, y: 0 }),
+      sizes.content, sizes.viewport,
+    ));
+  }, [measure]);
 
   const navigate = useCallback((step: -1 | 1) => {
     setIndex((value) => wrappedImageIndex(value, step, items.length));
@@ -484,13 +565,36 @@ export function AttachmentPreviewDialog({
   useEffect(() => {
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     dialogRef.current?.focus();
+    return () => previousFocus?.focus();
+  }, []);
+
+  useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      const action = previewKeyAction(event.key, items.length);
+      const action = previewKeyAction(event.key, items.length, zoomed);
       if (action) {
         event.preventDefault();
         event.stopPropagation();
         if (action === "close") closeRef.current();
-        else navigate(action === "previous" ? -1 : 1);
+        else if (action === "previous" || action === "next") navigate(action === "previous" ? -1 : 1);
+        else if (action === "fit") fit();
+        else if (loaded && !failed) zoom(action === "zoomIn" ? 1.4 : 1 / 1.4);
+        return;
+      }
+      const directions: Record<string, Point> = {
+        ArrowLeft: { x: 60, y: 0 }, ArrowRight: { x: -60, y: 0 },
+        ArrowUp: { x: 0, y: 60 }, ArrowDown: { x: 0, y: -60 },
+      };
+      const direction = directions[event.key];
+      if (zoomed && direction) {
+        event.preventDefault();
+        event.stopPropagation();
+        const sizes = measure();
+        if (sizes) {
+          setAnimate(true);
+          setView((previous) => clampPan({
+            ...previous, x: previous.x + direction.x, y: previous.y + direction.y,
+          }, sizes.content, sizes.viewport));
+        }
         return;
       }
       if (event.key !== "Tab") return;
@@ -515,14 +619,45 @@ export function AttachmentPreviewDialog({
       }
     };
     window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      previousFocus?.focus();
-    };
-  }, [items.length, navigate]);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [items.length, navigate, zoomed, fit, zoom, measure, loaded, failed]);
 
-  const loaded = loadedSources.has(current.src);
-  const failed = failedSource === current.src;
+  useEffect(() => {
+    const layer = layerRef.current;
+    if (!layer) return;
+    const wheel = (event: WheelEvent) => {
+      event.preventDefault();
+      if (!loaded || failed || gesture.current) return;
+      const sizes = measure();
+      if (!sizes) return;
+      const point = {
+        x: event.clientX - sizes.viewport.left - sizes.viewport.width / 2,
+        y: event.clientY - sizes.viewport.top - sizes.viewport.height / 2,
+      };
+      setAnimate(false);
+      setView((previous) => clampPan(
+        zoomAt(previous, clampScale(previous.scale * Math.exp(-event.deltaY * 0.0025)), point),
+        sizes.content, sizes.viewport,
+      ));
+    };
+    layer.addEventListener("wheel", wheel, { passive: false });
+    return () => layer.removeEventListener("wheel", wheel);
+  }, [loaded, failed, measure]);
+
+  useEffect(() => {
+    const layer = layerRef.current;
+    const img = imageRef.current;
+    if (!layer || !img) return;
+    const observer = new ResizeObserver(() => {
+      syncFitRatio();
+      const sizes = measure();
+      if (sizes) setView((previous) => clampPan(previous, sizes.content, sizes.viewport));
+    });
+    observer.observe(layer);
+    observer.observe(img);
+    return () => observer.disconnect();
+  }, [current.src, attempt, failed, measure, syncFitRatio]);
+
   const retry = () => {
     setFailedSource(null);
     setLoadedSources((sources) => {
@@ -535,117 +670,218 @@ export function AttachmentPreviewDialog({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 p-3 backdrop-blur-sm sm:p-6"
-      onMouseDown={(event) => event.target === event.currentTarget && onClose()}
+      ref={dialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label={t("attach.previewAria", { name: current.name })}
+      tabIndex={-1}
+      className="fixed inset-0 z-[70] overflow-hidden bg-black outline-none"
     >
       <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label={t("attach.previewAria", { name: current.name })}
-        tabIndex={-1}
-        className="animate-pop-in flex h-full max-h-[900px] w-full max-w-[1200px] flex-col overflow-hidden rounded-2xl border border-white/15 bg-black/70 shadow-2xl outline-none"
+        ref={layerRef}
+        className={cn(
+          "absolute inset-0 flex touch-none select-none items-center justify-center overflow-hidden",
+          zoomed ? dragging ? "cursor-grabbing" : "cursor-grab" : "cursor-default",
+        )}
+        onPointerDown={(event) => {
+          if (event.target !== imageRef.current && event.target !== event.currentTarget) return;
+          pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+          if (pointers.current.size === 2 && loaded && !failed) {
+            const grip = pinchGrip();
+            if (grip) {
+              event.preventDefault();
+              gesture.current = null;
+              pinch.current = { view, distance: grip.distance };
+              setDragging(false);
+              setAnimate(false);
+            }
+            return;
+          }
+          if (pointers.current.size > 1 || event.button !== 0 || !event.isPrimary) return;
+          gesture.current = {
+            pointerId: event.pointerId, start: { x: event.clientX, y: event.clientY }, view,
+            background: event.target === event.currentTarget, moved: false,
+          };
+          if (zoomed) {
+            event.preventDefault();
+            event.currentTarget.setPointerCapture(event.pointerId);
+            setAnimate(false);
+            setDragging(true);
+          }
+        }}
+        onPointerMove={(event) => {
+          if (pointers.current.has(event.pointerId)) pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+          const pinching = pinch.current;
+          if (pinching) {
+            const grip = pinchGrip();
+            const sizes = measure();
+            if (grip && sizes) {
+              setView(clampPan(
+                zoomAt(pinching.view, pinchScale(pinching.view.scale, pinching.distance, grip.distance), grip.center),
+                sizes.content, sizes.viewport,
+              ));
+            }
+            return;
+          }
+          const active = gesture.current;
+          if (!active || active.pointerId !== event.pointerId) return;
+          const dx = event.clientX - active.start.x;
+          const dy = event.clientY - active.start.y;
+          if (Math.hypot(dx, dy) >= 5) active.moved = true;
+          if (active.view.scale <= 1) return;
+          const sizes = measure();
+          if (sizes) setView(clampPan({
+            ...active.view, x: active.view.x + dx, y: active.view.y + dy,
+          }, sizes.content, sizes.viewport));
+        }}
+        onPointerUp={(event) => {
+          pointers.current.delete(event.pointerId);
+          if (pointers.current.size < 2) pinch.current = null;
+          const active = gesture.current;
+          if (!active || active.pointerId !== event.pointerId) return;
+          const background = document.elementFromPoint(event.clientX, event.clientY) === event.currentTarget;
+          gesture.current = null;
+          setDragging(false);
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+          if (active.background && background && !active.moved &&
+            Math.hypot(event.clientX - active.start.x, event.clientY - active.start.y) < 5) onClose();
+        }}
+        onPointerCancel={(event) => {
+          pointers.current.delete(event.pointerId);
+          if (pointers.current.size < 2) pinch.current = null;
+          gesture.current = null;
+          setDragging(false);
+        }}
+        onLostPointerCapture={() => {
+          gesture.current = null;
+          setDragging(false);
+        }}
+        onDoubleClick={(event) => {
+          if (!loaded || failed || document.elementFromPoint(event.clientX, event.clientY) !== imageRef.current) return;
+          if (zoomed) { fit(); return; }
+          const sizes = measure();
+          if (!sizes) return;
+          setAnimate(true);
+          setView(clampPan(zoomAt(FIT_VIEW, actualSizeScale(naturalWidth.current, sizes.content.width), {
+            x: event.clientX - sizes.viewport.left - sizes.viewport.width / 2,
+            y: event.clientY - sizes.viewport.top - sizes.viewport.height / 2,
+          }), sizes.content, sizes.viewport));
+        }}
       >
-        <header className="flex shrink-0 items-center justify-between gap-4 border-b border-white/10 bg-black/45 px-4 py-3">
-          <div className="min-w-0">
-            <div className="truncate text-[13px] font-medium text-white">{current.name}</div>
-            <div className="text-[10.5px] text-white/50">
-              {items.length > 1
-                ? t("attach.position", { index: index + 1, count: items.length })
-                : t("attach.imagePreview")}
-            </div>
+        {!loaded && !failed && (
+          <div className="pointer-events-none absolute inset-0 flex animate-pulse items-center justify-center bg-white/[0.055]" role="status">
+            <span className="flex items-center gap-2 text-[13px] text-white/55">
+              <LoaderCircle size={17} className="animate-spin" /> {t("attach.loadingImage")}
+            </span>
           </div>
-          <div className="flex shrink-0 items-center gap-1">
-            {current.downloadUrl && (
-              <a
-                href={current.downloadUrl}
-                download={current.downloadName ?? canonicalDownloadFilename({
-                  fallback: current.name,
-                  source: current.downloadUrl,
-                })}
-                className="flex size-9 items-center justify-center rounded-lg text-white/65 hover:bg-white/10 hover:text-white"
-                aria-label={t("attach.downloadAria", { name: current.name })}
-                title={t("attach.download")}
-              >
-                <Download size={17} />
-              </a>
-            )}
-            {current.openUrl && (
-              <a
-                href={current.openUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="flex size-9 items-center justify-center rounded-lg text-white/65 hover:bg-white/10 hover:text-white"
-                aria-label={t("attach.openOriginalAria", { name: current.name })}
-                title={t("attach.openOriginal")}
-              >
-                <ExternalLink size={17} />
-              </a>
-            )}
+        )}
+        {failed ? (
+          <div className="flex flex-col items-center gap-3 text-white/60" role="alert">
+            <ImageOff size={34} />
+            <span className="text-[13px]">{t("attach.loadFailed")}</span>
             <button
-              onClick={onClose}
-              className="flex size-9 items-center justify-center rounded-lg text-white/65 hover:bg-white/10 hover:text-white"
-              aria-label={t("attach.close")}
+              type="button"
+              onClick={retry}
+              className="flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/10 px-3 py-1.5 text-[12px] text-white hover:bg-white/15"
             >
-              <X size={19} />
+              <RotateCcw size={13} /> {t("chat.retry")}
             </button>
           </div>
-        </header>
-        <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden p-4 sm:p-8">
-          {!loaded && !failed && (
-            <div className="absolute inset-4 flex animate-pulse items-center justify-center rounded-xl bg-white/[0.055] sm:inset-8" role="status">
-              <span className="flex items-center gap-2 text-[13px] text-white/55">
-                <LoaderCircle size={17} className="animate-spin" /> Loading image…
-              </span>
-            </div>
-          )}
-          {failed ? (
-            <div className="flex flex-col items-center gap-3 text-white/60" role="alert">
-              <ImageOff size={34} />
-              <span className="text-[13px]">This image could not be loaded.</span>
-              <button
-                type="button"
-                onClick={retry}
-                className="flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/10 px-3 py-1.5 text-[12px] text-white hover:bg-white/15"
-              >
-                <RotateCcw size={13} /> Retry
-              </button>
-            </div>
-          ) : (
-            <img
-              key={`${current.src}:${attempt}`}
-              src={current.src}
-              alt={current.name}
-              onLoad={() => setLoadedSources((sources) => new Set(sources).add(current.src))}
-              onError={() => setFailedSource(current.src)}
-              className={cn(
-                "block max-h-full max-w-full rounded-lg object-contain shadow-2xl transition-opacity duration-150",
-                loaded ? "opacity-100" : "opacity-0",
-              )}
-            />
-          )}
-          {items.length > 1 && (
-            <>
-              <button
-                type="button"
-                onClick={() => navigate(-1)}
-                aria-label={t("attach.previous")}
-                className="absolute left-2 top-1/2 flex size-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/55 text-white/80 backdrop-blur-sm hover:bg-black/75 hover:text-white sm:left-4"
-              >
-                <ChevronLeft size={21} />
-              </button>
-              <button
-                type="button"
-                onClick={() => navigate(1)}
-                aria-label={t("attach.next")}
-                className="absolute right-2 top-1/2 flex size-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/55 text-white/80 backdrop-blur-sm hover:bg-black/75 hover:text-white sm:right-4"
-              >
-                <ChevronRight size={21} />
-              </button>
-            </>
-          )}
-        </div>
+        ) : (
+          <img
+            ref={imageRef}
+            key={`${current.src}:${attempt}`}
+            src={current.src}
+            alt={current.name}
+            draggable={false}
+            onLoad={(event) => {
+              naturalWidth.current = event.currentTarget.naturalWidth;
+              syncFitRatio();
+              setLoadedSources((sources) => new Set(sources).add(current.src));
+            }}
+            onError={() => setFailedSource(current.src)}
+            style={{
+              transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`,
+              transition: animate ? "transform 150ms ease-out, opacity 150ms" : "opacity 150ms",
+            }}
+            className={cn("block max-h-full max-w-full object-contain", loaded ? "opacity-100" : "opacity-0")}
+          />
+        )}
       </div>
+      <header className="absolute inset-x-0 top-0 z-20 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 bg-gradient-to-b from-black/90 via-black/60 to-transparent px-3 pb-10 pt-3 sm:px-4">
+        <div className="min-w-0 flex-1 basis-40">
+          <div className="truncate text-[13px] font-medium text-white">
+            {opaqueAttachmentName(current.name) ? t("attach.untitledImage") : current.name}
+          </div>
+          <div className="text-[11px] text-white/70">
+            {items.length > 1
+              ? t("attach.position", { index: index + 1, count: items.length })
+              : t("attach.imagePreview")}
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          {loaded && !failed && (
+            <div className="flex shrink-0 items-center gap-0.5 rounded-xl border border-white/15 bg-black/40 p-1">
+              <button className="flex size-11 items-center justify-center rounded-md text-white/75 hover:bg-white/10 hover:text-white" aria-label={t("canvas.zoomOut")} onClick={() => zoom(1 / 1.2)}><Minus size={17} /></button>
+              <button className="min-w-14 rounded-md px-1 py-2 text-[11px] tabular-nums text-white/75 hover:bg-white/10 hover:text-white" aria-label={t("attach.fitImage")} title={t("attach.fitImageHint")} onClick={fit}>{Math.round(view.scale * (fitRatio || 1) * 100)}%</button>
+              <button className="flex size-11 items-center justify-center rounded-md text-white/75 hover:bg-white/10 hover:text-white" aria-label={t("canvas.zoomIn")} onClick={() => zoom(1.2)}><Plus size={17} /></button>
+            </div>
+          )}
+          {current.downloadUrl && (
+            <a
+              href={current.downloadUrl}
+              download={current.downloadName ?? canonicalDownloadFilename({
+                fallback: current.name,
+                source: current.downloadUrl,
+              })}
+              className="flex size-11 items-center justify-center rounded-lg text-white/65 hover:bg-white/10 hover:text-white"
+              aria-label={t("attach.downloadAria", { name: current.name })}
+              title={t("attach.download")}
+            >
+              <Download size={17} />
+            </a>
+          )}
+          {current.openUrl && (
+            <a
+              href={current.openUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="flex size-11 items-center justify-center rounded-lg text-white/65 hover:bg-white/10 hover:text-white"
+              aria-label={t("attach.openOriginalAria", { name: current.name })}
+              title={t("attach.openOriginal")}
+            >
+              <ExternalLink size={17} />
+            </a>
+          )}
+          <button
+            onClick={onClose}
+            className="flex size-11 items-center justify-center rounded-lg text-white/65 hover:bg-white/10 hover:text-white"
+            aria-label={t("attach.close")}
+          >
+            <X size={19} />
+          </button>
+        </div>
+      </header>
+      {items.length > 1 && (
+        <>
+          <button
+            type="button"
+            onClick={() => navigate(-1)}
+            aria-label={t("attach.previous")}
+            className="absolute left-2 top-1/2 z-10 flex size-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/55 text-white/80 hover:bg-black/75 hover:text-white sm:left-4"
+          >
+            <ChevronLeft size={21} />
+          </button>
+          <button
+            type="button"
+            onClick={() => navigate(1)}
+            aria-label={t("attach.next")}
+            className="absolute right-2 top-1/2 z-10 flex size-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/55 text-white/80 hover:bg-black/75 hover:text-white sm:right-4"
+          >
+            <ChevronRight size={21} />
+          </button>
+        </>
+      )}
     </div>,
     document.body,
   );
@@ -676,19 +912,14 @@ export function AttachmentThumbnail({
       style={ratio ? { aspectRatio: String(ratio) } : undefined}
       className={cn("group/image relative block aspect-[4/3] min-w-0 overflow-hidden rounded-xl border border-hairline/40 bg-inset", className)}
     >
-      {state === "loading" && (
-        <span className="absolute inset-0 flex animate-pulse items-center justify-center bg-raised/65" role="status">
-          <LoaderCircle size={17} className="animate-spin text-ink-tertiary" />
-          <span className="sr-only">Loading {image.name}</span>
-        </span>
-      )}
+      {state === "loading" && <ImageLoading name={image.name} className="absolute inset-0 bg-raised/65" />}
       {state === "failed" ? (
         <span className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-3 text-center text-ink-secondary" role="alert">
           <ImageOff size={22} />
           {outsideWorkspace ? (
-            <span className="max-w-full text-[11.5px]">{t("attach.imageOutsideWorkspace")}</span>
+            <span className="max-w-full text-[12px]">{t("attach.imageOutsideWorkspace")}</span>
           ) : (
-            <span className="max-w-full truncate text-[11.5px]">{t("attach.imageUnavailable")}</span>
+            <span className="max-w-full truncate text-[12px]">{t("attach.imageUnavailable")}</span>
           )}
           {!outsideWorkspace && <span
             role="button"
@@ -879,14 +1110,11 @@ export function MarkdownImagePreview({
         ) : visibleSource ? (
           <AttachmentThumbnail key={image.src} image={image} onPreview={() => setOpen(true)} className="max-h-96" eager explainRefusal={localMessageImage} />
         ) : (
-          <span className="flex aspect-[4/3] max-h-96 animate-pulse items-center justify-center rounded-xl border border-hairline/40 bg-inset" role="status">
-            <LoaderCircle size={17} className="animate-spin text-ink-tertiary" />
-            <span className="sr-only">Loading {name}</span>
-          </span>
+          <ImageLoading name={name} className="aspect-[4/3] max-h-96 rounded-xl border border-hairline/40 bg-inset" />
         )}
         {openUrl && (
           <a href={openUrl} target="_blank" rel="noreferrer" className="mt-1 inline-flex text-[11px] text-accent hover:underline">
-            Open original
+            {t("attach.openOriginal")}
           </a>
         )}
       </span>
@@ -911,7 +1139,7 @@ export function AttachedFileChip({ file, message, linked = false, compact = fals
       <div title={t("attach.legacyFile", { name: file.name })} className={cn("flex max-w-[280px] items-center gap-2 overflow-hidden rounded-lg border border-hairline/40 bg-inset/70 px-2.5 py-2 text-[12px] text-ink-secondary", className)}>
         <FileText size={14} className="shrink-0" aria-hidden="true" />
         <span className="min-w-0 flex-1 truncate text-ink">{file.name}</span>
-        <span className="text-[10.5px]">{t("attach.unavailable")}</span>
+        <span className="text-[11px]">{t("attach.unavailable")}</span>
       </div>
     );
   }
@@ -950,7 +1178,7 @@ export function AttachedFileChip({ file, message, linked = false, compact = fals
         <div
           role={failed ? "alert" : "status"}
           className={cn(
-            "border-t border-hairline/30 px-2.5 py-1.5 text-[10.5px]",
+            "border-t border-hairline/30 px-2.5 py-1.5 text-[11px]",
             failed ? "text-danger" : save.state === "saved" ? "text-success" : "text-ink-secondary",
           )}
         >
@@ -987,7 +1215,7 @@ function CompactFileChip({ file, message, linked, save, className }: {
       <span title={t("attach.legacyFile", { name: file.name })} className={cn(FILE_CHIP, "gap-1.5 px-2.5", className)}>
         <FileText size={14} strokeWidth={1.75} className="shrink-0" aria-hidden="true" />
         {name}
-        <span className="shrink-0 text-[11.5px]">{t("attach.unavailable")}</span>
+        <span className="shrink-0 text-[12px]">{t("attach.unavailable")}</span>
       </span>
     );
   }
@@ -1019,7 +1247,7 @@ function CompactFileChip({ file, message, linked, save, className }: {
         <FilePreviewButton path={file.path} name={file.name} message={message} />
       </span>
       {save.state !== "idle" && save.state !== "saved" && (
-        <span role={failed ? "alert" : "status"} className={cn("px-2.5 text-[11.5px]", failed ? "text-danger" : "text-ink-secondary")}>
+        <span role={failed ? "alert" : "status"} className={cn("px-2.5 text-[12px]", failed ? "text-danger" : "text-ink-secondary")}>
           {save.state === "saving" ? t("attach.downloading") : saveFailureText(save)}
           {failed && save.outsideWorkspace && (
             <span className="ms-1.5 inline-flex flex-wrap items-center gap-x-1.5"><OutsideWorkspaceFile filePath={file.path} /></span>

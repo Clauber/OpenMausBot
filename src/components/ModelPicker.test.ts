@@ -26,7 +26,9 @@ vi.mock("@/state/store", async (importOriginal) => ({
 // These cases cover the full picker; Simple mode has its own file.
 vi.mock("@/lib/interface-mode", () => ({ useAdvancedMode: () => true, setAdvancedMode: () => {} }));
 
-const { ClaudeAccountSelect, EffortRow, ModelEngineRail, ModelPicker, ModelVariantRow, modelSelectionForPick } = await import("./ModelPicker");
+const { EffortRow, ModelPicker, ModelVariantRow } = await import("./ModelPicker");
+const { ClaudeAccountSelect, ModelEngineRail } = await import("./ModelPickerFull");
+const { modelSelectionForPick } = await import("@/lib/model-choices");
 
 afterAll(() => vi.unstubAllGlobals());
 
@@ -310,7 +312,9 @@ describe("ModelPicker trigger", () => {
     expect(markup).toContain("GPT-5.6");
     expect(effortChip(markup)).toBeUndefined();
     expect(markup).not.toContain("effort");
-    expect(markup).toContain("@max-4xl/chathead:size-[30px]");
+    // The chip keeps the model name at every width, so it is never a bare icon.
+    expect(markup).toContain("data-model-name-compact");
+    expect(markup).not.toContain("@max-4xl/chathead:size-[30px]");
     expect(markup).not.toContain("data-model-account-compact");
   });
 
@@ -324,7 +328,7 @@ describe("ModelPicker trigger", () => {
     }));
     expect(markup).toMatch(/<span data-model-account[^>]*>Work · <\/span>/);
     expect(markup).not.toMatch(/<span data-model-account[^>]*>Personal/);
-    expect(markup).toMatch(/<span data-model-account-compact="true" class="hidden max-w-20 truncate @max-4xl\/chathead:inline">Work<\/span><span class="[^"]*@max-4xl\/chathead:hidden"/);
+    expect(markup).toMatch(/<span data-model-account-compact="true" class="[^"]*">Work<\/span>/);
     expect(markup).not.toContain("@max-4xl/chathead:size-[30px]");
   });
 });

@@ -2,19 +2,20 @@
 // authorization.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fromMarkdown } from "mdast-util-from-markdown";
-import { ChevronDown, ChevronUp, Download, Film, LoaderCircle, Music, Play, X } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Download, Film, LoaderCircle, Music, Play, RotateCcw, X } from "lucide-react";
 import { attachmentBasename, FILE_MAX_BYTES, type TranscriptFileAttachment, type TranscriptImageAttachment } from "@/lib/composer-attachments";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import { windowsPathDestinations } from "../../shared/markdown-windows-paths";
 import { localFilePath } from "./ChatMarkdown";
+import { DocumentFileCard } from "./DocumentFileCard";
 import {
-  AttachedFileChip,
   AttachmentPreviewDialog,
   AttachmentThumbnail,
   previewImage,
   requestMessageFile,
   safeDownloadFilename,
+  useLocalFileSave,
   type MessageAttachmentContext,
   type PreviewImage,
 } from "./AttachmentPreview";
@@ -202,8 +203,8 @@ function VideoAttachment({ file, message }: { file: GalleryFile; message: Messag
   };
 
   return (
-    <div className="min-w-0 overflow-hidden rounded-xl border border-hairline/40 bg-inset/40">
-      <div className="relative flex aspect-[4/3] items-center justify-center bg-inset">
+    <div className="w-full max-w-[26rem] min-w-0 overflow-hidden rounded-xl border border-hairline/40 bg-inset/40">
+      <div className="relative flex aspect-video max-h-60 items-center justify-center bg-inset">
         {preview && !error ? (
           <video
             ref={videoRef}
@@ -213,7 +214,7 @@ function VideoAttachment({ file, message }: { file: GalleryFile; message: Messag
             playsInline
             preload="metadata"
             aria-label={t("attach.previewVideo", { name: file.name })}
-            className="max-h-full max-w-full"
+            className="size-full max-h-60 object-contain"
             onError={() => setError(t("attach.videoUnavailable"))}
           />
         ) : (
@@ -226,8 +227,9 @@ function VideoAttachment({ file, message }: { file: GalleryFile; message: Messag
             className="flex size-full flex-col items-center justify-center gap-2 p-3 text-center text-ink-secondary transition-colors hover:bg-raised/60 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60 disabled:cursor-wait disabled:hover:bg-transparent"
           >
             {loading ? <LoaderCircle size={24} className="animate-spin" /> : <Play size={24} />}
+            <span className="max-w-full truncate text-[13px] font-medium text-ink">{file.name}</span>
             <span className="text-[12px]">{loading ? t("attach.videoLoading") : error ? t("chat.retry") : t("attach.loadVideo")}</span>
-            {!error && !loading && <span className="text-[10.5px]">{t("attach.videoHint")}</span>}
+            {!error && !loading && <span className="text-[11px]">{t("attach.videoHint")}</span>}
           </button>
         )}
         {(preview || loading || error) && (
@@ -238,8 +240,35 @@ function VideoAttachment({ file, message }: { file: GalleryFile; message: Messag
         {!preview && !loading && <Film size={13} className="pointer-events-none absolute left-2 top-2 text-ink-secondary/50" />}
       </div>
       {error && <p role="alert" className="px-3 py-2 text-[11px] text-danger">{error}</p>}
-      <AttachedFileChip file={file} linked={file.linked} message={message} className="max-w-none rounded-none border-0 border-t border-hairline/30 bg-transparent" />
+      {/* The tile names the file, so the footer carries the type and the save action. */}
+      <div className="flex items-center justify-between gap-2 border-t border-hairline/30 px-2 py-1">
+        <span className="min-w-0 truncate text-[11px] text-ink-secondary">
+          {file.name.split(".").pop()?.toUpperCase() ?? t("attach.fileType")}
+        </span>
+        <VideoSaveAction file={file} message={message} />
+      </div>
     </div>
+  );
+}
+
+function VideoSaveAction({ file, message }: { file: GalleryFile; message: MessageAttachmentContext }) {
+  const save = useLocalFileSave(file.path, file.name, message);
+  const failed = save.state === "failed";
+  const label = t(failed && !save.outsideWorkspace ? "attach.retrySaveAria" : "attach.saveAria", { name: file.name });
+  return (
+    <button
+      type="button"
+      onClick={() => void save.save()}
+      disabled={save.state === "saving"}
+      aria-label={label}
+      title={t("attach.saveCopy")}
+      className="flex size-9 items-center justify-center rounded-lg text-ink-secondary transition-colors hover:bg-raised hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-wait"
+    >
+      {save.state === "saving" ? <LoaderCircle size={15} className="animate-spin" aria-hidden="true" />
+        : save.state === "saved" ? <Check size={15} className="text-success" aria-hidden="true" />
+          : failed && !save.outsideWorkspace ? <RotateCcw size={15} aria-hidden="true" />
+            : <Download size={15} aria-hidden="true" />}
+    </button>
   );
 }
 
@@ -400,10 +429,26 @@ export function AttachmentGallery({ images = [], files = [], message, eager = fa
           </div>
         )}
         {(rest.length > 0 || items.length > limit) && (
-          <div className="flex max-w-full flex-wrap items-start gap-1.5">
-            {rest.map((item) => item.kind === "audio" && message
+          <div className="flex w-full max-w-full flex-col items-start gap-1.5">
+            {rest.length > 1 ? (
+              // One container for a multi-file reply, the way WhatsApp sends a file dump.
+              <div className="flex w-full max-w-[26rem] flex-col overflow-hidden rounded-xl border border-hairline/40 bg-inset/50">
+                {rest.map((item) => item.kind === "audio" && message
+                  ? <AudioAttachment key={`${message.threadId}:${message.messageId}:${item.key}`} file={item.file} message={message} />
+                  : item.kind === "file" && (
+                    <DocumentFileCard
+                      key={item.key}
+                      path={item.file.path}
+                      name={item.file.name}
+                      available={Boolean(item.file.private || item.file.linked)}
+                      message={message}
+                      grouped
+                    />
+                  ))}
+              </div>
+            ) : rest.map((item) => item.kind === "audio" && message
               ? <AudioAttachment key={`${message.threadId}:${message.messageId}:${item.key}`} file={item.file} message={message} />
-              : item.kind === "file" && <AttachedFileChip key={item.key} file={item.file} linked={item.file.linked} message={message} compact />)}
+              : item.kind === "file" && <DocumentFileCard key={item.key} path={item.file.path} name={item.file.name} available={Boolean(item.file.private || item.file.linked)} message={message} />)}
             {items.length > limit && (
               <button type="button" onClick={() => setExpanded(!expanded)} aria-expanded={expanded} className="inline-flex h-7 items-center rounded-full px-2.5 text-[13px] leading-none text-ink-secondary transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus">
                 {expanded ? t("attach.showLess") : t("attach.moreCount", { count: items.length - limit })}
@@ -430,10 +475,25 @@ export function AttachmentGallery({ images = [], files = [], message, eager = fa
         </div>
       )}
       {documents.length > 0 && (
-        <div className="flex flex-col items-start gap-1.5">
-          {documents.map((item) => item.kind === "audio" && message
+        <div className="flex w-full min-w-0 flex-col items-start gap-1.5">
+          {documents.length > 1 ? (
+            <div className="flex w-full max-w-[26rem] flex-col overflow-hidden rounded-xl border border-hairline/40 bg-inset/50">
+              {documents.map((item) => item.kind === "audio" && message
+                ? <AudioAttachment key={`${message.threadId}:${message.messageId}:${item.key}`} file={item.file} message={message} />
+                : item.kind === "file" && (
+                  <DocumentFileCard
+                    key={item.key}
+                    path={item.file.path}
+                    name={item.file.name}
+                    available={Boolean(item.file.private || item.file.linked)}
+                    message={message}
+                    grouped
+                  />
+                ))}
+            </div>
+          ) : documents.map((item) => item.kind === "audio" && message
             ? <AudioAttachment key={`${message.threadId}:${message.messageId}:${item.key}`} file={item.file} message={message} />
-            : item.kind === "file" && <AttachedFileChip key={item.key} file={item.file} linked={item.file.linked} message={message} className="max-w-none rounded-xl border-hairline/25 bg-transparent" />)}
+            : item.kind === "file" && <DocumentFileCard key={item.key} path={item.file.path} name={item.file.name} available={Boolean(item.file.private || item.file.linked)} message={message} />)}
         </div>
       )}
       {items.length > limit && (
