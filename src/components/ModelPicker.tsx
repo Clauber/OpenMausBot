@@ -630,7 +630,7 @@ export function ModelPicker({
       <span className="flex min-w-0 items-center gap-1">
         {/* On a narrow header the chip shows the model name alone; the account and provider are dropped. */}
         {!contained && active && (
-          <span data-model-name-compact className="max-w-24 truncate max-md:inline">
+          <span data-model-name-compact className="hidden max-w-24 truncate max-md:inline">
             {modelLabel(active, selection.model)}
           </span>
         )}

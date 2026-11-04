@@ -822,9 +822,9 @@ export function AttachmentPreviewDialog({
         <div className="flex shrink-0 items-center gap-1">
           {loaded && !failed && (
             <div className="flex shrink-0 items-center gap-0.5 rounded-xl border border-white/15 bg-black/40 p-1">
-              <button className="flex size-8 items-center justify-center rounded-md text-white/75 hover:bg-white/10 hover:text-white" aria-label={t("canvas.zoomOut")} onClick={() => zoom(1 / 1.2)}><Minus size={15} /></button>
-              <button className="min-w-12 rounded-md px-1 py-2 text-[11px] tabular-nums text-white/75 hover:bg-white/10 hover:text-white" aria-label={t("attach.fitImage")} title={t("attach.fitImageHint")} onClick={fit}>{Math.round(view.scale * (fitRatio || 1) * 100)}%</button>
-              <button className="flex size-8 items-center justify-center rounded-md text-white/75 hover:bg-white/10 hover:text-white" aria-label={t("canvas.zoomIn")} onClick={() => zoom(1.2)}><Plus size={15} /></button>
+              <button className="flex size-11 items-center justify-center rounded-md text-white/75 hover:bg-white/10 hover:text-white" aria-label={t("canvas.zoomOut")} onClick={() => zoom(1 / 1.2)}><Minus size={17} /></button>
+              <button className="min-w-14 rounded-md px-1 py-2 text-[11px] tabular-nums text-white/75 hover:bg-white/10 hover:text-white" aria-label={t("attach.fitImage")} title={t("attach.fitImageHint")} onClick={fit}>{Math.round(view.scale * (fitRatio || 1) * 100)}%</button>
+              <button className="flex size-11 items-center justify-center rounded-md text-white/75 hover:bg-white/10 hover:text-white" aria-label={t("canvas.zoomIn")} onClick={() => zoom(1.2)}><Plus size={17} /></button>
             </div>
           )}
           {current.downloadUrl && (
@@ -834,7 +834,7 @@ export function AttachmentPreviewDialog({
                 fallback: current.name,
                 source: current.downloadUrl,
               })}
-              className="flex size-9 items-center justify-center rounded-lg text-white/65 hover:bg-white/10 hover:text-white"
+              className="flex size-11 items-center justify-center rounded-lg text-white/65 hover:bg-white/10 hover:text-white"
               aria-label={t("attach.downloadAria", { name: current.name })}
               title={t("attach.download")}
             >
@@ -846,7 +846,7 @@ export function AttachmentPreviewDialog({
               href={current.openUrl}
               target="_blank"
               rel="noreferrer"
-              className="flex size-9 items-center justify-center rounded-lg text-white/65 hover:bg-white/10 hover:text-white"
+              className="flex size-11 items-center justify-center rounded-lg text-white/65 hover:bg-white/10 hover:text-white"
               aria-label={t("attach.openOriginalAria", { name: current.name })}
               title={t("attach.openOriginal")}
             >
@@ -855,7 +855,7 @@ export function AttachmentPreviewDialog({
           )}
           <button
             onClick={onClose}
-            className="flex size-9 items-center justify-center rounded-lg text-white/65 hover:bg-white/10 hover:text-white"
+            className="flex size-11 items-center justify-center rounded-lg text-white/65 hover:bg-white/10 hover:text-white"
             aria-label={t("attach.close")}
           >
             <X size={19} />
