@@ -45,12 +45,15 @@ export function MessageActions({
   className,
   menu: items = [],
   children,
+  context,
 }: {
   side: "user" | "bot";
   forceOpen?: boolean;
   className?: string;
   menu?: MessageMenuItem[];
   children?: ReactNode;
+  /** Distinguishes one message's controls from another's, so a screen reader does not hear three identical names. */
+  context?: string;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const rowRef = useRef<HTMLElement | null>(null);
@@ -186,8 +189,8 @@ export function MessageActions({
           ref={moreRef}
           type="button"
           onClick={() => setMenuOpen((value) => !value)}
-          aria-label={t("chat.messageActions")}
-          title={t("chat.messageActions")}
+          aria-label={context ? t("chat.messageActionsOf", { name: context }) : t("chat.messageActions")}
+          title={context ? t("chat.messageActionsOf", { name: context }) : t("chat.messageActions")}
           aria-haspopup="menu"
           aria-expanded={menuOpen}
           aria-controls={menuOpen ? menuId : undefined}
@@ -233,22 +236,23 @@ export function MessageActions({
   );
 }
 
-export function ReplyAction({ onReply }: { onReply: () => void }) {
+export function ReplyAction({ onReply, context }: { onReply: () => void; context?: string }) {
   return (
-    <button type="button" onClick={onReply} aria-label={t("chat.replyToMessage")} title={t("chat.reply")} className={messageActionClass}>
+    <button type="button" onClick={onReply} aria-label={context ? t("chat.replyToMessageOf", { name: context }) : t("chat.replyToMessage")} title={t("chat.reply")} className={messageActionClass}>
       <Reply {...ACTION_ICON} aria-hidden="true" />
     </button>
   );
 }
 
-export function CopyButton({ text, className }: { text: string; className?: string }) {
+export function CopyButton({ text, className, context }: { text: string; className?: string; context?: string }) {
   const { state, copy } = useCopyFeedback(text);
   const label = t(state === "copied" ? "chat.copyMessageDone" : state === "failed" ? "chat.copyMessageFailed" : "chat.copyMessage");
+  const named = context ? `${label}, ${context}` : label;
   return (
     <button
       onClick={copy}
-      aria-label={label}
-      title={label}
+      aria-label={named}
+      title={named}
       className={cn(
         "rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 touch:opacity-100",
         state !== "idle" && "opacity-100",

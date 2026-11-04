@@ -326,7 +326,9 @@ function LocalFileLink({ filePath, name, children, message }: { filePath: string
   if (isVideoAttachment(filePath) || isAudioAttachment(filePath)) {
     return <span title={name ?? fileName(filePath)} className="break-words text-ink-secondary">{children}</span>;
   }
-  return <DocumentFileCard path={filePath} name={name ?? fileName(filePath)} message={message} />;
+  // The link's own words are the better title than the filename: "Demo recording" beats "demo.mp4".
+  const label = typeof children === "string" ? children : name ?? fileName(filePath);
+  return <DocumentFileCard path={filePath} name={label} message={message} />;
 }
 
 function Spoiler({ children }: { children?: ReactNode }) {

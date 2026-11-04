@@ -2,7 +2,7 @@
 // authorization.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fromMarkdown } from "mdast-util-from-markdown";
-import { ChevronDown, ChevronUp, Download, Film, LoaderCircle, Music, Play, X } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Download, Film, LoaderCircle, Music, Play, RotateCcw, X } from "lucide-react";
 import { attachmentBasename, FILE_MAX_BYTES, type TranscriptFileAttachment, type TranscriptImageAttachment } from "@/lib/composer-attachments";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
@@ -10,12 +10,12 @@ import { windowsPathDestinations } from "../../shared/markdown-windows-paths";
 import { localFilePath } from "./ChatMarkdown";
 import { DocumentFileCard } from "./DocumentFileCard";
 import {
-  AttachedFileChip,
   AttachmentPreviewDialog,
   AttachmentThumbnail,
   previewImage,
   requestMessageFile,
   safeDownloadFilename,
+  useLocalFileSave,
   type MessageAttachmentContext,
   type PreviewImage,
 } from "./AttachmentPreview";
@@ -240,8 +240,35 @@ function VideoAttachment({ file, message }: { file: GalleryFile; message: Messag
         {!preview && !loading && <Film size={13} className="pointer-events-none absolute left-2 top-2 text-ink-secondary/50" />}
       </div>
       {error && <p role="alert" className="px-3 py-2 text-[11px] text-danger">{error}</p>}
-      <AttachedFileChip file={file} linked={file.linked} message={message} className="max-w-none rounded-none border-0 border-t border-hairline/30 bg-transparent" />
+      {/* The tile names the file, so the footer carries the type and the save action. */}
+      <div className="flex items-center justify-between gap-2 border-t border-hairline/30 px-2 py-1">
+        <span className="min-w-0 truncate text-[11px] text-ink-secondary">
+          {file.name.split(".").pop()?.toUpperCase() ?? t("attach.fileType")}
+        </span>
+        <VideoSaveAction file={file} message={message} />
+      </div>
     </div>
+  );
+}
+
+function VideoSaveAction({ file, message }: { file: GalleryFile; message: MessageAttachmentContext }) {
+  const save = useLocalFileSave(file.path, file.name, message);
+  const failed = save.state === "failed";
+  const label = t(failed && !save.outsideWorkspace ? "attach.retrySaveAria" : "attach.saveAria", { name: file.name });
+  return (
+    <button
+      type="button"
+      onClick={() => void save.save()}
+      disabled={save.state === "saving"}
+      aria-label={label}
+      title={t("attach.saveCopy")}
+      className="flex size-9 items-center justify-center rounded-lg text-ink-secondary transition-colors hover:bg-raised hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-wait"
+    >
+      {save.state === "saving" ? <LoaderCircle size={15} className="animate-spin" aria-hidden="true" />
+        : save.state === "saved" ? <Check size={15} className="text-success" aria-hidden="true" />
+          : failed && !save.outsideWorkspace ? <RotateCcw size={15} aria-hidden="true" />
+            : <Download size={15} aria-hidden="true" />}
+    </button>
   );
 }
 

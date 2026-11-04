@@ -107,9 +107,9 @@ describe("conversational replies", () => {
     const row = document.querySelector("[data-mid='m2']")!;
     expect(row.querySelector('[aria-label="Reply to message"]')).toBeNull();
     expect(row.querySelector('[aria-label="Copy message"]')).toBeNull();
-    const more = row.querySelector<HTMLButtonElement>('button[aria-label="Message actions"]')!;
+    const more = row.querySelector<HTMLButtonElement>('button[aria-label^="Message actions"]')!;
     flushSync(() => more.click());
-    const items = [...document.querySelectorAll('[role="menu"][aria-label="Message actions"] [role="menuitem"]')].map((item) => item.textContent);
+    const items = [...document.querySelectorAll('[role="menu"][aria-label^="Message actions"] [role="menuitem"]')].map((item) => item.textContent);
     expect(items.slice(0, 2)).toEqual(["Reply", "Copy message"]);
   });
 
