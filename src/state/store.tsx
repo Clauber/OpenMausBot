@@ -774,6 +774,7 @@ export type Action =
   | { type: "messagePatched"; threadId: string; message: Message }
   | { type: "optimisticMessageRemoved"; threadId: string; sendId: string; restoreLeafId?: string | null }
   | { type: "sendFailed"; botId: string; threadId: string; sendId: string; error?: string }
+  | { type: "retrySend"; botId: string; threadId: string; sendId: string; text: string; replyToId?: string }
   | { type: "computerStart"; botId: string; start: ComputerStart | null }
   | ({ type: "computerControl"; botId: string } & ComputerControlState)
   | { type: "dataSheet"; sheet: DataSheet; tables?: DataTable[] }
@@ -1735,6 +1736,19 @@ export function reducer(state: AppState, action: Action): AppState {
       }
       return state;
     }
+    case "retrySend": {
+      // The same sendId, so the server reconciles the retry with the message that failed
+      // rather than storing a second copy of it.
+      const bot = state.bots.find((candidate) => candidate.id === action.botId);
+      if (!bot) return state;
+      return updateBot(state, bot.id, (current) => ({
+        ...current,
+        // A retry in flight is sending again, not sent: the optimistic id comes back until the server answers.
+        messages: current.messages.map((m) => m.sendId === action.sendId
+          ? { ...m, failed: false, error: undefined, id: `optimistic-${action.sendId}` }
+          : m),
+      }));
+    }
     case "editMessage": {
       const animated = withMascotMotion(state, action.botId, "working");
       if (!action.sendId) return animated;
@@ -2491,6 +2505,32 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               action.onError?.();
             });
           break;
+        case "retrySend": {
+          // The same request with the same sendId, so the server reconciles it with the message
+          // that failed rather than storing a second copy.
+          const threadId = action.threadId ?? stateRef.current.bots.find((bot) => bot.id === action.botId)?.threadId;
+          const arrived = () => sendArrived(stateRef.current.bots.find((bot) => bot.id === action.botId && bot.threadId === threadId)?.messages, action.sendId);
+          rawDispatch({ type: "retrySend", botId: action.botId, threadId: threadId ?? "", sendId: action.sendId, text: action.text, replyToId: action.replyToId });
+          void waitForExecutionSettings(botBeforeSend ? [botBeforeSend] : [], threadId)
+            .then(() => sendReconciled(() => api(`/api/bots/${action.botId}/messages`, {
+                method: "POST",
+                body: JSON.stringify({ text: action.text, replyToId: action.replyToId, threadId, sendId: action.sendId }),
+              }), arrived))
+            .then((sent) => {
+              if (!("body" in sent)) return;
+              const body = sent.body;
+              if (body?.message && typeof body.threadId === "string") {
+                rawDispatch({ type: "messageAdded", threadId: body.threadId, message: body.message });
+              }
+            })
+            .catch((error) => {
+              if (threadId) {
+                rawDispatch({ type: "sendFailed", botId: action.botId, threadId, sendId: action.sendId, error: error instanceof Error ? error.message : String(error) });
+              }
+              showError(error);
+            });
+          break;
+        }
         case "send": {
           if (quizBeforeSend) persistCard(action.botId, quizBeforeSend.id, { dismissed: true });
           const threadId =

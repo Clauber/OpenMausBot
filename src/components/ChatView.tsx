@@ -1026,9 +1026,10 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   }, [lastUserMessage, bot.busy, bot.id, bot.threadId, dispatch]);
 
   // A failed send keeps its bubble and its text, so retrying re-sends exactly what was written.
+  // The same sendId, so the server reconciles the retry with the message that failed.
   const retryMessage = useCallback((message: Message) => {
-    if (!message.text || bot.busy) return;
-    dispatch({ type: "editMessage", botId: bot.id, threadId: bot.threadId, messageId: message.id, text: message.text });
+    if (!message.text || !message.sendId || bot.busy) return;
+    dispatch({ type: "retrySend", botId: bot.id, threadId: bot.threadId, sendId: message.sendId, text: message.text });
   }, [bot.busy, bot.id, bot.threadId, dispatch]);
 
   const currentLink = profile.tasks?.find((task) => task.threadId === bot.threadId)?.link;

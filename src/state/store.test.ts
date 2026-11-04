@@ -1303,6 +1303,60 @@ describe("optimistic sent messages", () => {
     expect(removed.bots[0]?.activeLeafId).toBe(root.id);
   });
 
+  describe("a failed send", () => {
+    it("keeps the bubble, marks it failed, and clears the failure when it is retried", () => {
+      const sent = reducer(
+        { ...initialState, bots: [bot] },
+        { type: "send", botId: bot.id, sendId: "send-failed", text: "later" },
+      );
+      const failed = reducer(sent, {
+        type: "sendFailed",
+        botId: bot.id,
+        threadId: bot.threadId,
+        sendId: "send-failed",
+        error: "network down",
+      });
+      const bubble = failed.bots[0]?.messages.find((message) => message.sendId === "send-failed");
+      expect(bubble?.failed).toBe(true);
+      expect(bubble?.error).toBe("network down");
+
+      const retried = reducer(failed, {
+        type: "retrySend",
+        botId: bot.id,
+        threadId: bot.threadId,
+        sendId: "send-failed",
+        text: "later",
+      });
+      const again = retried.bots[0]?.messages.find((message) => message.sendId === "send-failed");
+      expect(again?.failed).toBe(false);
+      // A retry in flight is sending again, so the optimistic id comes back until the server answers.
+      expect(again?.id).toBe("optimistic-send-failed");
+    });
+
+    it("fails the retry without losing the message", () => {
+      const sent = reducer(
+        { ...initialState, bots: [bot] },
+        { type: "send", botId: bot.id, sendId: "send-failed", text: "later" },
+      );
+      const failed = reducer(sent, {
+        type: "sendFailed",
+        botId: bot.id,
+        threadId: bot.threadId,
+        sendId: "send-failed",
+      });
+      const again = reducer(failed, {
+        type: "sendFailed",
+        botId: bot.id,
+        threadId: bot.threadId,
+        sendId: "send-failed",
+        error: "still down",
+      });
+      const bubble = again.bots[0]?.messages.find((message) => message.sendId === "send-failed");
+      expect(bubble?.failed).toBe(true);
+      expect(bubble?.error).toBe("still down");
+    });
+  });
+
   describe("edits", () => {
     const question: Message = { id: "q1", role: "user", kind: "text", text: "first try", at: 2, parentId: root.id };
     const answer: Message = { id: "a1", role: "bot", kind: "text", text: "old answer", at: 3, parentId: question.id };
