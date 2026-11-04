@@ -27,11 +27,21 @@ describe("attachment image navigation", () => {
   });
 
   it("maps preview keys only when the action is available", () => {
-    expect(previewKeyAction("Escape", 1)).toBe("close");
-    expect(previewKeyAction("ArrowLeft", 3)).toBe("previous");
-    expect(previewKeyAction("ArrowRight", 3)).toBe("next");
-    expect(previewKeyAction("ArrowRight", 1)).toBeNull();
-    expect(previewKeyAction("Enter", 3)).toBeNull();
+    expect(previewKeyAction("Escape", 1, false)).toBe("close");
+    expect(previewKeyAction("ArrowLeft", 3, false)).toBe("previous");
+    expect(previewKeyAction("ArrowRight", 3, false)).toBe("next");
+    expect(previewKeyAction("ArrowRight", 1, false)).toBeNull();
+    expect(previewKeyAction("ArrowLeft", 3, true)).toBeNull();
+    expect(previewKeyAction("ArrowRight", 3, true)).toBeNull();
+    for (const zoomed of [false, true]) {
+      expect(previewKeyAction("Escape", 1, zoomed)).toBe("close");
+      expect(previewKeyAction("+", 1, zoomed)).toBe("zoomIn");
+      expect(previewKeyAction("=", 3, zoomed)).toBe("zoomIn");
+      expect(previewKeyAction("-", 1, zoomed)).toBe("zoomOut");
+      expect(previewKeyAction("_", 3, zoomed)).toBe("zoomOut");
+      expect(previewKeyAction("0", 1, zoomed)).toBe("fit");
+      expect(previewKeyAction("Enter", 3, zoomed)).toBeNull();
+    }
   });
 
   it("uses compact responsive grids for one, two, and many images", () => {
