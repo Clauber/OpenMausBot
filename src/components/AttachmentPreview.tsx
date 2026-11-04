@@ -34,7 +34,7 @@ import {
 } from "@/lib/composer-attachments";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
-import { actualSizeScale, clampPan, clampScale, FIT_VIEW, zoomAt, type Point, type View } from "@/lib/pan-zoom";
+import { actualSizeScale, clampPan, clampScale, FIT_VIEW, pinchScale, zoomAt, type Point, type View } from "@/lib/pan-zoom";
 import { FilePreviewButton } from "./FilePreviewButton";
 import { ImageLoading } from "./ImageLoading";
 
@@ -485,6 +485,9 @@ export function AttachmentPreviewDialog({
   const [animate, setAnimate] = useState(false);
   const [dragging, setDragging] = useState(false);
   const gesture = useRef<{ pointerId: number; start: Point; view: View; background: boolean; moved: boolean } | null>(null);
+  const pointers = useRef(new Map<number, Point>());
+  const pinch = useRef<{ view: View; distance: number } | null>(null);
+  const [fitRatio, setFitRatio] = useState(0);
   const loaded = loadedSources.has(current.src);
   const failed = failedSource === current.src;
   const zoomed = view.scale > 1;
@@ -497,19 +500,37 @@ export function AttachmentPreviewDialog({
     setView(FIT_VIEW);
     setAnimate(false);
     setDragging(false);
+    setFitRatio(0);
     gesture.current = null;
+    pinch.current = null;
+    pointers.current.clear();
   }, [current.src, index, attempt, failed]);
 
   const measure = useCallback(() => {
     const layer = layerRef.current;
     const img = imageRef.current;
     if (!layer || !img || !img.naturalWidth) return null;
-    const bounds = img.getBoundingClientRect();
-    const scale = new DOMMatrixReadOnly(getComputedStyle(img).transform).a;
+    // offsetWidth/offsetHeight ignore the CSS transform, so they are the object-contain size that scale 1 means.
     return {
-      content: { width: bounds.width / scale, height: bounds.height / scale },
+      content: { width: img.offsetWidth, height: img.offsetHeight },
       viewport: layer.getBoundingClientRect(),
     };
+  }, []);
+
+  const pinchGrip = useCallback(() => {
+    const [a, b] = [...pointers.current.values()];
+    const layer = layerRef.current;
+    if (!a || !b || !layer) return null;
+    const box = layer.getBoundingClientRect();
+    return {
+      distance: Math.hypot(a.x - b.x, a.y - b.y),
+      center: { x: (a.x + b.x) / 2 - box.left - box.width / 2, y: (a.y + b.y) / 2 - box.top - box.height / 2 },
+    };
+  }, []);
+
+  const syncFitRatio = useCallback(() => {
+    const img = imageRef.current;
+    setFitRatio(img && img.naturalWidth > 0 ? img.offsetWidth / img.naturalWidth : 0);
   }, []);
 
   const fit = useCallback(() => {
@@ -619,13 +640,14 @@ export function AttachmentPreviewDialog({
     const img = imageRef.current;
     if (!layer || !img) return;
     const observer = new ResizeObserver(() => {
+      syncFitRatio();
       const sizes = measure();
       if (sizes) setView((previous) => clampPan(previous, sizes.content, sizes.viewport));
     });
     observer.observe(layer);
     observer.observe(img);
     return () => observer.disconnect();
-  }, [current.src, attempt, failed, measure]);
+  }, [current.src, attempt, failed, measure, syncFitRatio]);
 
   const retry = () => {
     setFailedSource(null);
@@ -653,7 +675,20 @@ export function AttachmentPreviewDialog({
           zoomed ? dragging ? "cursor-grabbing" : "cursor-grab" : "cursor-default",
         )}
         onPointerDown={(event) => {
-          if (event.button !== 0 || !event.isPrimary || event.target !== imageRef.current && event.target !== event.currentTarget) return;
+          if (event.target !== imageRef.current && event.target !== event.currentTarget) return;
+          pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+          if (pointers.current.size === 2 && loaded && !failed) {
+            const grip = pinchGrip();
+            if (grip) {
+              event.preventDefault();
+              gesture.current = null;
+              pinch.current = { view, distance: grip.distance };
+              setDragging(false);
+              setAnimate(false);
+            }
+            return;
+          }
+          if (pointers.current.size > 1 || event.button !== 0 || !event.isPrimary) return;
           gesture.current = {
             pointerId: event.pointerId, start: { x: event.clientX, y: event.clientY }, view,
             background: event.target === event.currentTarget, moved: false,
@@ -666,6 +701,19 @@ export function AttachmentPreviewDialog({
           }
         }}
         onPointerMove={(event) => {
+          if (pointers.current.has(event.pointerId)) pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+          const pinching = pinch.current;
+          if (pinching) {
+            const grip = pinchGrip();
+            const sizes = measure();
+            if (grip && sizes) {
+              setView(clampPan(
+                zoomAt(pinching.view, pinchScale(pinching.view.scale, pinching.distance, grip.distance), grip.center),
+                sizes.content, sizes.viewport,
+              ));
+            }
+            return;
+          }
           const active = gesture.current;
           if (!active || active.pointerId !== event.pointerId) return;
           const dx = event.clientX - active.start.x;
@@ -678,6 +726,8 @@ export function AttachmentPreviewDialog({
           }, sizes.content, sizes.viewport));
         }}
         onPointerUp={(event) => {
+          pointers.current.delete(event.pointerId);
+          if (pointers.current.size < 2) pinch.current = null;
           const active = gesture.current;
           if (!active || active.pointerId !== event.pointerId) return;
           const background = document.elementFromPoint(event.clientX, event.clientY) === event.currentTarget;
@@ -687,7 +737,9 @@ export function AttachmentPreviewDialog({
           if (active.background && background && !active.moved &&
             Math.hypot(event.clientX - active.start.x, event.clientY - active.start.y) < 5) onClose();
         }}
-        onPointerCancel={() => {
+        onPointerCancel={(event) => {
+          pointers.current.delete(event.pointerId);
+          if (pointers.current.size < 2) pinch.current = null;
           gesture.current = null;
           setDragging(false);
         }}
@@ -735,6 +787,7 @@ export function AttachmentPreviewDialog({
             draggable={false}
             onLoad={(event) => {
               naturalWidth.current = event.currentTarget.naturalWidth;
+              syncFitRatio();
               setLoadedSources((sources) => new Set(sources).add(current.src));
             }}
             onError={() => setFailedSource(current.src)}
@@ -746,10 +799,10 @@ export function AttachmentPreviewDialog({
           />
         )}
       </div>
-      <header className="absolute inset-x-0 top-0 z-20 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 bg-gradient-to-b from-black/70 to-transparent px-3 pb-8 pt-3 sm:px-4">
+      <header className="absolute inset-x-0 top-0 z-20 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 bg-gradient-to-b from-black/90 via-black/60 to-transparent px-3 pb-10 pt-3 sm:px-4">
         <div className="min-w-0 flex-1 basis-40">
           <div className="truncate text-[13px] font-medium text-white">{current.name}</div>
-          <div className="text-[11px] text-white/50">
+          <div className="text-[11px] text-white/70">
             {items.length > 1
               ? t("attach.position", { index: index + 1, count: items.length })
               : t("attach.imagePreview")}
@@ -759,7 +812,7 @@ export function AttachmentPreviewDialog({
           {loaded && !failed && (
             <div className="flex shrink-0 items-center gap-0.5 rounded-xl border border-white/15 bg-black/40 p-1">
               <button className="flex size-8 items-center justify-center rounded-md text-white/75 hover:bg-white/10 hover:text-white" aria-label={t("canvas.zoomOut")} onClick={() => zoom(1 / 1.2)}><Minus size={15} /></button>
-              <button className="min-w-12 rounded-md px-1 py-2 text-[11px] tabular-nums text-white/75 hover:bg-white/10 hover:text-white" aria-label={t("canvas.fit")} title={t("canvas.fitHint")} onClick={fit}>{Math.round(view.scale * 100)}%</button>
+              <button className="min-w-12 rounded-md px-1 py-2 text-[11px] tabular-nums text-white/75 hover:bg-white/10 hover:text-white" aria-label={t("attach.fitImage")} title={t("attach.fitImageHint")} onClick={fit}>{Math.round(view.scale * (fitRatio || 1) * 100)}%</button>
               <button className="flex size-8 items-center justify-center rounded-md text-white/75 hover:bg-white/10 hover:text-white" aria-label={t("canvas.zoomIn")} onClick={() => zoom(1.2)}><Plus size={15} /></button>
             </div>
           )}

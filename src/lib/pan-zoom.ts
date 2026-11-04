@@ -28,6 +28,11 @@ export function clampPan(view: View, content: { width: number; height: number },
   };
 }
 
+export function pinchScale(startScale: number, startDistance: number, distance: number): number {
+  if (!(startDistance > 0) || !Number.isFinite(distance)) return clampScale(startScale);
+  return clampScale(startScale * (distance / startDistance));
+}
+
 export function actualSizeScale(naturalWidth: number, fittedWidth: number): number {
   if (fittedWidth <= 0 || !Number.isFinite(naturalWidth) || !Number.isFinite(fittedWidth)) return 2.5;
   const scale = clampScale(naturalWidth / fittedWidth);

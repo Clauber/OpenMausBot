@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { actualSizeScale, clampPan, clampScale, FIT_VIEW, ZOOM_MAX, ZOOM_MIN, zoomAt } from "./pan-zoom";
+import { actualSizeScale, clampPan, clampScale, FIT_VIEW, pinchScale, ZOOM_MAX, ZOOM_MIN, zoomAt } from "./pan-zoom";
 
 describe("pan and zoom geometry", () => {
   it.each([
@@ -32,6 +32,13 @@ describe("pan and zoom geometry", () => {
     [Infinity, 800, 2.5], [800, Infinity, 2.5],
   ])("zooms natural width %s and fitted width %s to %s", (natural, fitted, expected) => {
     expect(actualSizeScale(natural, fitted)).toBe(expected);
+  });
+
+  it.each([
+    [1, 100, 200, 2], [2, 100, 150, 3], [2, 100, 25, ZOOM_MIN], [1, 100, 1e6, ZOOM_MAX],
+    [2, 0, 200, 2], [2, -10, 200, 2], [2, 100, NaN, 2], [2, 100, Infinity, 2],
+  ])("pinches scale %s from distance %s to %s, giving %s", (scale, startDistance, distance, expected) => {
+    expect(pinchScale(scale, startDistance, distance)).toBe(expected);
   });
 
   it("keeps the world point under the cursor anchored while zooming", () => {

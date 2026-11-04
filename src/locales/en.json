@@ -2758,6 +2758,8 @@
   "attach.imagePreview": "Image preview",
   "attach.loadingImage": "Loading image…",
   "attach.loadFailed": "This image could not be loaded.",
+  "attach.fitImage": "Fit image to view",
+  "attach.fitImageHint": "Fit image to view (0)",
   "attach.position": "{index} of {count}",
   "attach.downloadAria": "Download {name}",
   "attach.download": "Download",
