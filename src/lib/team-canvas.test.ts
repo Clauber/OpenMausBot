@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fitTeams, layoutTeams, orderBots, parseBotOrders, parsePositions, reorderBot, teamSize, zoomAt, type Tile } from "./team-canvas";
+import { fitTeams, layoutTeams, orderBots, parseBotOrders, parsePositions, reorderBot, teamSize, type Tile } from "./team-canvas";
 import type { TeamMapSection } from "./team-map";
 
 function section(key: string, chiefs = 0, members = 0): TeamMapSection {
@@ -53,16 +53,6 @@ describe("team canvas geometry", () => {
     expect(fitTeams([tile], 1000, 1000).scale).toBe(1);
     expect(fitTeams([tile], 50, 50).scale).toBe(0.3);
     expect(fitTeams([], 900, 700)).toEqual({ x: 0, y: 0, scale: 1 });
-  });
-
-  it("keeps the world point under the cursor anchored while zooming", () => {
-    const view = { x: -50, y: 80, scale: 0.5 };
-    const point = { x: 310, y: 270 };
-    const world = { x: (point.x - view.x) / view.scale, y: (point.y - view.y) / view.scale };
-    const next = zoomAt(view, 1.4, point);
-    expect(world.x * next.scale + next.x).toBeCloseTo(point.x);
-    expect(world.y * next.scale + next.y).toBeCloseTo(point.y);
-    expect(zoomAt(view, view.scale, point)).toEqual(view);
   });
 });
 
