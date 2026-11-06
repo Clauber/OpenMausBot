@@ -44,6 +44,17 @@ export function attachLocal(server: Server, accessPath: string, calls: Map<strin
     ws.on('close', () => { controller?.abort(); clearTimeout(timer); call.ended = true; hooks.log({ event: 'local_closed', callId: call.id }); });
     ws.on('error', error => { hooks.log({ event: 'local_socket_error', callId: call.id, error: String(error) }); call.localClose?.(); });
     send({ type: 'ready' });
+    void (async () => {
+      const own = new AbortController(); controller = own;
+      try {
+        for await (const pcm of speak(voice, 'Hello', own.signal)) {
+          own.signal.throwIfAborted();
+          playUntil = Math.max(playUntil, Date.now()) + pcm.length / 48;
+          send({ type: 'audio', turnId: 0, pcm: pcm.toString('base64'), sampleRate: 24000 });
+        }
+        send({ type: 'text', turnId: 0, text: 'Hello' });
+      } catch (error) { if (!own.signal.aborted) send({ type: 'error', error: `Greeting failed: ${error}` }); }
+    })();
 
     async function respond(audio?: Buffer, injected?: string) {
       controller?.abort();

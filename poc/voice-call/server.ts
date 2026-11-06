@@ -132,7 +132,8 @@ const server = createServer(async (req, res) => {
       return reply(res, 200, { bots: bots.map(b => ({ id: b.id, name: b.name, voice: `elevenlabs:${b.voice}` })), models: models.map(m => m.id), probes, hostedModels, realtimeAvailable: true, voice, voices, voiceErrors, credits: { balance, floor: creditFloor, allowed: balance !== null && balance >= creditFloor } });
     }
     if (route === 'api/call' && req.method === 'POST') {
-      if (active && !active.ended) return reply(res, 409, { error: 'One call at a time. Hang up the current call.' });
+      // One user per PoC. A call abandoned before it connected (mic denied, tab closed) must not block the next one.
+      if (active && !active.ended) { active.ended = true; active.localClose?.(); log({ event: 'replaced', callId: active.id }); }
       const settings: Settings = { voice: `elevenlabs:${voice}`, buffer: false, responseModel: models[0]?.id, thinkingModel: 'bot', elevenAgentLlm: hostedModels[0], promptCache: false, contextMode: 'full', callTopic: 'marketing team working preferences', turnEagerness: 'eager', turnTimeout: 30, speculativeTurn: false, ...await jsonBody(req) };
       if (!bots.some(b => b.id === settings.botId) || !['agent', 'engine', 'agent-realtime', 'local'].includes(settings.variant) || typeof settings.buffer !== 'boolean' || !models.some(m => m.id === settings.responseModel) || !(settings.thinkingModel === 'bot' || models.some(m => m.id === settings.thinkingModel)) || !hostedModels.includes(settings.elevenAgentLlm)) return reply(res, 400, { error: 'Invalid settings' });
       if (typeof settings.promptCache !== 'boolean' || !['full', 'slim'].includes(settings.contextMode) || typeof settings.callTopic !== 'string' || settings.callTopic.length > 2000 || !['eager', 'normal', 'patient'].includes(settings.turnEagerness) || !Number.isFinite(settings.turnTimeout) || settings.turnTimeout < 1 || settings.turnTimeout > 30 || typeof settings.speculativeTurn !== 'boolean') return reply(res, 400, { error: 'Invalid round-two settings' });
@@ -160,7 +161,7 @@ const server = createServer(async (req, res) => {
         const turnConfig = { turn_eagerness: settings.turnEagerness, turn_timeout: settings.turnTimeout, speculative_turn: settings.speculativeTurn };
         const tts = { voice_id: selectedVoice.voice, model_id: 'eleven_v4_turbo' };
         if (settings.variant === 'engine') await api(`/speech-engine/${id}`, 'PATCH', { turn: turnConfig, tts });
-        else await api(`/convai/agents/${id}`, 'PATCH', { conversation_config: { realtime_model: settings.variant === 'agent-realtime' ? realtimeModel : null, turn: turnConfig, tts, agent: { prompt: { prompt: `${call.prompt}\nUse callId {{poc_call_id}} when calling think.`, llm: settings.elevenAgentLlm, thinking_budget: 0 } } } });
+        else await api(`/convai/agents/${id}`, 'PATCH', { conversation_config: { realtime_model: settings.variant === 'agent-realtime' ? realtimeModel : null, turn: turnConfig, tts, agent: { first_message: 'Hello', prompt: { prompt: `${call.prompt}\nUse callId {{poc_call_id}} when calling think.`, llm: settings.elevenAgentLlm, thinking_budget: 0 } } } });
         if (settings.promptCache && settings.variant === 'engine') {
           const model = models.find(m => m.id === settings.responseModel)!;
           if (model.provider !== 'anthropic') throw new Error('Prompt cache requires Anthropic');
