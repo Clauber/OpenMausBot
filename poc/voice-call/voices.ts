@@ -38,12 +38,14 @@ export async function listVoices() {
   return { voices, errors };
 }
 
-let creditCheckedAt = 0;
+let creditCheckedAt = 0, creditCached = 0;
 export async function* speak(voice: Voice, text: string, signal: AbortSignal): AsyncGenerator<Buffer> {
   let res: Response;
   if (voice.provider === 'elevenlabs') {
-    // shortcut: a passed balance check is trusted for 30 s, so one reply can overspend the floor by a few sentences.
-    if (Date.now() - creditCheckedAt > 30000) { await requireCredits(); creditCheckedAt = Date.now(); }
+    // A passed balance check is reused for 30 s, minus the estimated cost of what was spoken since (v4 Turbo: 0.5 credit per character).
+    if (Date.now() - creditCheckedAt > 30000) { creditCached = await requireCredits(); creditCheckedAt = Date.now(); }
+    else if (creditCached < creditFloor) throw new Error(`ElevenLabs disabled: about ${Math.floor(creditCached)} credits remain, minimum ${creditFloor}. Select an AllTalk voice.`);
+    creditCached -= text.length * 0.5;
     res = await fetch(`${eleven}/text-to-speech/${encodeURIComponent(voice.voice)}/stream?output_format=pcm_24000`, {
       method: 'POST', headers: { ...key(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, model_id: 'eleven_v4_turbo' }), signal,

@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-export type Model = { id: string; modelId?: string; provider: 'openai' | 'anthropic' | 'gemini' | 'groq' | 'compat'; key: string; baseUrl?: string; route?: string };
+export type Model = { id: string; modelId?: string; provider: 'openai' | 'anthropic' | 'gemini' | 'groq' | 'compat'; key: string; baseUrl?: string; route?: string; reasoningEffort?: string };
 const credentials = new Map<string, string>();
 export const discovery: object[] = [];
 export type Message = { role: 'user' | 'assistant'; content: string };
@@ -12,7 +12,7 @@ export const candidates: Model[] = [
   { id: 'claude-haiku-5-5', provider: 'anthropic', key: 'ANTHROPIC_API_KEY' },
   { id: 'gemini-2.5-flash', provider: 'gemini', key: 'GEMINI_KEY' },
   { id: 'openai/gpt-oss-120b', provider: 'groq', key: 'GROQ_MEETING_KEY' },
-  { id: 'cliproxy:gpt-6-luna', modelId: 'gpt-6-luna', provider: 'compat', key: 'CLI_PROXY_API_KEY', baseUrl: 'http://100.64.0.9:8317/v1' },
+  { id: 'cliproxy:gpt-6-luna', modelId: 'gpt-6-luna', provider: 'compat', key: 'CLI_PROXY_API_KEY', baseUrl: 'http://100.64.0.9:8317/v1', reasoningEffort: 'low' },
 ];
 const functionSchema = { name: 'think', description: 'Ask the bot agent to reason, recall memory, or use its tools. Always use this for tool requests and explicit requests to think.', parameters: { type: 'object', properties: { request: { type: 'string' } }, required: ['request'], additionalProperties: false } };
 export async function* complete(model: Model, system: SystemPrompt, messages: Message[], signal: AbortSignal, tool = false, options: CompletionOptions = {}): AsyncGenerator<{ text?: string; think?: string; usage?: Usage; token?: boolean }> {
@@ -34,7 +34,7 @@ export async function* complete(model: Model, system: SystemPrompt, messages: Me
   } else {
     url = `${model.baseUrl || (model.provider === 'groq' ? 'https://api.groq.com/openai/v1' : 'https://api.openai.com/v1')}/chat/completions`;
     headers.Authorization = `Bearer ${key}`;
-    body = { model: model.modelId || model.id, messages: [{ role: 'system', content: systemText }, ...messages], stream: true, stream_options: { include_usage: true }, max_tokens: options.maxTokens || 600, ...(tool ? { tools: [{ type: 'function', function: functionSchema }] } : {}) };
+    body = { model: model.modelId || model.id, messages: [{ role: 'system', content: systemText }, ...messages], stream: true, stream_options: { include_usage: true }, max_tokens: options.maxTokens || 600, ...(model.reasoningEffort ? { reasoning_effort: model.reasoningEffort } : {}), ...(tool ? { tools: [{ type: 'function', function: functionSchema }] } : {}) };
   }
   const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal });
   if (!res.ok) throw new Error(`${model.id} HTTP ${res.status}: ${(await res.text()).slice(0, 400)}`);
