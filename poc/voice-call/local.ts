@@ -1,12 +1,12 @@
 import type { Server } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { bots, context } from './context.ts';
-import { complete, type Message, type Model } from './models.ts';
+import { candidates, complete, type Message, type Model } from './models.ts';
 import { speak, type Voice } from './voices.ts';
 import type { Call, Turn } from './server.ts';
 
 const { buildRecall } = await import('../../server/recall.ts');
-const model: Model = { id: 'claude-haiku-5-5', provider: 'anthropic', key: 'ANTHROPIC_API_KEY' };
+const haiku: Model = { id: 'claude-haiku-5-5', provider: 'anthropic', key: 'ANTHROPIC_API_KEY' };
 type Hooks = {
   turn: (call: Call, at?: number, source?: string) => Turn;
   think: (call: Call, row: Turn, request: string, signal: AbortSignal) => Promise<string>;
@@ -27,6 +27,7 @@ export function attachLocal(server: Server, accessPath: string, calls: Map<strin
 
   function connect(ws: WebSocket, call: Call) {
     const voice = voices.find(v => v.id === call.settings.voice)!;
+    const model = candidates.find(m => m.id === call.settings.responseModel) ?? haiku;
     const bot = bots.find(b => b.id === call.settings.botId)!;
     const history: Message[] = [];
     let controller: AbortController | undefined;

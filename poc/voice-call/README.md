@@ -10,7 +10,7 @@ Clauber wants a phone call to feel like talking to the bot he already chats with
 4. Press **Call**, allow microphone access, and speak. Pause for half a second to finish a turn. Speak again to interrupt playback.
 5. Press **Hang up** when finished.
 
-Local sends mono 16 kHz PCM over the private page's WebSocket. The PoC applies energy VAD with a 500 ms silence window. GX10 transcribes with cached `faster-whisper-small` 1.2.1 on CUDA FP16. Every transcript runs the product's `buildRecall` against the isolated snapshot. The reply uses `gx10/claude-haiku-5-5` through 9router and retains the existing `think` tool. Replies stop after two sentences and TTS starts as each sentence arrives. The response-model and turn-taking controls below the voice picker apply to the other variants. Local uses its fixed GX10 model and VAD settings.
+Local sends mono 16 kHz PCM over the private page's WebSocket. The PoC applies energy VAD with a 500 ms silence window. GX10 transcribes with cached `faster-whisper-small` 1.2.1 on CUDA FP16. Every transcript runs the product's `buildRecall` against the isolated snapshot. The reply uses the Response model picker (default direct Anthropic `claude-haiku-5-5`; `cliproxy:gpt-6-luna` goes to the GX10 CLIProxy with `CLI_PROXY_API_KEY`) and retains the existing `think` tool. Replies stop after two sentences and TTS starts as each sentence arrives. The turn-taking controls apply to the other variants; Local uses its own VAD settings.
 
 AllTalk uses its existing streaming API at `http://100.64.0.9:7851`. ElevenLabs voices use `eleven_v4_turbo` on the streaming TTS endpoint. The other variants accept ElevenLabs voice selections. Realtime Mini manages its own TTS model. AllTalk voices require Local.
 

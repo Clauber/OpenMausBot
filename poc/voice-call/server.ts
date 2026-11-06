@@ -150,7 +150,6 @@ const server = createServer(async (req, res) => {
       const call: Call = { id: randomUUID(), settings, turns: [], prompt: [...system.stable, system.thread].join('\n'), system, ended: false };
       calls.set(call.id, call); active = call;
       if (settings.variant === 'local') {
-        settings.responseModel = 'claude-haiku-5-5';
         log({ event: 'call_started', callId: call.id, variant: 'local', settings });
         return reply(res, 200, { callId: call.id, local: true });
       }

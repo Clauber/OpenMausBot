@@ -12,6 +12,7 @@ export const candidates: Model[] = [
   { id: 'claude-haiku-5-5', provider: 'anthropic', key: 'ANTHROPIC_API_KEY' },
   { id: 'gemini-2.5-flash', provider: 'gemini', key: 'GEMINI_KEY' },
   { id: 'openai/gpt-oss-120b', provider: 'groq', key: 'GROQ_MEETING_KEY' },
+  { id: 'cliproxy:gpt-6-luna', modelId: 'gpt-6-luna', provider: 'compat', key: 'CLI_PROXY_API_KEY', baseUrl: 'http://100.64.0.9:8317/v1' },
 ];
 const functionSchema = { name: 'think', description: 'Ask the bot agent to reason, recall memory, or use its tools. Always use this for tool requests and explicit requests to think.', parameters: { type: 'object', properties: { request: { type: 'string' } }, required: ['request'], additionalProperties: false } };
 export async function* complete(model: Model, system: SystemPrompt, messages: Message[], signal: AbortSignal, tool = false, options: CompletionOptions = {}): AsyncGenerator<{ text?: string; think?: string; usage?: Usage; token?: boolean }> {
