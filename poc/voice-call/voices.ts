@@ -38,10 +38,12 @@ export async function listVoices() {
   return { voices, errors };
 }
 
+let creditCheckedAt = 0;
 export async function* speak(voice: Voice, text: string, signal: AbortSignal): AsyncGenerator<Buffer> {
   let res: Response;
   if (voice.provider === 'elevenlabs') {
-    await requireCredits();
+    // shortcut: a passed balance check is trusted for 30 s, so one reply can overspend the floor by a few sentences.
+    if (Date.now() - creditCheckedAt > 30000) { await requireCredits(); creditCheckedAt = Date.now(); }
     res = await fetch(`${eleven}/text-to-speech/${encodeURIComponent(voice.voice)}/stream?output_format=pcm_24000`, {
       method: 'POST', headers: { ...key(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, model_id: 'eleven_v4_turbo' }), signal,

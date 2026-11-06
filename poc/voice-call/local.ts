@@ -79,6 +79,8 @@ export function attachLocal(server: Server, accessPath: string, calls: Map<strin
       const text = (chunk: string) => {
         chunk = chunk.replace(/[*_#`]/g, '');
         spoken += chunk; pending += chunk;
+        // TTS reads "St." as "Street", and its period would also end the sentence early.
+        pending = pending.replace(/\bSt\.(?=\s)/g, 'Saint');
         row.firstTextAt ??= Date.now();
         send({ type: 'text', turnId: row.turnId, text: chunk });
         let sentence: RegExpExecArray | null;
