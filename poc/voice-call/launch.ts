@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:net';
 import { mkdirSync, openSync, readFileSync, writeFileSync, existsSync, renameSync, closeSync } from 'node:fs';
@@ -25,15 +25,33 @@ function boot(name: string, command: string, args: string[], env: NodeJS.Process
   const path = join(data, 'logs', `${name}.log`);
   if (existsSync(path)) renameSync(path, `${path}.${Date.now()}`);
   const fd = openSync(path, 'w', 0o600);
-  const child = spawn(command, args, { cwd: resolve(root, '../..'), env, stdio: ['ignore', fd, fd] });
+  const child = spawn(command, args, { cwd: resolve(root, '../..'), env, stdio: ['pipe', fd, fd] });
   closeSync(fd);
   children.push(child);
   child.on('error', error => { console.error(`${name}: ${error.message}`); stop(); });
   child.on('exit', code => { if (!stopping) { console.error(`${name} exited ${code}`); stop(); } });
   return child;
 }
-function stop() { if (stopping) return; stopping = true; for (const child of children) child.kill('SIGTERM'); setTimeout(() => process.exit(0), 3000).unref(); }
+function stop() { if (stopping) return; stopping = true; for (const child of children) { child.stdin?.end(); child.kill('SIGTERM'); } setTimeout(() => process.exit(0), 3000).unref(); }
 process.on('SIGINT', stop); process.on('SIGTERM', stop);
+execFileSync('ssh', ['-o', 'BatchMode=yes', 'gx10', 'mkdir -p ~/scratch/voice-poc-stt'], { timeout: 15000 });
+execFileSync('scp', ['-q', join(root, 'stt.py'), 'gx10:scratch/voice-poc-stt/stt.py'], { timeout: 15000 });
+const stt = boot('stt', 'ssh', ['-o', 'BatchMode=yes', 'gx10', 'exec env LD_LIBRARY_PATH=/opt/meeting-system/ct2/lib /opt/meeting-system/venv/bin/python ~/scratch/voice-poc-stt/stt.py'], { PATH: process.env.PATH, HOME: process.env.HOME });
+let sttPort = 0;
+for (let i = 0; i < 120; i++) {
+  const ready = readFileSync(join(data, 'logs/stt.log'), 'utf8').match(/\{"port": (\d+), "pid": (\d+)\}/);
+  if (ready) { sttPort = Number(ready[1]); break; }
+  if (stopping) throw new Error('GX10 STT stopped');
+  await new Promise(r => setTimeout(r, 500));
+}
+if (!sttPort) { stop(); throw new Error('GX10 STT failed readiness. See .data/logs/stt.log'); }
+const sttLocalPort = await freePort();
+const sttForward = boot('stt-forward', 'ssh', ['-o', 'BatchMode=yes', '-o', 'ExitOnForwardFailure=yes', '-N', '-L', `127.0.0.1:${sttLocalPort}:127.0.0.1:${sttPort}`, 'gx10'], { PATH: process.env.PATH, HOME: process.env.HOME });
+for (let i = 0; i < 30; i++) {
+  try { const res = await fetch(`http://127.0.0.1:${sttLocalPort}/health`); if (res.ok) break; } catch {}
+  if (i === 29 || stopping) { stop(); throw new Error('GX10 STT forward failed readiness'); }
+  await new Promise(r => setTimeout(r, 500));
+}
 const dev = boot('omb', process.execPath, ['--experimental-strip-types', 'server/openmausbot.ts', 'serve', '--no-pair', '--port', String(devPort), '--data-dir', join(data, 'omb')], {
   PATH: process.env.PATH, HOME: join(data, 'home'), USER: process.env.USER, LANG: 'C.UTF-8',
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
@@ -56,8 +74,8 @@ for (let i = 0; i < 120; i++) {
 }
 if (!url) { stop(); throw new Error('No quick tunnel URL'); }
 const accessPath = randomBytes(24).toString('hex');
-const poc = boot('poc', process.execPath, ['--experimental-strip-types', join(root, 'server.ts')], { ...process.env, POC_PORT: String(pocPort), POC_ACCESS_PATH: accessPath, POC_PUBLIC_URL: url, POC_OMB_PORT: String(devPort) });
-const info = { url: `${url}/${accessPath}/`, devPort, webhookPort, pocPort, supervisorPid: process.pid, devLauncherPid: dev.pid, tunnelPid: tunnel.pid, pocPid: poc.pid, snapshot: join(data, 'omb') };
+const poc = boot('poc', process.execPath, ['--experimental-strip-types', join(root, 'server.ts')], { ...process.env, POC_STT_URL: `http://127.0.0.1:${sttLocalPort}`, POC_PORT: String(pocPort), POC_ACCESS_PATH: accessPath, POC_PUBLIC_URL: url, POC_OMB_PORT: String(devPort) });
+const info = { url: `${url}/${accessPath}/`, devPort, webhookPort, pocPort, sttPort: sttLocalPort, sttSshPid: stt.pid, sttForwardPid: sttForward.pid, supervisorPid: process.pid, devLauncherPid: dev.pid, tunnelPid: tunnel.pid, pocPid: poc.pid, snapshot: join(data, 'omb') };
 writeFileSync(join(data, 'run.json'), JSON.stringify(info, null, 2), { mode: 0o600 });
 console.log(JSON.stringify(info, null, 2));
 console.log(`Stop all owned children: kill -TERM ${process.pid}`);

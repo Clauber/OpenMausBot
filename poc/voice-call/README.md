@@ -1,6 +1,30 @@
 # Voice-call architecture experiment
 
-Clauber wants a phone call to feel like talking to the bot he already chats with, with the same identity, memory, thread and voice. This throwaway prototype compares ElevenLabs Agents with ElevenLabs Speech Engine. It changes no product code.
+Clauber wants a phone call to feel like talking to the bot he already chats with, with the same identity, memory, thread and voice. This throwaway prototype compares Local GX10, ElevenLabs Agents, ElevenLabs Speech Engine, and ElevenLabs Realtime Mini. It changes no product code.
+
+## Talk to St. Paul with Local
+
+1. Run `poc/voice-call/start.sh` and open the HTTPS URL it prints.
+2. Keep **St. Paul** and **Local (GX10)** selected. The voice defaults to his configured ElevenLabs voice.
+3. To avoid ElevenLabs charges, select an **AllTalk** voice, such as **AllTalk / male_01.wav**.
+4. Press **Call**, allow microphone access, and speak. Pause for half a second to finish a turn. Speak again to interrupt playback.
+5. Press **Hang up** when finished.
+
+Local sends mono 16 kHz PCM over the private page's WebSocket. The PoC applies energy VAD with a 500 ms silence window. GX10 transcribes with cached `faster-whisper-small` 1.2.1 on CUDA FP16. Every transcript runs the product's `buildRecall` against the isolated snapshot. The reply uses `gx10/claude-haiku-5-5` through 9router and retains the existing `think` tool. Replies stop after two sentences and TTS starts as each sentence arrives. The response-model and turn-taking controls below the voice picker apply to the other variants. Local uses its fixed GX10 model and VAD settings.
+
+AllTalk uses its existing streaming API at `http://100.64.0.9:7851`. ElevenLabs voices use `eleven_v4_turbo` on the streaming TTS endpoint. The other variants accept ElevenLabs voice selections. Realtime Mini manages its own TTS model. AllTalk voices require Local.
+
+The page shows the ElevenLabs credit balance. The server refuses ElevenLabs TTS when the balance is unavailable or below 100 credits. It checks again before each Local TTS sentence. This does not reserve credits or interrupt an already accepted vendor request. Local with AllTalk uses no ElevenLabs engine, agent, or TTS generation. Startup lists voices and configures the retained hosted resources, but makes no ElevenLabs conversation probes. Do not run the historical `scripted-calls.ts` matrix with the remaining credit balance.
+
+The launcher copies `stt.py` into `~/scratch/voice-poc-stt` on GX10 and runs it with `/opt/meeting-system/venv/bin/python`. It uses the existing CTranslate2 libraries in `/opt/meeting-system/ct2/lib`, binds a free loopback port, and opens a private SSH forward. It changes no existing GX10 service. Stopping the supervisor closes the SSH session and stops this scratch transcription process. It uses the cached small model and downloads no model.
+
+Use headphones in a noisy room. Energy VAD can mistake background noise or speaker echo for speech. GX10 and 9router must be reachable. The page displays provider failures and allows another spoken turn. iPhone Safari and human listening quality still need manual acceptance.
+
+## Verify Local
+
+Run `poc/voice-call/node_modules/node/bin/node --experimental-strip-types --test poc/voice-call/local.test.ts` for the credit and streaming WAV checks. With the stack running, run the same Node executable with `--experimental-strip-types poc/voice-call/local-smoke.ts` for five successful streamed audio turns. The smoke test uses AllTalk for both input speech and replies, records failed attempts, and stops after ten attempts. Do not run it during another call.
+
+Read `.data/local-timings.json` for the phases, generated transcripts, replies, audio byte counts, and failures. Transcription measures the PoC request through the SSH forward to the decoded transcript. First reply token measures the 9router request to the first text token. First TTS audio measures the first sentence request to the first PCM chunk received by the server. EOS uses the server's last voiced PCM frame, so it includes the 500 ms VAD wait. These timestamps do not measure when sound reaches a person's ear. See [RESULTS-local.md](RESULTS-local.md) for the acceptance record.
 
 ## Run
 
@@ -18,7 +42,7 @@ The script takes a snapshot when none exists, starts a loopback development Open
 
 Read `.data/run.json` for the current URL and PIDs. Stop only this supervisor with the exact `kill -TERM PID` printed at startup. It stops its own dev launcher, PoC server and tunnel. The dev launcher stops its server child. Do not kill processes by name.
 
-The page has a bot picker, variant switch, buffer toggle, response model, thinking model and hosted-agent LLM. Round two adds Anthropic caching, full or slim context, a memory-selection topic, turn eagerness, silence timeout and speculative turns. Call and Hang up use the ElevenLabs browser client over WebRTC. Open the printed HTTPS URL on iPhone Safari and grant microphone access. One call can run at a time.
+The page has a bot picker, variant switch, buffer toggle, response model, thinking model and hosted-agent LLM. Round two adds Anthropic caching, full or slim context, a memory-selection topic, turn eagerness, silence timeout and speculative turns. The three ElevenLabs variants use the ElevenLabs browser client over WebRTC. Local uses its own PCM WebSocket. Open the printed HTTPS URL on iPhone Safari and grant microphone access. One call can run at a time.
 
 ## Compared paths
 
@@ -57,13 +81,13 @@ Slim context preserves the complete identity and SOUL. Once at call start, it ra
 
 Anthropic cache mode puts identity, SOUL and voice instructions in the first stable system block, memory in the second, and recent thread in the final uncached block. Both stable blocks have `cache_control` breakpoints. Call setup prewarms the identical model, tools and system prefix before joining. Turn logs include total input tokens, cache reads and cache creation. Prewarming affects call setup time and is outside the measured EOS interval. Response-model thinking is disabled for Anthropic and Gemini. Compatible providers retain their model defaults.
 
-ElevenLabs Realtime Mini is a third variant when the startup service probe succeeds. It gets full context, the same configured ElevenLabs voice and the same think webhook. Select it with `conversation_config.realtime_model = eleven_realtime_v1_mini`. ElevenLabs manages its component models, reasoning and TTS settings. Its documentation describes a cascaded architecture, so the Realtime name does not establish a fused speech-to-speech model. OpenAI Realtime was probed separately and could not generate with the available credit balance. No Azure Live credentials were configured. See the round-two results for exact statuses.
+ElevenLabs Realtime Mini was the third variant in the earlier comparison. It remains selectable, but current startup skips its billable service probe. It gets full context, the same configured ElevenLabs voice and the same think webhook. Select it with `conversation_config.realtime_model = eleven_realtime_v1_mini`. ElevenLabs manages its component models, reasoning and TTS settings. Its documentation describes a cascaded architecture, so the Realtime name does not establish a fused speech-to-speech model. OpenAI Realtime was probed separately and could not generate with the available credit balance. No Azure Live credentials were configured. See the round-two results for exact statuses.
 
 ## Model discovery
 
 `gsd-secrets run` supplies ElevenLabs, Anthropic, OpenAI, Gemini, Groq, 9router and DeepSeek keys in memory. The server also reads configured provider-key presence in live config without printing values or changing the file. The snapshot deliberately removes provider credentials. The original config had a 9router key in `openaiCompat`; Cerebras, Groq, Mistral, DeepSeek, XAI and OpenRouter sections had no configured key.
 
-Startup fetches each configured compatible gateway's model catalog once, selects fast candidates, and makes a streaming one-word completion probe. Only models that return text enter the response and thinking pickers. Anthropic, Groq and 9router provide three distinct working routes. Hosted LLM choices each answer a real signed-WebSocket text probe at startup. Probe evidence is in `.data/model-discovery.json`, `.data/model-probes.json` and `.data/hosted-probes.json`.
+Startup fetches each configured compatible gateway's model catalog once, selects fast candidates, and makes a streaming one-word completion probe. Only models that return text enter the response and thinking pickers. Anthropic, Groq and 9router provide three distinct working routes. Hosted LLM choices answered signed-WebSocket text probes in the earlier comparison. Current startup skips those billable probes. Probe evidence is in `.data/model-discovery.json`, `.data/model-probes.json` and `.data/hosted-probes.json`.
 
 Working response models were `claude-haiku-5-5`, Groq `openai/gpt-oss-120b`, 9router `gx10/claude-haiku-5-5`, and 9router `glm/glm-5.3-flash`. Groq passes a short probe but cannot accept this bot's full context at its current token limit. It remains available for explicit failure comparison; the complete matrix uses Haiku and 9router GLM Flash. Both 9router models also answered full-context probes. Hosted `gemini-3.1-flash-lite`, `gpt-4.1-mini` and `claude-haiku-5-5` all answered probes.
 

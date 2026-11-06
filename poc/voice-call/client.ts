@@ -1,7 +1,8 @@
+import { startLocal } from './local-client.ts';
 import { Conversation } from '@elevenlabs/client';
 const element = (id: string) => document.getElementById(id)!;
 const select = (id: string) => element(id) as HTMLSelectElement;
-let conversation: Awaited<ReturnType<typeof Conversation.startSession>> | undefined;
+let conversation: { endSession: () => Promise<unknown> } | undefined;
 let callId = '', vadSpeaking = false;
 function log(text: string) { const box = element('log'); box.textContent += `${new Date().toLocaleTimeString()} ${text}\n`; box.scrollTop = box.scrollHeight; }
 async function post(path: string, body: object) {
@@ -21,13 +22,19 @@ for (const bot of config.bots) select('bot').add(new Option(bot.name, bot.id));
 for (const model of config.models) { select('response').add(new Option(model, model)); select('thinking').add(new Option(model, model)); }
 for (const model of config.hostedModels) select('hosted').add(new Option(model, model));
 if (config.realtimeAvailable) select('variant').add(new Option('ElevenLabs Realtime Mini, configured ElevenLabs voice', 'agent-realtime'));
-element('voice').textContent = `ElevenLabs voice ${config.voice}. Timings use VAD and speaking-mode events, which approximate playback.`;
+element('voice').textContent = 'Local uses GX10 Haiku with recall on each turn. Its timing ends at server PCM receipt. Other variants use ElevenLabs turn and playback events.';
+const creditMessage = config.credits.allowed ? `ElevenLabs: ${config.credits.balance} credits remaining. New requests require at least ${config.credits.floor}.` : `ElevenLabs disabled. Balance ${config.credits.balance ?? 'unavailable'}, minimum ${config.credits.floor}. Use AllTalk.`;
+element('credits').textContent = creditMessage;
+for (const voice of config.voices) select('voice-select').add(new Option(voice.name, voice.id));
+select('voice-select').value = config.bots[0].voice;
+for (const error of config.voiceErrors) log(error);
+select('bot').addEventListener('change', () => { select('voice-select').value = config.bots.find((b: { id: string }) => b.id === select('bot').value)?.voice || config.voices[0]?.id; });
 element('state').textContent = 'Ready';
 for (const probe of config.probes) log(`${probe.id}: ${probe.ok ? 'available' : probe.error}`);
 function busy(value: boolean) {
   (element('call') as HTMLButtonElement).disabled = value;
   (element('hangup') as HTMLButtonElement).disabled = !value;
-  for (const id of ['bot', 'variant', 'buffer', 'response', 'thinking', 'hosted', 'cache', 'context', 'topic', 'eagerness', 'timeout', 'speculative']) (element(id) as HTMLInputElement).disabled = value;
+  for (const id of ['bot', 'variant', 'voice-select', 'buffer', 'response', 'thinking', 'hosted', 'cache', 'context', 'topic', 'eagerness', 'timeout', 'speculative']) (element(id) as HTMLInputElement).disabled = value;
 }
 select('variant').addEventListener('change', () => {
   if (select('variant').value !== 'engine') (element('cache') as HTMLInputElement).checked = false;
@@ -38,8 +45,23 @@ element('call').addEventListener('click', async () => {
   try {
     const permission = await navigator.mediaDevices.getUserMedia({ audio: true });
     permission.getTracks().forEach(track => track.stop());
-    const call = await post('api/call', { botId: select('bot').value, variant: select('variant').value, buffer: (element('buffer') as HTMLInputElement).checked, responseModel: select('response').value, thinkingModel: select('thinking').value, elevenAgentLlm: select('hosted').value, promptCache: (element('cache') as HTMLInputElement).checked, contextMode: select('context').value, callTopic: (element('topic') as HTMLInputElement).value, turnEagerness: select('eagerness').value, turnTimeout: Number((element('timeout') as HTMLInputElement).value), speculativeTurn: (element('speculative') as HTMLInputElement).checked });
+    const call = await post('api/call', { botId: select('bot').value, variant: select('variant').value, voice: select('voice-select').value, buffer: (element('buffer') as HTMLInputElement).checked, responseModel: select('response').value, thinkingModel: select('thinking').value, elevenAgentLlm: select('hosted').value, promptCache: (element('cache') as HTMLInputElement).checked, contextMode: select('context').value, callTopic: (element('topic') as HTMLInputElement).value, turnEagerness: select('eagerness').value, turnTimeout: Number((element('timeout') as HTMLInputElement).value), speculativeTurn: (element('speculative') as HTMLInputElement).checked });
     callId = call.callId;
+    if (call.local) {
+      conversation = await startLocal(callId, message => {
+        if (message.type === 'ready') { element('state').textContent = 'Listening'; log('Local connected'); }
+        if (message.type === 'speech_start') element('state').textContent = 'Listening';
+        if (message.type === 'transcript') { log(`You: ${message.text}`); element('state').textContent = 'Thinking'; }
+        if (message.type === 'text') log(`Bot: ${message.text}`);
+        if (message.type === 'audio') element('state').textContent = 'Speaking';
+        if (message.type === 'done') {
+          const row = message.timing;
+          log(`EOS to audio ${row.firstAudioAt - row.eosAt} ms. STT ${row.transcriptAt - row.sttRequestAt} ms, reply token ${row.firstTokenAt - row.llmRequestAt} ms, TTS ${row.firstAudioAt - row.ttsRequestAt} ms. Recall ${row.recallPassages} passages.`);
+        }
+        if (message.type === 'error') { log(String(message.error)); element('state').textContent = 'Local error. See log.'; }
+      }, () => { element('state').textContent = 'Disconnected'; busy(false); void event('ended'); });
+      return;
+    }
     conversation = await Conversation.startSession({
       conversationToken: call.conversationToken, connectionType: 'webrtc', overrides: call.overrides, dynamicVariables: call.dynamicVariables,
       onConnect: ({ conversationId }) => { element('state').textContent = 'Connected'; log(`Connected ${conversationId}`); void event('connected', { conversationId }); },

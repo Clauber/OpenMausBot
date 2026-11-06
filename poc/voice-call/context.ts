@@ -7,7 +7,7 @@ export const snapshot = join(data, 'omb');
 process.env.OMB_DATA_DIR = snapshot;
 export type Bot = { id: string; threadId: string; name: string; title?: string; description?: string; soul?: string; voice: string; voiceProvider: string; cwd: string };
 const chosen: string[] = JSON.parse(readFileSync(join(snapshot, 'snapshot.json'), 'utf8')).botIds;
-export const bots: Bot[] = JSON.parse(readFileSync(join(snapshot, 'bots.json'), 'utf8')).filter((bot: Bot) => chosen.includes(bot.id));
+export const bots: Bot[] = JSON.parse(readFileSync(join(snapshot, 'bots.json'), 'utf8')).filter((bot: Bot) => chosen.includes(bot.id)).sort((a: Bot, b: Bot) => Number(b.id === 'a9c677e8-946a-4dae-b466-a39f50e40659') - Number(a.id === 'a9c677e8-946a-4dae-b466-a39f50e40659'));
 const { botPersona, buildSystemPrompt } = await import('../../server/system-prompt.ts');
 export function context(bot: Bot, mode: 'full' | 'slim' = 'full', topic = '') {
   const soulPath = join(snapshot, 'bots', bot.id, 'SOUL.md');
