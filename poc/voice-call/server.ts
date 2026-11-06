@@ -1,0 +1,245 @@
+import WebSocket from 'ws';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js';
+import { build } from 'esbuild';
+import { bots, context, voiceInstructions, root, data } from './context.ts';
+import { probeModels, complete, discovery, type Message } from './models.ts';
+
+type Settings = { botId: string; variant: 'agent' | 'engine'; buffer: boolean; responseModel: string; thinkingModel: string; elevenAgentLlm: string };
+type Turn = { callId: string; turnId: number; variant: string; settings: Settings; eosAt: number; eosSource: string; responseStartedAt?: number; firstTextAt?: number; firstTextSource?: string; firstAudioAt?: number; firstAudioSource?: string; substantiveTextAt?: number; responseFinished?: boolean; responseFinishedAt?: number; thinkFinishedAt?: number; thinkCalled: boolean; thinkMs?: number; interrupted: boolean; error?: string };
+type Call = { id: string; settings: Settings; conversationId?: string; turns: Turn[]; prompt: string; ended: boolean };
+const port = Number(process.env.POC_PORT), publicUrl = process.env.POC_PUBLIC_URL!;
+const devPort = Number(process.env.POC_OMB_PORT);
+if (!port || !devPort || devPort === 8799 || !publicUrl?.startsWith('https://')) throw new Error('Explicit isolated ports and public URL required');
+const accessPath = process.env.POC_ACCESS_PATH || randomBytes(24).toString('hex');
+const hookSecret = randomBytes(32).toString('hex');
+const eleven = new ElevenLabsClient({ apiKey: process.env.ELEVENLABS_API_KEY });
+mkdirSync(join(data, 'logs'), { recursive: true, mode: 0o700 });
+const log = (entry: object) => appendFileSync(join(data, 'logs/calls.jsonl'), JSON.stringify({ loggedAt: Date.now(), ...entry }) + '\n', { mode: 0o600 });
+const transcriptLog = (entry: object) => appendFileSync(join(data, 'logs/transcripts.jsonl'), JSON.stringify({ at: Date.now(), ...entry }) + '\n', { mode: 0o600 });
+const calls = new Map<string, Call>();
+let active: Call | undefined;
+const cachePath = join(data, 'eleven-resources.json');
+const cache = existsSync(cachePath) ? JSON.parse(readFileSync(cachePath, 'utf8')) : {};
+const saveCache = () => writeFileSync(cachePath, JSON.stringify(cache, null, 2), { mode: 0o600 });
+const probes = await probeModels();
+writeFileSync(join(data, 'model-probes.json'), JSON.stringify(probes, null, 2));
+writeFileSync(join(data, 'model-discovery.json'), JSON.stringify(discovery, null, 2));
+const models = probes.filter(m => m.ok);
+console.log('Model probes', probes.map(m => ({ id: m.id, ok: m.ok, ms: m.ms, ...('error' in m ? { error: m.error } : {}) })));
+const hostedModels = ['gemini-3.1-flash-lite', 'gpt-4.1-mini', 'claude-haiku-5-5'];
+const events = ['audio', 'interruption', 'user_transcript', 'agent_response', 'agent_response_complete', 'agent_chat_response_part', 'agent_tool_request', 'agent_tool_response', 'vad_score'];
+async function api(path: string, method = 'GET', body?: object) {
+  const res = await fetch(`https://api.elevenlabs.io/v1${path}`, { method, headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY!, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(30000) });
+  const json = await res.json();
+  if (!res.ok) throw new Error(`ElevenLabs ${method} ${path.split('?')[0]} HTTP ${res.status}: ${JSON.stringify(json.detail && Array.isArray(json.detail) ? json.detail.map((d: { loc: string[]; msg: string }) => ({ loc: d.loc, msg: d.msg })) : json.detail?.message || json.detail?.status || json.message || 'request failed')}`);
+  return json;
+}
+const voice = bots[0].voice;
+if (bots.some(b => b.voiceProvider !== 'elevenlabs' || b.voice !== voice)) throw new Error('Select bots sharing one configured ElevenLabs voice');
+const engineBody = { cascade_timeout_seconds: 15, name: 'OpenMausBot voice POC engine', speech_engine: { ws_url: `${publicUrl.replace('https:', 'wss:')}/ws`, request_headers: {} }, tts: { voice_id: voice, model_id: 'eleven_flash_v2', agent_output_audio_format: 'pcm_16000' }, asr: { user_input_audio_format: 'pcm_16000' }, turn: { turn_eagerness: 'eager', turn_timeout: 30 }, conversation: { client_events: events, max_duration_seconds: 600 }, auth: { enable_auth: true }, privacy: { record_voice: false, retention_days: 1 } };
+if (cache.engineId) await api(`/speech-engine/${cache.engineId}`, 'PATCH', engineBody);
+else { cache.engineId = (await api('/speech-engine', 'POST', { name: engineBody.name, speech_engine: engineBody.speech_engine })).speech_engine_id; saveCache(); await api(`/speech-engine/${cache.engineId}`, 'PATCH', engineBody); }
+const toolConfig = { type: 'webhook', name: 'think', description: 'Ask the real bot agent to recall memory, reason, or use tools. Required for every tool request and explicit request to think.', pre_tool_speech: 'force', response_timeout_secs: 120, api_schema: { url: `${publicUrl}/think`, method: 'POST', request_headers: { 'X-POC-Secret': hookSecret }, request_body_schema: { type: 'object', properties: { request: { type: 'string', description: 'The full request to give the bot agent' }, callId: { type: 'string', description: 'The callId given in the system prompt' } }, required: ['request', 'callId'] } } };
+if (cache.toolId) await api(`/convai/tools/${cache.toolId}`, 'PATCH', { tool_config: toolConfig });
+else { cache.toolId = (await api('/convai/tools', 'POST', { tool_config: toolConfig })).id; saveCache(); }
+const agentBody = { name: 'OpenMausBot voice POC agent', conversation_config: { agent: { first_message: '', language: 'en', prompt: { prompt: 'Bot context is supplied per conversation. Use the think tool with callId {{poc_call_id}}.', llm: hostedModels[0], tool_ids: [cache.toolId], temperature: 0.2 }, dynamic_variables: { dynamic_variable_placeholders: { poc_call_id: 'unset' } } }, tts: engineBody.tts, asr: engineBody.asr, turn: engineBody.turn, conversation: engineBody.conversation }, platform_settings: { auth: { enable_auth: true }, privacy: { record_voice: false, retention_days: 1 }, overrides: { conversation_config_override: { agent: { prompt: { prompt: true, llm: true }, first_message: true } } } } };
+if (cache.agentId) await api(`/convai/agents/${cache.agentId}`, 'PATCH', agentBody);
+else { cache.agentId = (await api('/convai/agents/create', 'POST', agentBody)).agent_id; saveCache(); }
+const hostedProbes = [];
+for (const llm of hostedModels) {
+  const start = Date.now();
+  try {
+    const signed = await api(`/convai/conversation/get-signed-url?agent_id=${encodeURIComponent(cache.agentId)}`);
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(signed.signed_url);
+      const timer = setTimeout(() => finish(new Error('Hosted model probe timed out')), 20000);
+      function finish(error?: Error) { clearTimeout(timer); ws.close(); if (error) reject(error); else resolve(); }
+      ws.on('open', () => ws.send(JSON.stringify({ type: 'conversation_initiation_client_data', conversation_config_override: { agent: { prompt: { prompt: 'Say ready in one word. Do not use tools.', llm } } }, dynamic_variables: { poc_call_id: 'probe' } })));
+      ws.on('message', raw => {
+        const message = JSON.parse(raw.toString());
+        if (message.type === 'ping') ws.send(JSON.stringify({ type: 'pong', event_id: message.ping_event.event_id }));
+        if (message.type === 'conversation_initiation_metadata') ws.send(JSON.stringify({ type: 'user_message', text: 'Hello. Say ready.' }));
+        if (message.type === 'agent_response' && message.agent_response_event?.agent_response) finish();
+        if (message.type === 'error') finish(new Error(JSON.stringify(message)));
+      });
+      ws.on('error', finish);
+    });
+    hostedProbes.push({ id: llm, ok: true, ms: Date.now() - start });
+  } catch (error) { hostedProbes.push({ id: llm, ok: false, error: String(error) }); }
+}
+hostedModels.splice(0, hostedModels.length, ...hostedProbes.filter(p => p.ok).map(p => p.id));
+writeFileSync(join(data, 'hosted-probes.json'), JSON.stringify(hostedProbes, null, 2), { mode: 0o600 });
+if (!hostedModels.length) throw new Error('No hosted LLM answered a probe');
+function turn(call: Call, eosAt = Date.now(), eosSource = 'server_transcript_arrival') {
+  const row: Turn = { callId: call.id, turnId: call.turns.length + 1, variant: call.settings.variant, settings: call.settings, eosAt, eosSource, thinkCalled: false, interrupted: false };
+  call.turns.push(row); log({ event: 'turn', ...row }); return row;
+}
+function last(call: Call) { return call.turns.at(-1) || turn(call); }
+const exec = promisify(execFile);
+let thinking = false;
+async function think(call: Call, row: Turn, request: string, signal: AbortSignal) {
+  const start = Date.now(); row.thinkCalled = true; log({ event: 'think_called', ...row });
+  try {
+    if (call.settings.thinkingModel !== 'bot') {
+      const model = models.find(m => m.id === call.settings.thinkingModel)!;
+      let text = '';
+      for await (const part of complete(model, call.prompt + '\nAnswer the question. You have no tools.', [{ role: 'user', content: request }], signal)) text += part.text || '';
+      return text;
+    }
+    if (thinking) throw new Error('Bot already thinking. Wait before asking another tool question.');
+    thinking = true;
+    const bot = bots.find(b => b.id === call.settings.botId)!;
+    const message = `Voice-call prototype, isolated snapshot only. Do not send, post, publish, deploy, restart services, access live state, delegate, or resume earlier jobs. Keep all filesystem work inside ${bot.cwd}. For a tool check use a read-only local file listing. Reply in at most two short spoken sentences. Request: ${request}`;
+    try {
+      const result = await new Promise<{stdout: string; stderr: string}>((resolve, reject) => {
+      const child = execFile(process.execPath, ['--experimental-strip-types', join(root, '../../server/openmausbot.ts'), 'run', '--bot', bot.id, '--task', 'current', '--port', String(devPort), '--json', '--quiet', '--wait', 'turn', '--timeout', '105s', '--on-timeout', 'stop', '-'], { env: { PATH: process.env.PATH, HOME: join(data, 'home'), OMB_DATA_DIR: join(data, 'omb') }, maxBuffer: 4 * 1024 * 1024, timeout: 115000, signal }, (error, stdout, stderr) => error ? reject(new Error(`Bot CLI failed: ${stderr.slice(-500)} ${stdout.slice(-500)}`)) : resolve({ stdout, stderr }));
+      child.stdin?.end(message);
+      });
+      const output = JSON.parse(result.stdout);
+      const final = output.reply?.text || output.reply || output.finalReply?.text || output.finalReply;
+      if (typeof final !== 'string' || !final.trim()) {
+        const messages = await exec(process.execPath, ['--experimental-strip-types', join(root, '../../server/openmausbot.ts'), 'messages', '--thread', bot.threadId, '--port', String(devPort), '--json', '--limit', '6'], { env: { PATH: process.env.PATH, HOME: join(data, 'home') }, timeout: 10000 });
+        const doc = JSON.parse(messages.stdout);
+        const rows = Array.isArray(doc) ? doc : doc.messages || doc.result?.messages || [];
+        const reply = rows.findLast((m: { role: string; text?: string }) => ['assistant', 'bot'].includes(m.role) && m.text);
+        if (!reply) throw new Error('Bot finished without a readable reply');
+        return reply.text;
+      }
+      return final;
+    } finally {
+      try {
+        if (signal.aborted) await exec(process.execPath, ['--experimental-strip-types', join(root, '../../server/openmausbot.ts'), 'interrupt', '--thread', bot.threadId, '--port', String(devPort), '--json'], { env: { PATH: process.env.PATH, HOME: join(data, 'home') }, timeout: 10000 });
+      } finally { thinking = false; }
+    }
+  } catch (error) { if (!signal.aborted) row.error = String(error); throw error; }
+  finally { row.thinkFinishedAt = Date.now(); row.thinkMs = row.thinkFinishedAt - start; log({ event: 'think_finished', ...row }); }
+}
+async function jsonBody(req: IncomingMessage) {
+  let body = ''; for await (const chunk of req) { body += chunk; if (body.length > 128000) throw new Error('Request too large'); }
+  return JSON.parse(body || '{}');
+}
+function reply(res: ServerResponse, status: number, body: unknown) { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); }
+const server = createServer(async (req, res) => {
+  try {
+    const url = new URL(req.url!, 'http://localhost');
+    const path = url.pathname;
+    if (path === '/health') return reply(res, 200, { ok: true, models: models.map(m => m.id) });
+    if (path === '/think' && req.method === 'POST') {
+      const key = String(req.headers['x-poc-secret'] || '');
+      if (key.length !== hookSecret.length || !timingSafeEqual(Buffer.from(key), Buffer.from(hookSecret))) return reply(res, 403, { error: 'Forbidden' });
+      const body = await jsonBody(req), call = calls.get(body.callId);
+      if (!call || call.ended || typeof body.request !== 'string' || body.request.length > 12000) return reply(res, 400, { error: 'Invalid call or request' });
+      const row = last(call);
+      return reply(res, 200, { answer: await think(call, row, body.request, AbortSignal.timeout(115000)) });
+    }
+    const prefix = `/${accessPath}/`;
+    if (!path.startsWith(prefix)) return reply(res, 404, { error: 'Not found' });
+    const route = path.slice(prefix.length);
+    if (!route || route === 'client.js') {
+      res.writeHead(200, { 'Content-Type': route ? 'text/javascript' : 'text/html', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
+      return res.end(readFileSync(join(root, route ? '.data/client.js' : 'index.html')));
+    }
+    if (route === 'api/config') return reply(res, 200, { bots: bots.map(b => ({ id: b.id, name: b.name })), models: models.map(m => m.id), probes, hostedModels, voice });
+    if (route === 'api/call' && req.method === 'POST') {
+      if (active && !active.ended) return reply(res, 409, { error: 'One call at a time. Hang up the current call.' });
+      const settings: Settings = await jsonBody(req);
+      if (!bots.some(b => b.id === settings.botId) || !['agent', 'engine'].includes(settings.variant) || typeof settings.buffer !== 'boolean' || !models.some(m => m.id === settings.responseModel) || !(settings.thinkingModel === 'bot' || models.some(m => m.id === settings.thinkingModel)) || !hostedModels.includes(settings.elevenAgentLlm)) return reply(res, 400, { error: 'Invalid settings' });
+      const bot = bots.find(b => b.id === settings.botId)!;
+      const call: Call = { id: randomUUID(), settings, turns: [], prompt: context(bot) + voiceInstructions, ended: false };
+      calls.set(call.id, call); active = call;
+      const id = settings.variant === 'engine' ? cache.engineId : cache.agentId;
+      const overrides = settings.variant === 'agent' ? { agent: { prompt: { llm: settings.elevenAgentLlm } } } : {};
+      try {
+        // ElevenLabs client 1.35.0 sends WebRTC overrides in one packet with a 64 KB limit.
+        if (settings.variant === 'agent') await api(`/convai/agents/${id}`, 'PATCH', { conversation_config: { agent: { prompt: { prompt: `${call.prompt}\nUse callId {{poc_call_id}} when calling think.`, llm: settings.elevenAgentLlm } } } });
+        const websocket = (settings as Settings & { transport?: string }).transport === 'websocket';
+        const token = websocket ? undefined : await eleven.conversationalAi.conversations.getWebrtcToken({ agentId: id });
+        const signed = websocket ? await api(`/convai/conversation/get-signed-url?agent_id=${encodeURIComponent(id)}`) : undefined;
+        log({ event: 'call_started', callId: call.id, variant: settings.variant, settings, contextChars: call.prompt.length });
+        return reply(res, 200, { callId: call.id, conversationToken: token?.token, signedUrl: signed?.signed_url, overrides, dynamicVariables: { poc_call_id: call.id } });
+      } catch (error) { call.ended = true; throw error; }
+    }
+    if (route === 'api/event' && req.method === 'POST') {
+      const event = await jsonBody(req), call = calls.get(event.callId);
+      if (!call) return reply(res, 404, { error: 'Unknown call' });
+      const now = Date.now(), at = typeof event.at === 'number' && Math.abs(event.at - now) < 60000 ? event.at : now;
+      if (event.type === 'connected') call.conversationId = event.conversationId;
+      if (event.type === 'user_begin') turn(call, at, 'client_speech_in_progress');
+      if (event.type === 'user_eos') {
+        let row = call.turns.at(-1);
+        if (!row || !(row.eosSource === 'client_speech_in_progress' || row.eosSource === 'server_transcript_arrival' && Math.abs(row.eosAt - at) < 3000)) row = turn(call, at, event.source || 'client_vad');
+        row.eosAt = at; row.eosSource = event.source || 'client_vad';
+      }
+      if (event.type === 'user_transcript') {
+        const row = call.turns.at(-1);
+        if (!row || call.settings.variant === 'agent' && row.firstAudioAt && at - row.eosAt > 3000) turn(call, at, event.source || 'client_transcript_arrival');
+        transcriptLog({ callId: call.id, role: 'user', text: event.text });
+      }
+      if (event.type === 'first_audio') { const row = last(call); row.firstAudioAt ??= at; row.firstAudioSource ??= event.source || 'client_mode_speaking'; }
+      if (event.type === 'first_text') { const row = last(call); row.firstTextAt ??= at; row.firstTextSource ??= event.source || 'hosted_agent_client_text_arrival'; }
+      if (event.type === 'agent_transcript') transcriptLog({ callId: call.id, role: 'assistant', text: event.text });
+      if (event.type === 'interrupted') { const row = call.turns.at(-1); const interrupted = row?.firstAudioAt ? row : call.turns.at(-2); if (interrupted) { interrupted.interrupted = true; log({ event: 'interruption_target', ...interrupted }); } }
+      if (event.type === 'error') { last(call).error = String(event.error).slice(0, 1000); }
+      if (event.type === 'ended') call.ended = true;
+      log({ event: event.type, ...(call.turns.length ? last(call) : { callId: call.id, variant: call.settings.variant, settings: call.settings }), clientAt: at, source: event.source });
+      return reply(res, 200, { ok: true, turn: call.turns.at(-1) });
+    }
+    if (route === 'api/state') return reply(res, 200, { call: active ? { id: active.id, settings: active.settings, turns: active.turns, ended: active.ended } : null });
+    return reply(res, 404, { error: 'Not found' });
+  } catch (error) { console.error(String(error)); if (!res.headersSent) reply(res, 500, { error: String(error) }); else res.end(); }
+});
+await eleven.speechEngine.attach(cache.engineId, server, '/ws', {
+  onInit(conversationId, session) { if (active && !active.ended) { active.conversationId = conversationId; log({ event: 'engine_connected', callId: active.id, conversationId }); } else session.close(); },
+  onTranscript(transcript, signal, session) {
+    const call = [...calls.values()].find(c => c.conversationId === session.conversationId);
+    if (!call || call.ended) return;
+    let row = call.turns.at(-1);
+    if (!row || row.responseStartedAt || row.interrupted) row = turn(call);
+    row.responseStartedAt = Date.now();
+    const current = row;
+    let responseFinished = false;
+    signal.addEventListener('abort', () => { if (responseFinished) return; current.interrupted = true; log({ event: 'engine_abort', ...current }); }, { once: true });
+    async function* answer() {
+      const model = models.find(m => m.id === call!.settings.responseModel)!;
+      const messages: Message[] = transcript.map(m => ({ role: m.role === 'agent' ? 'assistant' : 'user', content: m.content }));
+      let spoken = '';
+      function sent(text: string, substantive = false) {
+        if (!current.firstTextAt) { current.firstTextAt = Date.now(); current.firstTextSource = 'server_send_response'; }
+        if (substantive) current.substantiveTextAt ??= Date.now();
+        spoken += text; log({ event: 'text_sent', ...current, chunkChars: text.length }); return text;
+      }
+      try {
+        if (call!.settings.buffer) yield sent('Okay... ');
+        for await (const part of complete(model, call!.prompt, messages, signal, true)) {
+          if (signal.aborted) return;
+          if (part.text) yield sent(part.text, true);
+          if (part.think) {
+            yield sent('Let me think through that... ');
+            const result = think(call!, current, part.think, signal).then(text => ({ text }), error => ({ error }));
+            while (!signal.aborted) {
+              let timer: ReturnType<typeof setTimeout> | undefined;
+              const next = await Promise.race([result, new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 5000); })]);
+              clearTimeout(timer);
+              if (next === null) { yield sent(' '); continue; }
+              if ('error' in next) throw next.error;
+              if (!signal.aborted) yield sent(next.text, true);
+              break;
+            }
+            break;
+          }
+        }
+      } catch (error) { if (!signal.aborted) { current.error = String(error); yield sent('I could not finish that request. Please check the call log. '); } }
+      finally { responseFinished = true; current.responseFinished = true; current.responseFinishedAt = Date.now(); transcriptLog({ callId: call!.id, role: 'assistant', text: spoken, interrupted: signal.aborted }); log({ event: 'response_finished', ...current }); }
+    }
+    session.sendResponse(answer());
+  },
+  onError(error, session) { log({ event: 'engine_error', conversationId: session?.conversationId, error: String(error) }); },
+});
+await build({ entryPoints: [join(root, 'client.ts')], bundle: true, format: 'esm', outfile: join(data, 'client.js'), platform: 'browser' });
+server.listen(port, '127.0.0.1', () => console.log(`Ready ${publicUrl}/${accessPath}/`));
