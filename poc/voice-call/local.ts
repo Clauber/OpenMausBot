@@ -31,10 +31,11 @@ export function attachLocal(server: Server, accessPath: string, calls: Map<strin
     const history: Message[] = [];
     let controller: AbortController | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    let frames: Buffer[] = [], preRoll: Buffer[] = [], bytes = 0, lastVoiceAt = 0;
+    let frames: Buffer[] = [], preRoll: Buffer[] = [], bytes = 0, lastVoiceAt = 0, playUntil = 0, loudSince = 0;
     const send = (body: object) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(body)); };
     function interrupt() {
       controller?.abort();
+      playUntil = 0; loudSince = 0;
       const row = call.turns.at(-1);
       if (row && !row.interrupted) { row.interrupted = true; hooks.log({ event: 'local_interrupted', ...row }); }
       send({ type: 'speech_start' });
@@ -58,6 +59,7 @@ export function attachLocal(server: Server, accessPath: string, calls: Map<strin
           for await (const pcm of speak(voice, text.trim(), signal)) {
             signal.throwIfAborted();
             row.firstAudioAt ??= Date.now(); row.firstAudioSource = 'server_tts_pcm';
+            playUntil = Math.max(playUntil, Date.now()) + pcm.length / 48;
             send({ type: 'audio', turnId: row.turnId, pcm: pcm.toString('base64'), sampleRate: 24000 });
           }
         });
@@ -132,7 +134,14 @@ export function attachLocal(server: Server, accessPath: string, calls: Map<strin
       if (!pcm.length || pcm.length % 2 || pcm.length > 16000) { ws.close(1009, 'Expected short PCM16 frames'); return; }
       let energy = 0;
       for (let i = 0; i < pcm.length; i += 2) energy += (pcm.readInt16LE(i) / 32768) ** 2;
-      const voiced = Math.sqrt(energy / (pcm.length / 2)) > 0.012;
+      // Speaker echo leaks past browser echo cancellation, so barge-in while the bot talks needs louder, sustained speech.
+      const botTalking = Date.now() < playUntil + 300;
+      const voiced = Math.sqrt(energy / (pcm.length / 2)) > (botTalking ? 0.06 : 0.012);
+      if (botTalking) {
+        if (!voiced) { loudSince = 0; return; }
+        loudSince ||= Date.now();
+        if (Date.now() - loudSince < 300) return;
+      }
       if (voiced) {
         if (!frames.length) { interrupt(); frames = preRoll; bytes = frames.reduce((n, b) => n + b.length, 0); preRoll = []; }
         lastVoiceAt = Date.now(); clearTimeout(timer); timer = setTimeout(finish, 500);
