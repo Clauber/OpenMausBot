@@ -136,6 +136,7 @@ const server = createServer(async (req, res) => {
       const settings: Settings = { voice: `elevenlabs:${voice}`, buffer: false, responseModel: models[0]?.id, thinkingModel: 'bot', elevenAgentLlm: hostedModels[0], promptCache: false, contextMode: 'full', callTopic: 'marketing team working preferences', turnEagerness: 'eager', turnTimeout: 30, speculativeTurn: false, ...await jsonBody(req) };
       if (!bots.some(b => b.id === settings.botId) || !['agent', 'engine', 'agent-realtime', 'local'].includes(settings.variant) || typeof settings.buffer !== 'boolean' || !models.some(m => m.id === settings.responseModel) || !(settings.thinkingModel === 'bot' || models.some(m => m.id === settings.thinkingModel)) || !hostedModels.includes(settings.elevenAgentLlm)) return reply(res, 400, { error: 'Invalid settings' });
       if (typeof settings.promptCache !== 'boolean' || !['full', 'slim'].includes(settings.contextMode) || typeof settings.callTopic !== 'string' || settings.callTopic.length > 2000 || !['eager', 'normal', 'patient'].includes(settings.turnEagerness) || !Number.isFinite(settings.turnTimeout) || settings.turnTimeout < 1 || settings.turnTimeout > 30 || typeof settings.speculativeTurn !== 'boolean') return reply(res, 400, { error: 'Invalid round-two settings' });
+      if (settings.variant === 'local') settings.promptCache = false;
       if (settings.promptCache && (settings.variant !== 'engine' || models.find(m => m.id === settings.responseModel)?.provider !== 'anthropic')) return reply(res, 400, { error: 'Prompt cache requires an Anthropic Speech Engine response model' });
       if (settings.variant === 'agent-realtime' && settings.contextMode !== 'full') return reply(res, 400, { error: 'Realtime comparison requires full context' });
       const selectedVoice = voices.find(v => v.id === settings.voice);
@@ -148,7 +149,7 @@ const server = createServer(async (req, res) => {
       const call: Call = { id: randomUUID(), settings, turns: [], prompt: [...system.stable, system.thread].join('\n'), system, ended: false };
       calls.set(call.id, call); active = call;
       if (settings.variant === 'local') {
-        settings.responseModel = '9router:gx10/claude-haiku-5-5';
+        settings.responseModel = 'claude-haiku-5-5';
         log({ event: 'call_started', callId: call.id, variant: 'local', settings });
         return reply(res, 200, { callId: call.id, local: true });
       }

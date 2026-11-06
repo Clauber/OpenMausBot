@@ -6,7 +6,7 @@ import { speak, type Voice } from './voices.ts';
 import type { Call, Turn } from './server.ts';
 
 const { buildRecall } = await import('../../server/recall.ts');
-const model: Model = { id: '9router:gx10/claude-haiku-5-5', modelId: 'gx10/claude-haiku-5-5', provider: 'compat', key: '9R_KEY', baseUrl: 'https://9router.gsdut.dev/v1' };
+const model: Model = { id: 'claude-haiku-5-5', provider: 'anthropic', key: 'ANTHROPIC_API_KEY' };
 type Hooks = {
   turn: (call: Call, at?: number, source?: string) => Turn;
   think: (call: Call, row: Turn, request: string, signal: AbortSignal) => Promise<string>;
