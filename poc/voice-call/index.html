@@ -5,6 +5,13 @@
 <label>Bot <select id="bot"></select></label>
 <label>Variant <select id="variant"><option value="engine">Speech Engine</option><option value="agent">ElevenLabs Agent</option></select></label>
 <label><input type="checkbox" id="buffer"> Speak an instant buffer phrase</label>
+<label><input type="checkbox" id="cache"> Cache Anthropic identity, SOUL and memory, prewarm on Call</label>
+<label>Voice context <select id="context"><option value="full">Full</option><option value="slim">Slim, selected memory and last 10 messages</option></select></label>
+<label>Call topic for memory selection <input id="topic" value="marketing team working preferences" maxlength="2000"></label>
+<label>Turn eagerness <select id="eagerness"><option value="eager">Eager</option><option value="normal">Normal</option><option value="patient">Patient</option></select></label>
+<label>Silence timeout in seconds <input id="timeout" type="number" min="1" max="30" value="30"></label>
+<label><input type="checkbox" id="speculative"> Speculative turn generation</label>
+<p><small>Text streams from the first model delta. Anthropic and Gemini thinking is disabled. Compatible models keep their provider defaults. Realtime uses full context and manages its own models. OpenAI and Azure appear only after a successful service probe.</small></p>
 <label>Response model <select id="response"></select></label>
 <label>Thinking model <select id="thinking"><option value="bot">The bot's own agent</option></select></label>
 <label>Hosted agent LLM <select id="hosted"></select></label>

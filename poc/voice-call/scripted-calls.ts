@@ -2,12 +2,14 @@ import WebSocket from 'ws';
 import { createHash } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { loadavg, availableParallelism } from 'node:os';
 const data = join(import.meta.dirname, '.data');
 const run = JSON.parse(readFileSync(join(data, 'run.json'), 'utf8'));
 const base = process.env.POC_URL || run.url;
+const telemetryBase = new URL(new URL(run.url).pathname, `http://127.0.0.1:${run.pocPort}`);
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 async function post(path: string, body: object) {
-  const res = await fetch(new URL(path, base), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(45000) });
+  const res = await fetch(new URL(path, path === 'api/event' ? telemetryBase : base), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(45000) });
   const json = await res.json(); if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`); return json;
 }
 const config = await (await fetch(new URL('api/config', base))).json();
@@ -30,11 +32,22 @@ const scenarios = [
 ];
 const responseModels = (process.env.POC_MODELS?.split(',') || ['claude-haiku-5-5', '9router:glm/glm-5.3-flash']).filter((id: string) => config.models.includes(id));
 if (responseModels.length !== 2) throw new Error('Choose two reachable response models with POC_MODELS');
-const matrix = [
+const round2 = process.argv.includes('--round2');
+const round2Base = { buffer: false, responseModel: 'claude-haiku-5-5', contextMode: 'full', promptCache: false, turnEagerness: 'eager', turnTimeout: 30, speculativeTurn: false, callTopic: 'marketing team working preferences' };
+const round2Matrix = [
+  { label: 'baseline', variant: 'engine' },
+  { label: 'cache-full', variant: 'engine', promptCache: true },
+  { label: 'slim', variant: 'engine', contextMode: 'slim' },
+  { label: 'slim-cache', variant: 'engine', contextMode: 'slim', promptCache: true },
+  { label: 'slim-spec', variant: 'engine', contextMode: 'slim', promptCache: true, speculativeTurn: true, turnTimeout: 7 },
+  { label: 'agent', variant: 'agent' },
+  ...(config.realtimeAvailable ? [{ label: 'realtime', variant: 'agent-realtime' }] : []),
+].map(s => ({ ...round2Base, ...s }));
+const matrix = round2 ? round2Matrix.filter(s => !process.env.POC_SETTINGS || process.env.POC_SETTINGS.split(',').includes(s.label)) : [
   ...responseModels.flatMap((responseModel: string) => [false, true].map(buffer => ({ variant: 'engine', buffer, responseModel }))),
   { variant: 'agent', buffer: false, responseModel: responseModels[0] },
 ];
-const summaryPath = join(data, 'logs/scripted.jsonl');
+const summaryPath = join(data, round2 ? 'logs/round2-scripted.jsonl' : 'logs/scripted.jsonl');
 async function runCall(setting: typeof matrix[number], scenario: typeof scenarios[number]) {
   const settings = { ...setting, botId: config.bots[0].id, thinkingModel: 'bot', elevenAgentLlm: config.hostedModels[0] };
   let call;
@@ -46,7 +59,11 @@ async function runCall(setting: typeof matrix[number], scenario: typeof scenario
       await sleep(15000);
     }
   }
-  const begun = Date.now();
+  const begun = Date.now(), cpuStarted = process.cpuUsage();
+  const loads = [{ at: begun, load: loadavg() }];
+  const loadTimer = setInterval(() => loads.push({ at: Date.now(), load: loadavg() }), 5000);
+  let sequence = 0, audioParts: Buffer[] = [], audioChunks: { at: number; end: number }[] = [], turnAudioBytes = 0;
+  const wire = (entry: object) => { if (round2) appendFileSync(join(data, 'logs/round2-wire.jsonl'), JSON.stringify({ callId: call.callId, sequence, at: Date.now(), ...entry }) + '\n'); };
   const event = (type: string, extra: object = {}) => post('api/event', { callId: call.callId, at: Date.now(), type, ...extra });
   const ws = new WebSocket(call.signedUrl);
   let lastReplyAt = 0, playbackUntil = 0, lastAudio = 0, audioBytes = 0, transcripts = 0, replies = 0, interruptions = 0, closed = false;
@@ -59,6 +76,7 @@ async function runCall(setting: typeof matrix[number], scenario: typeof scenario
   let resolveAudio: (() => void) | undefined;
   ws.on('message', raw => {
     const message = JSON.parse(raw.toString());
+    if (round2) wire({ type: message.type, ...(message.type === 'audio' ? { audioFields: Object.keys(message.audio_event), eventId: message.audio_event.event_id } : { message }) });
     if (message.type === 'ping') ws.send(JSON.stringify({ type: 'pong', event_id: message.ping_event.event_id }));
     if (message.type === 'conversation_initiation_metadata') record('connected', { conversationId: message.conversation_initiation_metadata_event.conversation_id });
     if (message.type === 'user_transcript') { transcripts++; record('user_transcript', { text: message.user_transcription_event.user_transcript, source: 'scripted_server_transcript_arrival' }); }
@@ -66,6 +84,7 @@ async function runCall(setting: typeof matrix[number], scenario: typeof scenario
     if (message.type === 'agent_chat_response_part' && message.text_response_part?.text && !textSeen) { textSeen = true; record('first_text', { source: 'websocket_text_delta_arrival' }); }
     if (message.type === 'audio') {
       const bytes = Buffer.from(message.audio_event.audio_base_64, 'base64');
+      audioParts.push(bytes); turnAudioBytes += bytes.length; audioChunks.push({ at: Date.now(), end: turnAudioBytes });
       audioBytes += bytes.length; lastAudio = Date.now(); playbackUntil = Math.max(lastAudio, playbackUntil) + bytes.length / 32;
       if (!audioSeen) { audioSeen = true; record('first_audio', { source: 'websocket_audio_arrival_proxy' }); resolveAudio?.(); }
     }
@@ -82,6 +101,8 @@ async function runCall(setting: typeof matrix[number], scenario: typeof scenario
     await sleep(1000);
     async function speak(text: string) {
       const pcm = await speech(text);
+      if (sequence) saveAudio();
+      sequence++; audioParts = []; audioChunks = []; turnAudioBytes = 0;
       await event('user_begin');
       sending = true; audioSeen = false; textSeen = false;
       const started = Date.now();
@@ -94,6 +115,12 @@ async function runCall(setting: typeof matrix[number], scenario: typeof scenario
       await event('user_eos', { source: 'scripted_pcm_end' });
       console.log(`${setting.variant}/${setting.responseModel}/buffer=${setting.buffer} ${scenario.name}: sent ${Math.round(pcm.length / 32)} ms PCM`);
     }
+    function saveAudio() {
+      if (!round2 || !audioParts.length) return;
+      const stem = `${call.callId}-${sequence}`;
+      writeFileSync(join(data, 'audio', `${stem}.pcm`), Buffer.concat(audioParts), { mode: 0o600 });
+      writeFileSync(join(data, 'audio', `${stem}.json`), JSON.stringify({ callId: call.callId, sequence, chunks: audioChunks }), { mode: 0o600 });
+    }
     async function waitReply(timeout = 125000) {
       const at = Date.now();
       while (Date.now() - at < timeout) {
@@ -101,7 +128,7 @@ async function runCall(setting: typeof matrix[number], scenario: typeof scenario
         if (closed) throw new Error('Conversation closed before response');
         if (audioSeen && Date.now() - lastAudio > 2500 && Date.now() > playbackUntil + 500) {
           await Promise.allSettled(pending);
-          const state = await fetch(new URL('api/state', base)).then(r => r.json());
+          const state = await fetch(new URL('api/state', telemetryBase)).then(r => r.json());
           const row = state.call.turns.at(-1);
           if (row?.error) throw new Error(row.error);
           const finishedAt = setting.variant === 'engine' ? row?.responseFinishedAt : row?.thinkCalled ? row.thinkFinishedAt : row?.eosAt;
@@ -132,17 +159,29 @@ async function runCall(setting: typeof matrix[number], scenario: typeof scenario
       if (scenario.name === 'three-minute') await sleep(Math.max(0, begun + 180000 - Date.now()));
     }
     if (!transcripts || !audioBytes || !replies) throw new Error('Missing real transcript, agent reply, or audio');
-    const state = await fetch(new URL('api/state', base)).then(r => r.json());
+    const state = await fetch(new URL('api/state', telemetryBase)).then(r => r.json());
     if (state.call.turns.some((row: { error?: string; interrupted: boolean }) => row.error && !row.interrupted)) throw new Error('Server turn failed');
     if (['memory', 'tool'].includes(scenario.name) && !state.call.turns.some((row: { thinkCalled: boolean; thinkMs?: number; interrupted: boolean; error?: string }) => row.thinkCalled && row.thinkMs !== undefined && !row.interrupted && !row.error)) throw new Error('Required think call did not complete');
   } catch (error) { failure = String(error); await event('error', { error: failure }); }
   finally {
+    clearInterval(loadTimer);
+    if (round2 && audioParts.length) {
+      const stem = `${call.callId}-${sequence}`;
+      writeFileSync(join(data, 'audio', `${stem}.pcm`), Buffer.concat(audioParts), { mode: 0o600 });
+      writeFileSync(join(data, 'audio', `${stem}.json`), JSON.stringify({ callId: call.callId, sequence, chunks: audioChunks }), { mode: 0o600 });
+    }
     if (silence) clearInterval(silence);
     finishing = true; ws.close(1000); await Promise.allSettled(pending); await event('ended');
-    const summary = { callId: call.callId, scenario: scenario.name, settings, startedAt: begun, elapsedMs: Date.now() - begun, audioBytes, transcripts, replies, interruptions, ok: !failure, error: failure || undefined };
+    const summary = { callId: call.callId, scenario: scenario.name, runTag: process.env.POC_RUN_TAG || (round2 ? 'matrix' : 'round1'), settings, startedAt: begun, elapsedMs: Date.now() - begun, loads, cores: availableParallelism(), callerCpu: process.cpuUsage(cpuStarted), audioBytes, transcripts, replies, interruptions, ok: !failure, error: failure || undefined };
     appendFileSync(summaryPath, JSON.stringify(summary) + '\n'); console.log(JSON.stringify(summary));
   }
 }
 const smoke = process.argv.includes('--smoke');
 const selected = smoke ? scenarios.slice(0, 1) : scenarios.filter(s => !process.env.POC_SCENARIO || s.name === process.env.POC_SCENARIO);
-for (const scenario of [...selected].sort((a, b) => Number(b.name === 'memory') - Number(a.name === 'memory'))) for (const setting of smoke ? [matrix[0], matrix.at(-1)!] : matrix) await runCall(setting, scenario);
+if (round2 && !smoke && !process.env.POC_SCENARIO) {
+  for (let repeat = 0; repeat < 5; repeat++) {
+    const interleaved = repeat % 2 ? [...matrix].reverse() : matrix;
+    if (repeat < 4) for (const setting of interleaved) await runCall(setting, scenarios[0]);
+    for (const setting of interleaved) await runCall(setting, scenarios[1]);
+  }
+} else for (const scenario of selected) for (const setting of round2 ? matrix : smoke ? [matrix[0], matrix.at(-1)!] : matrix) await runCall(setting, scenario);

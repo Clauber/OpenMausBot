@@ -3,6 +3,9 @@ export type Model = { id: string; modelId?: string; provider: 'openai' | 'anthro
 const credentials = new Map<string, string>();
 export const discovery: object[] = [];
 export type Message = { role: 'user' | 'assistant'; content: string };
+export type SystemPrompt = string | { stable: string[]; thread: string };
+export type Usage = { inputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; outputTokens: number };
+export type CompletionOptions = { cache?: boolean; maxTokens?: number };
 export const candidates: Model[] = [
   { id: 'gpt-4.1-mini', provider: 'openai', key: 'OPENAI_API_KEY' },
   { id: 'gpt-5.4-mini', provider: 'openai', key: 'OPENAI_API_KEY' },
@@ -11,24 +14,26 @@ export const candidates: Model[] = [
   { id: 'openai/gpt-oss-120b', provider: 'groq', key: 'GROQ_MEETING_KEY' },
 ];
 const functionSchema = { name: 'think', description: 'Ask the bot agent to reason, recall memory, or use its tools. Always use this for tool requests and explicit requests to think.', parameters: { type: 'object', properties: { request: { type: 'string' } }, required: ['request'], additionalProperties: false } };
-export async function* complete(model: Model, system: string, messages: Message[], signal: AbortSignal, tool = false): AsyncGenerator<{ text?: string; think?: string }> {
+export async function* complete(model: Model, system: SystemPrompt, messages: Message[], signal: AbortSignal, tool = false, options: CompletionOptions = {}): AsyncGenerator<{ text?: string; think?: string; usage?: Usage; token?: boolean }> {
   const key = process.env[model.key] || credentials.get(model.key);
   if (!key) throw new Error(`Missing ${model.key}`);
+  const systemText = typeof system === 'string' ? system : [...system.stable, system.thread].join('\n');
+  const systemBlocks = typeof system === 'string' ? system : [...system.stable.map(text => ({ type: 'text', text, ...(options.cache ? { cache_control: { type: 'ephemeral' } } : {}) })), { type: 'text', text: system.thread }];
   let url: string;
   let body: Record<string, unknown>;
   let headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (model.provider === 'anthropic') {
     url = 'https://api.anthropic.com/v1/messages';
     headers = { ...headers, 'x-api-key': key, 'anthropic-version': '2023-06-01' };
-    body = { model: model.id, system, messages, stream: true, max_tokens: 600, ...(tool ? { tools: [{ name: functionSchema.name, description: functionSchema.description, input_schema: functionSchema.parameters }] } : {}) };
+    body = { model: model.id, system: systemBlocks, messages, stream: true, max_tokens: options.maxTokens || 600, thinking: { type: 'disabled' }, ...(tool ? { tools: [{ name: functionSchema.name, description: functionSchema.description, input_schema: functionSchema.parameters }] } : {}) };
   } else if (model.provider === 'gemini') {
     url = `https://generativelanguage.googleapis.com/v1beta/models/${model.id}:streamGenerateContent?alt=sse`;
     headers['x-goog-api-key'] = key;
-    body = { systemInstruction: { parts: [{ text: system }] }, contents: messages.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })), generationConfig: { maxOutputTokens: 800, thinkingConfig: { thinkingBudget: 0 } }, ...(tool ? { tools: [{ functionDeclarations: [functionSchema] }] } : {}) };
+    body = { systemInstruction: { parts: [{ text: systemText }] }, contents: messages.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })), generationConfig: { maxOutputTokens: 800, thinkingConfig: { thinkingBudget: 0 } }, ...(tool ? { tools: [{ functionDeclarations: [functionSchema] }] } : {}) };
   } else {
     url = `${model.baseUrl || (model.provider === 'groq' ? 'https://api.groq.com/openai/v1' : 'https://api.openai.com/v1')}/chat/completions`;
     headers.Authorization = `Bearer ${key}`;
-    body = { model: model.modelId || model.id, messages: [{ role: 'system', content: system }, ...messages], stream: true, max_tokens: 600, ...(tool ? { tools: [{ type: 'function', function: functionSchema }] } : {}) };
+    body = { model: model.modelId || model.id, messages: [{ role: 'system', content: systemText }, ...messages], stream: true, stream_options: { include_usage: true }, max_tokens: options.maxTokens || 600, ...(tool ? { tools: [{ type: 'function', function: functionSchema }] } : {}) };
   }
   const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal });
   if (!res.ok) throw new Error(`${model.id} HTTP ${res.status}: ${(await res.text()).slice(0, 400)}`);
@@ -43,9 +48,11 @@ export async function* complete(model: Model, system: string, messages: Message[
       if (!line.startsWith('data:') || line.slice(5).trim() === '[DONE]') continue;
       const data = JSON.parse(line.slice(5));
       if (data.error) throw new Error(`${model.id}: ${JSON.stringify(data.error).slice(0, 300)}`);
+      const usage = data.message?.usage || data.usage || data.usageMetadata;
+      if (usage && (usage.input_tokens !== undefined || usage.prompt_tokens !== undefined || usage.promptTokenCount !== undefined)) yield { usage: { inputTokens: (usage.input_tokens ?? usage.prompt_tokens ?? usage.promptTokenCount ?? 0) + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0), cacheReadTokens: usage.cache_read_input_tokens || usage.prompt_tokens_details?.cached_tokens || 0, cacheCreationTokens: usage.cache_creation_input_tokens || 0, outputTokens: usage.output_tokens ?? usage.completion_tokens ?? usage.candidatesTokenCount ?? 0 } };
       if (model.provider === 'anthropic') {
         if (data.delta?.type === 'text_delta') yield { text: data.delta.text };
-        if (data.content_block?.type === 'tool_use') name = data.content_block.name;
+        if (data.content_block?.type === 'tool_use') { name = data.content_block.name; yield { token: true }; }
         if (data.delta?.partial_json) args += data.delta.partial_json;
       } else if (model.provider === 'gemini') {
         for (const part of data.candidates?.[0]?.content?.parts || []) {

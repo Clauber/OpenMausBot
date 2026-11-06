@@ -12,21 +12,21 @@ poc/voice-call/start.sh
 
 The script takes a snapshot when none exists, starts a loopback development OpenMausBot server, opens a Cloudflare quick tunnel, and starts the PoC server. It prints the private HTTPS page URL, three ports and exact owned PIDs. Runtime files, credentials supplied in memory, copied context, audio and logs stay under ignored `.data/`. Never commit that directory or share its contents as public evidence.
 
-`POC_BOTS` selects comma-separated bot names or IDs before the first snapshot. The measured bot is St. Paul. Its configured ElevenLabs voice is `JBFqnCBsd6RMkjVDRZzb`. The workspace default uses Fish and has an empty ElevenLabs voice, so the bot override is the correct comparison voice. Both variants use ElevenLabs Flash v2 and PCM at 16 kHz.
+`POC_BOTS` selects comma-separated bot names or IDs before the first snapshot. The measured bot is St. Paul. Its configured ElevenLabs voice is `JBFqnCBsd6RMkjVDRZzb`. The workspace default uses Fish and has an empty ElevenLabs voice, so the bot override is the correct comparison voice. The custom Agent and Speech Engine use ElevenLabs Flash v2 and PCM at 16 kHz. Realtime Mini keeps the voice and PCM rate, but manages its TTS model.
 
 `--snapshot` requests snapshot creation. Existing snapshots are protected against replacement. Use a fresh worktree for a new snapshot. This preserves the isolated bot's new conversation state.
 
 Read `.data/run.json` for the current URL and PIDs. Stop only this supervisor with the exact `kill -TERM PID` printed at startup. It stops its own dev launcher, PoC server and tunnel. The dev launcher stops its server child. Do not kill processes by name.
 
-The page has a bot picker, variant switch, buffer toggle, response model, thinking model and hosted-agent LLM. Call and Hang up use the ElevenLabs browser client over WebRTC. Open the printed HTTPS URL on iPhone Safari and grant microphone access. One call can run at a time.
+The page has a bot picker, variant switch, buffer toggle, response model, thinking model and hosted-agent LLM. Round two adds Anthropic caching, full or slim context, a memory-selection topic, turn eagerness, silence timeout and speculative turns. Call and Hang up use the ElevenLabs browser client over WebRTC. Open the printed HTTPS URL on iPhone Safari and grant microphone access. One call can run at a time.
 
 ## Compared paths
 
 Speech Engine attaches to the same HTTP server at `/ws` using `@elevenlabs/elevenlabs-js` 2.76.0. ElevenLabs authenticates the connection with its SDK JWT validation. The engine's WebSocket URL follows the current quick tunnel on every startup.
 
-The response model receives the bot's full context and streams text. It answers small talk itself and has one `think(request)` tool. With the buffer enabled, the first chunk is `Okay... `, including the trailing space. A tool call streams `Let me think through that... ` before waiting for the result. The log also records `substantiveTextAt` for the first model text or thinking result. This can still be a model-generated holding line.
+The response model receives the selected bot context and streams each text delta immediately. It answers small talk itself and has one `think(request)` tool. With the buffer enabled, the first chunk is `Okay... `, including the trailing space. Only that mode adds `Let me think through that... ` before waiting for a tool result. The round-two prompt requests silent tool calls and no acknowledgments. The log also records `substantiveTextAt` for the first model text or thinking result. This can still be a model-generated holding line, so the round-two report aligns the actual answer words to recorded audio.
 
-The SDK allows `session.sendResponse` only during `onTranscript`. The thinking result therefore continues the same open async generator. The engine uses the documented maximum 15-second upstream cascade timeout. While thinking, it sends a whitespace chunk every five seconds so the open response continues to make progress. A new transcript aborts the old generator and thinking request. Cancellation also interrupts the copied bot's dev thread before releasing the thinking slot. The prototype does not push a late result as another utterance. That SDK limit is part of the architecture comparison.
+The SDK allows `session.sendResponse` only during `onTranscript`. The thinking result therefore continues the same open async generator. The engine uses the documented maximum 15-second upstream cascade timeout. While thinking, it sends a whitespace chunk every five seconds so the open response continues to make progress. A new transcript aborts the old generator and thinking request. Cancellation also interrupts the copied bot's dev thread before releasing the thinking slot. Replacement requests wait for that cleanup through a promise queue. The prototype does not push a late result as another utterance. That SDK limit is part of the architecture comparison.
 
 Agents uses one cached hosted agent, a selectable hosted LLM and one server webhook tool. A random shared-secret header protects the webhook. The server updates that secret on the remote tool at each startup. The hosted default is `gemini-3.1-flash-lite`. The prompt and LLM overrides are enabled in the agent's platform settings.
 
@@ -51,7 +51,13 @@ The script neutralizes the copy before starting any server. `.data/omb/snapshot.
 
 The product runtime can still create its own local MausBot incident thread and retry a failed dev turn. This happened during the experiment. The `automaticRecovery` setting disables model fallback, not that incident mechanism. Its observed retry targeted the copied dev thread. Native CLI tools remain available, so the snapshot is not an operating-system or network sandbox.
 
-The response prompt reuses `botPersona` and `buildSystemPrompt` from the product read only. It includes the complete SOUL, current copied memory Markdown and the last 30 copied thread messages. The measured initial context was 125,534 characters. The memory journal is copied for continuity but is not duplicated into the prompt because it contains historical revisions. Private context never enters tracked files.
+The full response prompt reuses `botPersona` and `buildSystemPrompt` from the product read only. It includes the complete SOUL, current copied memory Markdown and the last 30 copied thread messages. The measured round-one initial context was 125,534 characters. The memory journal is copied for continuity but is not duplicated into the prompt because it contains historical revisions. Private context never enters tracked files.
+
+Slim context preserves the complete identity and SOUL. Once at call start, it ranks memory paragraphs by keywords in the call topic, keeps up to 12 paragraphs and 12,000 characters, and adds the last 10 thread messages. This cheap selection can omit relevant facts. The `bot` thinking route still asks the copied bot's own full agent for memory and tools.
+
+Anthropic cache mode puts identity, SOUL and voice instructions in the first stable system block, memory in the second, and recent thread in the final uncached block. Both stable blocks have `cache_control` breakpoints. Call setup prewarms the identical model, tools and system prefix before joining. Turn logs include total input tokens, cache reads and cache creation. Prewarming affects call setup time and is outside the measured EOS interval. Response-model thinking is disabled for Anthropic and Gemini. Compatible providers retain their model defaults.
+
+ElevenLabs Realtime Mini is a third variant when the startup service probe succeeds. It gets full context, the same configured ElevenLabs voice and the same think webhook. Select it with `conversation_config.realtime_model = eleven_realtime_v1_mini`. ElevenLabs manages its component models, reasoning and TTS settings. Its documentation describes a cascaded architecture, so the Realtime name does not establish a fused speech-to-speech model. OpenAI Realtime was probed separately and could not generate with the available credit balance. No Azure Live credentials were configured. See the round-two results for exact statuses.
 
 ## Model discovery
 
@@ -99,11 +105,34 @@ The report merges snapshots per turn, excludes failed/interrupted turns from lat
 
 See [RESULTS.md](RESULTS.md) for measured output and acceptance evidence. The host was busy during this experiment, with a load average around 48 on 24 cores before the final run. Settings alternate to reduce time drift. These observations support architecture exploration, not a production performance guarantee.
 
+## Repeat round two
+
+```sh
+~/ai/bin/gsd-secrets run --key ELEVENLABS_API_KEY -- \
+  env POC_RUN_TAG=matrix-final \
+  poc/voice-call/node_modules/node/bin/node --experimental-strip-types \
+  poc/voice-call/scripted-calls.ts --round2
+
+~/ai/bin/gsd-secrets run --key ELEVENLABS_API_KEY -- \
+  env POC_RUN_TAG=matrix-final \
+  poc/voice-call/node_modules/node/bin/node --experimental-strip-types \
+  poc/voice-call/round2-report.ts --fetch-metrics --align
+```
+
+The round-two matrix interleaves settings in alternating order. Each setting gets four two-turn small-talk calls and five one-turn memory calls. `POC_SETTINGS` filters comma-separated setting labels. `POC_SCENARIO=interrupt` or `tool` runs those scenarios once per selected setting. Use a separate `POC_RUN_TAG` to keep those observations separate.
+
+`round2-report.ts` joins scripted utterances to final server generations, retains cancelled attempts in raw logs, fetches actual producing models and vendor phase durations, and aligns recorded PCM with final transcripts. It maps the first answer word to the chunk's arrival timestamp. `.data/round2-answer-offsets.json` can hold reviewed preamble word counts keyed by `callId/sequence`. Alignment that places a memory answer before think completion requires review. Counts refer to nonempty alignment word entries. A count beyond the transcript rejects a response with no answer. Inspect transcripts before treating these marks as answers. Forced alignment is an estimate, not human listening acceptance.
+
+See [RESULTS-round2.md](RESULTS-round2.md) for comparisons and phase limits. The raw turn phases are EOS, transcript arrival, LLM request, first token, first text and first audio. Hosted internal timestamps are unavailable; vendor phase durations are reported separately. Silence timeout controls taking a turn after prolonged silence. It is not a fixed end-of-speech delay. Turn eagerness and speculative generation affect earlier turn detection.
+
 ## References
 
 - [Speech Engine overview](https://elevenlabs.io/docs/overview/capabilities/speech-engine.md).
 - [Speech Engine cookbook](https://elevenlabs.io/docs/eleven-api/guides/cookbooks/speech-engine.md).
 - [JavaScript Speech Engine SDK](https://elevenlabs.io/docs/eleven-api/resources/libraries/speech-engine/javascript-sdk-reference.md).
+- [Conversation flow](https://elevenlabs.io/docs/eleven-agents/customization/conversation-flow.md).
+- [Realtime models](https://elevenlabs.io/docs/eleven-agents/customization/realtime-models.md).
+- [Realtime API compatibility](https://elevenlabs.io/docs/eleven-agents/guides/openai-realtime-compatibility.md).
 - [Repository verification](../../docs/verification/README.md).
 
 The source SDK docs and dependency types were checked for the installed versions. The repository's isolated fake-engine CLI verification also passed. A standalone TypeScript check of the server's imports reports diagnostics in untouched product files under the PoC's compiler settings. No diagnostic points into this PoC. This is not a clean repository typecheck. This prototype is disposable and is not a product implementation.

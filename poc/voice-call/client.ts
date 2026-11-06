@@ -20,20 +20,25 @@ const config = await (await fetch('api/config')).json();
 for (const bot of config.bots) select('bot').add(new Option(bot.name, bot.id));
 for (const model of config.models) { select('response').add(new Option(model, model)); select('thinking').add(new Option(model, model)); }
 for (const model of config.hostedModels) select('hosted').add(new Option(model, model));
+if (config.realtimeAvailable) select('variant').add(new Option('ElevenLabs Realtime Mini, configured ElevenLabs voice', 'agent-realtime'));
 element('voice').textContent = `ElevenLabs voice ${config.voice}. Timings use VAD and speaking-mode events, which approximate playback.`;
 element('state').textContent = 'Ready';
 for (const probe of config.probes) log(`${probe.id}: ${probe.ok ? 'available' : probe.error}`);
 function busy(value: boolean) {
   (element('call') as HTMLButtonElement).disabled = value;
   (element('hangup') as HTMLButtonElement).disabled = !value;
-  for (const id of ['bot', 'variant', 'buffer', 'response', 'thinking', 'hosted']) (element(id) as HTMLInputElement).disabled = value;
+  for (const id of ['bot', 'variant', 'buffer', 'response', 'thinking', 'hosted', 'cache', 'context', 'topic', 'eagerness', 'timeout', 'speculative']) (element(id) as HTMLInputElement).disabled = value;
 }
+select('variant').addEventListener('change', () => {
+  if (select('variant').value !== 'engine') (element('cache') as HTMLInputElement).checked = false;
+  if (select('variant').value === 'agent-realtime') select('context').value = 'full';
+});
 element('call').addEventListener('click', async () => {
   busy(true);
   try {
     const permission = await navigator.mediaDevices.getUserMedia({ audio: true });
     permission.getTracks().forEach(track => track.stop());
-    const call = await post('api/call', { botId: select('bot').value, variant: select('variant').value, buffer: (element('buffer') as HTMLInputElement).checked, responseModel: select('response').value, thinkingModel: select('thinking').value, elevenAgentLlm: select('hosted').value });
+    const call = await post('api/call', { botId: select('bot').value, variant: select('variant').value, buffer: (element('buffer') as HTMLInputElement).checked, responseModel: select('response').value, thinkingModel: select('thinking').value, elevenAgentLlm: select('hosted').value, promptCache: (element('cache') as HTMLInputElement).checked, contextMode: select('context').value, callTopic: (element('topic') as HTMLInputElement).value, turnEagerness: select('eagerness').value, turnTimeout: Number((element('timeout') as HTMLInputElement).value), speculativeTurn: (element('speculative') as HTMLInputElement).checked });
     callId = call.callId;
     conversation = await Conversation.startSession({
       conversationToken: call.conversationToken, connectionType: 'webrtc', overrides: call.overrides, dynamicVariables: call.dynamicVariables,

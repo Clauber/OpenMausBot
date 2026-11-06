@@ -1,4 +1,5 @@
 import WebSocket from 'ws';
+import { loadavg } from 'node:os';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -8,11 +9,11 @@ import { promisify } from 'node:util';
 import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js';
 import { build } from 'esbuild';
 import { bots, context, voiceInstructions, root, data } from './context.ts';
-import { probeModels, complete, discovery, type Message } from './models.ts';
+import { probeModels, complete, discovery, type Message, type SystemPrompt, type Usage } from './models.ts';
 
-type Settings = { botId: string; variant: 'agent' | 'engine'; buffer: boolean; responseModel: string; thinkingModel: string; elevenAgentLlm: string };
-type Turn = { callId: string; turnId: number; variant: string; settings: Settings; eosAt: number; eosSource: string; responseStartedAt?: number; firstTextAt?: number; firstTextSource?: string; firstAudioAt?: number; firstAudioSource?: string; substantiveTextAt?: number; responseFinished?: boolean; responseFinishedAt?: number; thinkFinishedAt?: number; thinkCalled: boolean; thinkMs?: number; interrupted: boolean; error?: string };
-type Call = { id: string; settings: Settings; conversationId?: string; turns: Turn[]; prompt: string; ended: boolean };
+type Settings = { label?: string; botId: string; variant: 'agent' | 'engine' | 'agent-realtime'; buffer: boolean; responseModel: string; thinkingModel: string; elevenAgentLlm: string; promptCache: boolean; contextMode: 'full' | 'slim'; callTopic: string; turnEagerness: 'eager' | 'normal' | 'patient'; turnTimeout: number; speculativeTurn: boolean };
+export type Turn = { callId: string; turnId: number; variant: string; settings: Settings; eosAt: number; eosSource: string; hostLoad?: number[]; cpuMs?: number; transcriptAt?: number; llmRequestAt?: number; firstTokenAt?: number; usage?: Usage; responseStartedAt?: number; firstTextAt?: number; firstTextSource?: string; firstAudioAt?: number; firstAudioSource?: string; substantiveTextAt?: number; responseFinished?: boolean; responseFinishedAt?: number; thinkStartedAt?: number; botRequestAt?: number; thinkFinishedAt?: number; thinkCalled: boolean; thinkMs?: number; interrupted: boolean; error?: string };
+type Call = { id: string; settings: Settings; conversationId?: string; turns: Turn[]; prompt: string; system: SystemPrompt; ended: boolean };
 const port = Number(process.env.POC_PORT), publicUrl = process.env.POC_PUBLIC_URL!;
 const devPort = Number(process.env.POC_OMB_PORT);
 if (!port || !devPort || devPort === 8799 || !publicUrl?.startsWith('https://')) throw new Error('Explicit isolated ports and public URL required');
@@ -33,6 +34,7 @@ writeFileSync(join(data, 'model-discovery.json'), JSON.stringify(discovery, null
 const models = probes.filter(m => m.ok);
 console.log('Model probes', probes.map(m => ({ id: m.id, ok: m.ok, ms: m.ms, ...('error' in m ? { error: m.error } : {}) })));
 const hostedModels = ['gemini-3.1-flash-lite', 'gpt-4.1-mini', 'claude-haiku-5-5'];
+const realtimeModel = 'eleven_realtime_v1_mini';
 const events = ['audio', 'interruption', 'user_transcript', 'agent_response', 'agent_response_complete', 'agent_chat_response_part', 'agent_tool_request', 'agent_tool_response', 'vad_score'];
 async function api(path: string, method = 'GET', body?: object) {
   const res = await fetch(`https://api.elevenlabs.io/v1${path}`, { method, headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY!, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(30000) });
@@ -45,22 +47,23 @@ if (bots.some(b => b.voiceProvider !== 'elevenlabs' || b.voice !== voice)) throw
 const engineBody = { cascade_timeout_seconds: 15, name: 'OpenMausBot voice POC engine', speech_engine: { ws_url: `${publicUrl.replace('https:', 'wss:')}/ws`, request_headers: {} }, tts: { voice_id: voice, model_id: 'eleven_flash_v2', agent_output_audio_format: 'pcm_16000' }, asr: { user_input_audio_format: 'pcm_16000' }, turn: { turn_eagerness: 'eager', turn_timeout: 30 }, conversation: { client_events: events, max_duration_seconds: 600 }, auth: { enable_auth: true }, privacy: { record_voice: false, retention_days: 1 } };
 if (cache.engineId) await api(`/speech-engine/${cache.engineId}`, 'PATCH', engineBody);
 else { cache.engineId = (await api('/speech-engine', 'POST', { name: engineBody.name, speech_engine: engineBody.speech_engine })).speech_engine_id; saveCache(); await api(`/speech-engine/${cache.engineId}`, 'PATCH', engineBody); }
-const toolConfig = { type: 'webhook', name: 'think', description: 'Ask the real bot agent to recall memory, reason, or use tools. Required for every tool request and explicit request to think.', pre_tool_speech: 'force', response_timeout_secs: 120, api_schema: { url: `${publicUrl}/think`, method: 'POST', request_headers: { 'X-POC-Secret': hookSecret }, request_body_schema: { type: 'object', properties: { request: { type: 'string', description: 'The full request to give the bot agent' }, callId: { type: 'string', description: 'The callId given in the system prompt' } }, required: ['request', 'callId'] } } };
+const toolConfig = { type: 'webhook', name: 'think', description: 'Ask the real bot agent to recall memory, reason, or use tools. Required for every tool request and explicit request to think.', pre_tool_speech: 'off', response_timeout_secs: 120, api_schema: { url: `${publicUrl}/think`, method: 'POST', request_headers: { 'X-POC-Secret': hookSecret }, request_body_schema: { type: 'object', properties: { request: { type: 'string', description: 'The full request to give the bot agent' }, callId: { type: 'string', description: 'The callId given in the system prompt' } }, required: ['request', 'callId'] } } };
 if (cache.toolId) await api(`/convai/tools/${cache.toolId}`, 'PATCH', { tool_config: toolConfig });
 else { cache.toolId = (await api('/convai/tools', 'POST', { tool_config: toolConfig })).id; saveCache(); }
 const agentBody = { name: 'OpenMausBot voice POC agent', conversation_config: { agent: { first_message: '', language: 'en', prompt: { prompt: 'Bot context is supplied per conversation. Use the think tool with callId {{poc_call_id}}.', llm: hostedModels[0], tool_ids: [cache.toolId], temperature: 0.2 }, dynamic_variables: { dynamic_variable_placeholders: { poc_call_id: 'unset' } } }, tts: engineBody.tts, asr: engineBody.asr, turn: engineBody.turn, conversation: engineBody.conversation }, platform_settings: { auth: { enable_auth: true }, privacy: { record_voice: false, retention_days: 1 }, overrides: { conversation_config_override: { agent: { prompt: { prompt: true, llm: true }, first_message: true } } } } };
 if (cache.agentId) await api(`/convai/agents/${cache.agentId}`, 'PATCH', agentBody);
 else { cache.agentId = (await api('/convai/agents/create', 'POST', agentBody)).agent_id; saveCache(); }
 const hostedProbes = [];
-for (const llm of hostedModels) {
+for (const llm of [...hostedModels, realtimeModel]) {
   const start = Date.now();
   try {
+    await api(`/convai/agents/${cache.agentId}`, 'PATCH', { conversation_config: { realtime_model: llm === realtimeModel ? realtimeModel : null } });
     const signed = await api(`/convai/conversation/get-signed-url?agent_id=${encodeURIComponent(cache.agentId)}`);
     await new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(signed.signed_url);
       const timer = setTimeout(() => finish(new Error('Hosted model probe timed out')), 20000);
       function finish(error?: Error) { clearTimeout(timer); ws.close(); if (error) reject(error); else resolve(); }
-      ws.on('open', () => ws.send(JSON.stringify({ type: 'conversation_initiation_client_data', conversation_config_override: { agent: { prompt: { prompt: 'Say ready in one word. Do not use tools.', llm } } }, dynamic_variables: { poc_call_id: 'probe' } })));
+      ws.on('open', () => ws.send(JSON.stringify({ type: 'conversation_initiation_client_data', conversation_config_override: { agent: { prompt: { prompt: 'Say ready in one word. Do not use tools.', ...(llm === realtimeModel ? {} : { llm }) } } }, dynamic_variables: { poc_call_id: 'probe' } })));
       ws.on('message', raw => {
         const message = JSON.parse(raw.toString());
         if (message.type === 'ping') ws.send(JSON.stringify({ type: 'pong', event_id: message.ping_event.event_id }));
@@ -69,22 +72,23 @@ for (const llm of hostedModels) {
         if (message.type === 'error') finish(new Error(JSON.stringify(message)));
       });
       ws.on('error', finish);
+      ws.on('close', (code, reason) => { if (code !== 1000) finish(new Error(`Hosted probe closed ${code}: ${reason.toString()}`)); });
     });
     hostedProbes.push({ id: llm, ok: true, ms: Date.now() - start });
   } catch (error) { hostedProbes.push({ id: llm, ok: false, error: String(error) }); }
 }
-hostedModels.splice(0, hostedModels.length, ...hostedProbes.filter(p => p.ok).map(p => p.id));
+hostedModels.splice(0, hostedModels.length, ...hostedProbes.filter(p => p.ok && p.id !== realtimeModel).map(p => p.id));
 writeFileSync(join(data, 'hosted-probes.json'), JSON.stringify(hostedProbes, null, 2), { mode: 0o600 });
 if (!hostedModels.length) throw new Error('No hosted LLM answered a probe');
 function turn(call: Call, eosAt = Date.now(), eosSource = 'server_transcript_arrival') {
-  const row: Turn = { callId: call.id, turnId: call.turns.length + 1, variant: call.settings.variant, settings: call.settings, eosAt, eosSource, thinkCalled: false, interrupted: false };
+  const row: Turn = { callId: call.id, turnId: call.turns.length + 1, variant: call.settings.variant, settings: call.settings, eosAt, eosSource, hostLoad: loadavg(), thinkCalled: false, interrupted: false };
   call.turns.push(row); log({ event: 'turn', ...row }); return row;
 }
 function last(call: Call) { return call.turns.at(-1) || turn(call); }
 const exec = promisify(execFile);
-let thinking = false;
+let thinking = Promise.resolve();
 async function think(call: Call, row: Turn, request: string, signal: AbortSignal) {
-  const start = Date.now(); row.thinkCalled = true; log({ event: 'think_called', ...row });
+  const start = Date.now(); row.thinkStartedAt = start; row.thinkCalled = true; log({ event: 'think_called', ...row });
   try {
     if (call.settings.thinkingModel !== 'bot') {
       const model = models.find(m => m.id === call.settings.thinkingModel)!;
@@ -92,11 +96,15 @@ async function think(call: Call, row: Turn, request: string, signal: AbortSignal
       for await (const part of complete(model, call.prompt + '\nAnswer the question. You have no tools.', [{ role: 'user', content: request }], signal)) text += part.text || '';
       return text;
     }
-    if (thinking) throw new Error('Bot already thinking. Wait before asking another tool question.');
-    thinking = true;
+    const previous = thinking;
+    let release!: () => void;
+    thinking = new Promise<void>(resolve => { release = resolve; });
     const bot = bots.find(b => b.id === call.settings.botId)!;
     const message = `Voice-call prototype, isolated snapshot only. Do not send, post, publish, deploy, restart services, access live state, delegate, or resume earlier jobs. Keep all filesystem work inside ${bot.cwd}. For a tool check use a read-only local file listing. Reply in at most two short spoken sentences. Request: ${request}`;
     try {
+      await previous;
+      signal.throwIfAborted();
+      row.botRequestAt = Date.now(); log({ event: 'bot_request', ...row });
       const result = await new Promise<{stdout: string; stderr: string}>((resolve, reject) => {
       const child = execFile(process.execPath, ['--experimental-strip-types', join(root, '../../server/openmausbot.ts'), 'run', '--bot', bot.id, '--task', 'current', '--port', String(devPort), '--json', '--quiet', '--wait', 'turn', '--timeout', '105s', '--on-timeout', 'stop', '-'], { env: { PATH: process.env.PATH, HOME: join(data, 'home'), OMB_DATA_DIR: join(data, 'omb') }, maxBuffer: 4 * 1024 * 1024, timeout: 115000, signal }, (error, stdout, stderr) => error ? reject(new Error(`Bot CLI failed: ${stderr.slice(-500)} ${stdout.slice(-500)}`)) : resolve({ stdout, stderr }));
       child.stdin?.end(message);
@@ -115,7 +123,7 @@ async function think(call: Call, row: Turn, request: string, signal: AbortSignal
     } finally {
       try {
         if (signal.aborted) await exec(process.execPath, ['--experimental-strip-types', join(root, '../../server/openmausbot.ts'), 'interrupt', '--thread', bot.threadId, '--port', String(devPort), '--json'], { env: { PATH: process.env.PATH, HOME: join(data, 'home') }, timeout: 10000 });
-      } finally { thinking = false; }
+      } finally { release(); }
     }
   } catch (error) { if (!signal.aborted) row.error = String(error); throw error; }
   finally { row.thinkFinishedAt = Date.now(); row.thinkMs = row.thinkFinishedAt - start; log({ event: 'think_finished', ...row }); }
@@ -145,23 +153,36 @@ const server = createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': route ? 'text/javascript' : 'text/html', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
       return res.end(readFileSync(join(root, route ? '.data/client.js' : 'index.html')));
     }
-    if (route === 'api/config') return reply(res, 200, { bots: bots.map(b => ({ id: b.id, name: b.name })), models: models.map(m => m.id), probes, hostedModels, voice });
+    if (route === 'api/config') return reply(res, 200, { bots: bots.map(b => ({ id: b.id, name: b.name })), models: models.map(m => m.id), probes, hostedModels, realtimeAvailable: hostedProbes.some(p => p.id === realtimeModel && p.ok), voice });
     if (route === 'api/call' && req.method === 'POST') {
       if (active && !active.ended) return reply(res, 409, { error: 'One call at a time. Hang up the current call.' });
-      const settings: Settings = await jsonBody(req);
-      if (!bots.some(b => b.id === settings.botId) || !['agent', 'engine'].includes(settings.variant) || typeof settings.buffer !== 'boolean' || !models.some(m => m.id === settings.responseModel) || !(settings.thinkingModel === 'bot' || models.some(m => m.id === settings.thinkingModel)) || !hostedModels.includes(settings.elevenAgentLlm)) return reply(res, 400, { error: 'Invalid settings' });
+      const settings: Settings = { promptCache: false, contextMode: 'full', callTopic: 'marketing team working preferences', turnEagerness: 'eager', turnTimeout: 30, speculativeTurn: false, ...await jsonBody(req) };
+      if (!bots.some(b => b.id === settings.botId) || !['agent', 'engine', ...(hostedProbes.some(p => p.id === realtimeModel && p.ok) ? ['agent-realtime'] : [])].includes(settings.variant) || typeof settings.buffer !== 'boolean' || !models.some(m => m.id === settings.responseModel) || !(settings.thinkingModel === 'bot' || models.some(m => m.id === settings.thinkingModel)) || !hostedModels.includes(settings.elevenAgentLlm)) return reply(res, 400, { error: 'Invalid settings' });
+      if (typeof settings.promptCache !== 'boolean' || !['full', 'slim'].includes(settings.contextMode) || typeof settings.callTopic !== 'string' || settings.callTopic.length > 2000 || !['eager', 'normal', 'patient'].includes(settings.turnEagerness) || !Number.isFinite(settings.turnTimeout) || settings.turnTimeout < 1 || settings.turnTimeout > 30 || typeof settings.speculativeTurn !== 'boolean') return reply(res, 400, { error: 'Invalid round-two settings' });
+      if (settings.promptCache && (settings.variant !== 'engine' || models.find(m => m.id === settings.responseModel)?.provider !== 'anthropic')) return reply(res, 400, { error: 'Prompt cache requires an Anthropic Speech Engine response model' });
+      if (settings.variant === 'agent-realtime' && settings.contextMode !== 'full') return reply(res, 400, { error: 'Realtime comparison requires full context' });
       const bot = bots.find(b => b.id === settings.botId)!;
-      const call: Call = { id: randomUUID(), settings, turns: [], prompt: context(bot) + voiceInstructions, ended: false };
+      const selectedContext = context(bot, settings.contextMode, settings.callTopic);
+      const system = { stable: [selectedContext.stable[0] + voiceInstructions, selectedContext.stable[1]], thread: selectedContext.thread };
+      const call: Call = { id: randomUUID(), settings, turns: [], prompt: [...system.stable, system.thread].join('\n'), system, ended: false };
       calls.set(call.id, call); active = call;
       const id = settings.variant === 'engine' ? cache.engineId : cache.agentId;
       const overrides = settings.variant === 'agent' ? { agent: { prompt: { llm: settings.elevenAgentLlm } } } : {};
       try {
         // ElevenLabs client 1.35.0 sends WebRTC overrides in one packet with a 64 KB limit.
-        if (settings.variant === 'agent') await api(`/convai/agents/${id}`, 'PATCH', { conversation_config: { agent: { prompt: { prompt: `${call.prompt}\nUse callId {{poc_call_id}} when calling think.`, llm: settings.elevenAgentLlm } } } });
+        const turnConfig = { turn_eagerness: settings.turnEagerness, turn_timeout: settings.turnTimeout, speculative_turn: settings.speculativeTurn };
+        if (settings.variant === 'engine') await api(`/speech-engine/${id}`, 'PATCH', { turn: turnConfig });
+        else await api(`/convai/agents/${id}`, 'PATCH', { conversation_config: { realtime_model: settings.variant === 'agent-realtime' ? realtimeModel : null, turn: turnConfig, agent: { prompt: { prompt: `${call.prompt}\nUse callId {{poc_call_id}} when calling think.`, llm: settings.elevenAgentLlm, thinking_budget: 0 } } } });
+        if (settings.promptCache && settings.variant === 'engine') {
+          const model = models.find(m => m.id === settings.responseModel)!;
+          if (model.provider !== 'anthropic') throw new Error('Prompt cache requires Anthropic');
+          const at = Date.now();
+          for await (const part of complete(model, call.system, [{ role: 'user', content: 'Say ready.' }], AbortSignal.timeout(40000), true, { cache: true, maxTokens: 1 })) if (part.usage) log({ event: 'cache_prewarm', callId: call.id, settings, usage: part.usage, ms: Date.now() - at });
+        }
         const websocket = (settings as Settings & { transport?: string }).transport === 'websocket';
         const token = websocket ? undefined : await eleven.conversationalAi.conversations.getWebrtcToken({ agentId: id });
         const signed = websocket ? await api(`/convai/conversation/get-signed-url?agent_id=${encodeURIComponent(id)}`) : undefined;
-        log({ event: 'call_started', callId: call.id, variant: settings.variant, settings, contextChars: call.prompt.length });
+        log({ event: 'call_started', callId: call.id, variant: settings.variant, settings, contextChars: call.prompt.length, memoryChars: selectedContext.memoryChars, soulChars: selectedContext.soulChars, recentMessages: selectedContext.recentMessages });
         return reply(res, 200, { callId: call.id, conversationToken: token?.token, signedUrl: signed?.signed_url, overrides, dynamicVariables: { poc_call_id: call.id } });
       } catch (error) { call.ended = true; throw error; }
     }
@@ -177,11 +198,15 @@ const server = createServer(async (req, res) => {
         row.eosAt = at; row.eosSource = event.source || 'client_vad';
       }
       if (event.type === 'user_transcript') {
+        last(call).transcriptAt ??= at;
         const row = call.turns.at(-1);
-        if (!row || call.settings.variant === 'agent' && row.firstAudioAt && at - row.eosAt > 3000) turn(call, at, event.source || 'client_transcript_arrival');
+        if (!row || call.settings.variant !== 'engine' && row.firstAudioAt && at - row.eosAt > 3000) turn(call, at, event.source || 'client_transcript_arrival');
         transcriptLog({ callId: call.id, role: 'user', text: event.text });
       }
-      if (event.type === 'first_audio') { const row = last(call); row.firstAudioAt ??= at; row.firstAudioSource ??= event.source || 'client_mode_speaking'; }
+      if (event.type === 'first_audio' || event.type === 'audio_chunk') {
+        const row = last(call);
+        row.firstAudioAt ??= at; row.firstAudioSource ??= event.source || 'client_mode_speaking';
+      }
       if (event.type === 'first_text') { const row = last(call); row.firstTextAt ??= at; row.firstTextSource ??= event.source || 'hosted_agent_client_text_arrival'; }
       if (event.type === 'agent_transcript') transcriptLog({ callId: call.id, role: 'assistant', text: event.text });
       if (event.type === 'interrupted') { const row = call.turns.at(-1); const interrupted = row?.firstAudioAt ? row : call.turns.at(-2); if (interrupted) { interrupted.interrupted = true; log({ event: 'interruption_target', ...interrupted }); } }
@@ -201,9 +226,10 @@ await eleven.speechEngine.attach(cache.engineId, server, '/ws', {
     if (!call || call.ended) return;
     let row = call.turns.at(-1);
     if (!row || row.responseStartedAt || row.interrupted) row = turn(call);
-    row.responseStartedAt = Date.now();
+    row.responseStartedAt = Date.now(); row.transcriptAt = row.responseStartedAt;
     const current = row;
     let responseFinished = false;
+    const cpuStarted = process.cpuUsage();
     signal.addEventListener('abort', () => { if (responseFinished) return; current.interrupted = true; log({ event: 'engine_abort', ...current }); }, { once: true });
     async function* answer() {
       const model = models.find(m => m.id === call!.settings.responseModel)!;
@@ -216,11 +242,14 @@ await eleven.speechEngine.attach(cache.engineId, server, '/ws', {
       }
       try {
         if (call!.settings.buffer) yield sent('Okay... ');
-        for await (const part of complete(model, call!.prompt, messages, signal, true)) {
+        current.llmRequestAt = Date.now(); log({ event: 'llm_request', ...current });
+        for await (const part of complete(model, call!.system, messages, signal, true, { cache: call!.settings.promptCache })) {
+          if (part.usage) { current.usage = part.usage; log({ event: 'llm_usage', ...current }); }
+          if (part.text || part.think || part.token) { current.firstTokenAt ??= Date.now(); log({ event: 'llm_token', ...current }); }
           if (signal.aborted) return;
           if (part.text) yield sent(part.text, true);
           if (part.think) {
-            yield sent('Let me think through that... ');
+            if (call!.settings.buffer) yield sent('Let me think through that... ');
             const result = think(call!, current, part.think, signal).then(text => ({ text }), error => ({ error }));
             while (!signal.aborted) {
               let timer: ReturnType<typeof setTimeout> | undefined;
@@ -235,7 +264,7 @@ await eleven.speechEngine.attach(cache.engineId, server, '/ws', {
           }
         }
       } catch (error) { if (!signal.aborted) { current.error = String(error); yield sent('I could not finish that request. Please check the call log. '); } }
-      finally { responseFinished = true; current.responseFinished = true; current.responseFinishedAt = Date.now(); transcriptLog({ callId: call!.id, role: 'assistant', text: spoken, interrupted: signal.aborted }); log({ event: 'response_finished', ...current }); }
+      finally { const cpu = process.cpuUsage(cpuStarted); current.cpuMs = (cpu.user + cpu.system) / 1000; responseFinished = true; current.responseFinished = true; current.responseFinishedAt = Date.now(); transcriptLog({ callId: call!.id, role: 'assistant', text: spoken, interrupted: signal.aborted }); log({ event: 'response_finished', ...current }); }
     }
     session.sendResponse(answer());
   },
