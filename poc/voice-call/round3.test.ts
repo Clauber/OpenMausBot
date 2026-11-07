@@ -5,6 +5,8 @@ import { createJevGate, listenerState } from './listener.ts';
 import { LocalSession, type SessionHooks } from './local-session.ts';
 import type { Turn } from './server.ts';
 import { addLibraryVoice } from './voices.ts';
+import { ElevenSocket } from './eleven.ts';
+import { WebSocketServer } from 'ws';
 
 test('audio tags survive token boundaries only for ElevenLabs and never appear in display', () => {
   for (const eleven of [true, false]) {
@@ -33,7 +35,7 @@ test('Jev parser validates probabilities, offered choices, and the 0.6 gate', as
   } finally { if (previous === undefined) delete process.env.OMB_JEV_API_KEY; else process.env.OMB_JEV_API_KEY = previous; }
 });
 
-function fixture(emitAudio = true) {
+function fixture(emitAudio = true, speaker?: SessionHooks['speaker']) {
   const events: { type?: string; event?: string; text?: string }[] = [], rows: Turn[] = [], audio: string[] = [];
   let resolveJob!: (value: string) => void, jobSignal: AbortSignal | undefined;
   let finishReply: (() => void) | undefined;
@@ -46,7 +48,7 @@ function fixture(emitAudio = true) {
     },
     gate: { decide: async input => ({ choice: input.conversation.at(-1)?.content.includes('status') ? 'agent' : 'direct', probability: 0.9, latencyMs: 1 }) },
     think: async (_, signal) => { jobSignal = signal; return await new Promise<string>(resolve => { resolveJob = resolve; }); },
-    speaker: async (_, signal, onAudio) => ({ write: text => { audio.push(text); if (emitAudio && !signal.aborted) onAudio(Buffer.alloc(2)); }, finish: async () => {} }),
+    speaker: speaker ?? (async (_, signal, onAudio) => ({ write: text => { audio.push(text); if (emitAudio && !signal.aborted) onAudio(Buffer.alloc(2)); }, finish: async () => {} })),
     send: event => events.push(event), log: event => events.push(event), transcript: (role, text) => events.push({ type: `saved_${role}`, text }),
   };
   const session = new LocalSession(hooks, false);
@@ -175,4 +177,76 @@ test('Jev has a hard timeout even when a provider ignores abort', async () => {
     assert.equal(result.reason, 'timeout');
     assert(result.latencyMs < 500);
   } finally { if (previous === undefined) delete process.env.OMB_JEV_API_KEY; else process.env.OMB_JEV_API_KEY = previous; }
+});
+
+const cutResult = 'First sentence here. Second sentence here. Third sentence here.';
+function cutSpeaker(cut: (signal: AbortSignal, onAudio: (pcm: Buffer) => void) => Promise<void>): SessionHooks['speaker'] {
+  let calls = 0;
+  return async (_, signal, onAudio) => {
+    const call = ++calls;
+    return { write: text => { if (!text.startsWith('Okay, I checked.')) onAudio(Buffer.alloc(2)); }, finish: async () => { if (call === 2) await cut(signal, onAudio); } };
+  };
+}
+
+test('a background result cut by a synthesis failure resumes from the sentence being heard', async () => {
+  // Three seconds of audio is about 48 characters, inside "Second sentence here."
+  const f = fixture(true, cutSpeaker(async (_, onAudio) => { onAudio(Buffer.alloc(48 * 3000)); throw new Error('ElevenLabs synthesis failed'); }));
+  f.session.input('Check status', 0, 0);
+  await tick();
+  f.finishReply();
+  f.resolveJob(cutResult);
+  await tick(); await tick();
+  f.session.playUntil = 0;
+  await new Promise(resolve => setTimeout(resolve, 3100));
+  const said = f.events.filter(e => e.type === 'text').map(e => e.text);
+  assert.equal(said.at(-1), 'As I was saying, Second sentence here. Third sentence here.');
+  assert(f.session.history.some(m => m.role === 'assistant' && m.content === 'Okay, I checked. First sentence here.'));
+  f.session.close();
+});
+
+test('talking over a background result resumes it after the new reply', async () => {
+  const f = fixture(true, cutSpeaker(signal => new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('Speech interrupted')), { once: true }))));
+  f.session.input('Check status', 0, 0);
+  await tick();
+  f.finishReply();
+  f.resolveJob(cutResult);
+  await tick(); await tick();
+  f.session.input('Wait, hold on', 5000, 5000);
+  await tick();
+  f.finishReply();
+  await tick(); await tick();
+  f.session.playUntil = 0;
+  await new Promise(resolve => setTimeout(resolve, 50));
+  const said = f.events.filter(e => e.type === 'text').map(e => e.text);
+  assert.equal(said.at(-1), `As I was saying, Okay, I checked. ${cutResult}`);
+  assert(!f.session.history.some(m => m.role === 'assistant' && !m.content.trim()));
+  f.session.close();
+});
+
+test('the ElevenLabs socket reconnects after a synthesis error', async () => {
+  process.env.ELEVENLABS_API_KEY ||= 'fixture-key';
+  const server = new WebSocketServer({ port: 0 });
+  let connections = 0;
+  server.on('connection', ws => {
+    const n = ++connections;
+    ws.on('message', raw => {
+      const m = JSON.parse(raw.toString());
+      if (!m.flush) return;
+      if (n === 1) ws.send(JSON.stringify({ error: 'fixture failure' }));
+      else { ws.send(JSON.stringify({ context_id: m.context_id, audio: Buffer.alloc(4).toString('base64') })); ws.send(JSON.stringify({ context_id: m.context_id, is_final: true })); }
+    });
+  });
+  await new Promise(resolve => server.once('listening', resolve));
+  const socket = new ElevenSocket('voice', async () => {}, `ws://127.0.0.1:${(server.address() as { port: number }).port}`);
+  try {
+    const first = await socket.reply('1', new AbortController().signal, () => {});
+    first.write('Hello.');
+    await assert.rejects(first.finish(), /synthesis failed: fixture failure/);
+    let bytes = 0;
+    const second = await socket.reply('2', new AbortController().signal, pcm => { bytes += pcm.length; });
+    second.write('Hello again.');
+    await second.finish();
+    assert.equal(bytes, 4);
+    assert.equal(connections, 2);
+  } finally { socket.close(); server.close(); }
 });

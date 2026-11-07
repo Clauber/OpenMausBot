@@ -21,35 +21,20 @@ export function elevenHttp(voice: string, text: string, signal: AbortSignal) {
 type Context = { audio: (pcm: Buffer) => void; resolve: () => void; reject: (error: Error) => void };
 
 export class ElevenSocket {
-  private ws: WebSocket;
-  private ready: Promise<void>;
+  private ws!: WebSocket;
+  private ready!: Promise<void>;
   private contexts = new Map<string, Context>();
   private keepAlive: ReturnType<typeof setInterval>;
   private failure?: Error;
+  private closed = false;
 
   private voice: string;
   private reserve: (text: string) => Promise<void>;
-  constructor(voice: string, reserve: (text: string) => Promise<void>) {
-    this.voice = voice; this.reserve = reserve;
+  private url: string;
+  constructor(voice: string, reserve: (text: string) => Promise<void>, url = `wss://api.elevenlabs.io/v1/text-to-dialogue/multi-stream-input?model_id=${ELEVEN_TTS_MODEL}&output_format=pcm_24000`) {
     // Eleven v4 models use the dialogue protocol, not the older text-to-speech WebSocket protocol.
-    this.ws = new WebSocket(`wss://api.elevenlabs.io/v1/text-to-dialogue/multi-stream-input?model_id=${ELEVEN_TTS_MODEL}&output_format=pcm_24000`, { headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY! }, handshakeTimeout: 10000 });
-    this.ready = new Promise((resolve, reject) => {
-      this.ws.once('open', () => { this.ws.send(JSON.stringify({ context_id: 'keepalive', voices: [this.voice] })); resolve(); });
-      this.ws.once('error', () => reject(new Error('ElevenLabs WebSocket connection failed')));
-      this.ws.once('unexpected-response', (_, res) => { res.resume(); reject(new Error(`ElevenLabs WebSocket HTTP ${res.statusCode}`)); this.ws.terminate(); });
-    });
-    void this.ready.catch(error => this.fail(error));
-    this.ws.on('error', () => this.fail(new Error('ElevenLabs WebSocket failed')));
-    this.ws.on('close', () => this.fail(new Error('ElevenLabs WebSocket closed')));
-    this.ws.on('message', raw => {
-      try {
-        const message = JSON.parse(raw.toString());
-        if (message.error || message.type === 'error') { this.fail(new Error('ElevenLabs synthesis failed')); return; }
-        const ctx = this.contexts.get(message.context_id);
-        if (message.audio && ctx) ctx.audio(Buffer.from(message.audio, 'base64'));
-        if (message.is_final) { this.contexts.delete(message.context_id); ctx?.resolve(); }
-      } catch { this.fail(new Error('Invalid ElevenLabs audio message')); }
-    });
+    this.voice = voice; this.reserve = reserve; this.url = url;
+    this.connect();
     this.keepAlive = setInterval(() => {
       if (this.ws.readyState !== WebSocket.OPEN) return;
       this.ws.send(JSON.stringify({ context_id: 'keepalive', keep_alive: true }));
@@ -57,13 +42,43 @@ export class ElevenSocket {
     }, 10000);
   }
 
+  private connect() {
+    this.failure = undefined;
+    const ws = this.ws = new WebSocket(this.url, { headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY! }, handshakeTimeout: 10000 });
+    const fail = (error: Error) => { if (this.ws === ws) this.fail(error); };
+    this.ready = new Promise((resolve, reject) => {
+      ws.once('open', () => { ws.send(JSON.stringify({ context_id: 'keepalive', voices: [this.voice] })); resolve(); });
+      ws.once('error', () => reject(new Error('ElevenLabs WebSocket connection failed')));
+      ws.once('unexpected-response', (_, res) => { res.resume(); reject(new Error(`ElevenLabs WebSocket HTTP ${res.statusCode}`)); ws.terminate(); });
+    });
+    void this.ready.catch(fail);
+    ws.on('error', () => fail(new Error('ElevenLabs WebSocket failed')));
+    ws.on('close', (code, reason) => fail(new Error(`ElevenLabs WebSocket closed (${code}${reason.length ? ` ${reason.toString().slice(0, 200)}` : ''})`)));
+    ws.on('message', raw => {
+      try {
+        const message = JSON.parse(raw.toString());
+        if (message.error || message.type === 'error') {
+          console.error('ElevenLabs error', JSON.stringify(message).slice(0, 500));
+          fail(new Error(`ElevenLabs synthesis failed: ${(typeof message.error === 'string' ? message.error : JSON.stringify(message.error ?? message.message ?? message)).slice(0, 200)}`));
+          return;
+        }
+        const ctx = this.contexts.get(message.context_id);
+        if (message.audio && ctx) ctx.audio(Buffer.from(message.audio, 'base64'));
+        if (message.is_final) { this.contexts.delete(message.context_id); ctx?.resolve(); }
+      } catch { fail(new Error('Invalid ElevenLabs audio message')); }
+    });
+  }
+
   private fail(error: Error) {
+    if (this.failure) return;
     this.failure = error;
     for (const ctx of this.contexts.values()) ctx.reject(error);
     this.contexts.clear();
+    if (this.ws.readyState !== WebSocket.CLOSED) this.ws.terminate();
   }
 
   async reply(id: string, signal: AbortSignal, audio: (pcm: Buffer) => void) {
+    if (this.failure && !this.closed) this.connect();
     await this.ready;
     signal.throwIfAborted();
     if (this.failure) throw this.failure;
@@ -104,9 +119,8 @@ export class ElevenSocket {
   }
 
   close() {
+    this.closed = true;
     clearInterval(this.keepAlive);
     this.fail(new Error('Call ended'));
-    if (this.ws.readyState === WebSocket.CONNECTING) this.ws.terminate();
-    else this.ws.close();
   }
 }

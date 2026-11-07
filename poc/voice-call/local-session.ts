@@ -15,7 +15,10 @@ export type SessionHooks = {
   log(message: object): void;
   transcript(role: 'user' | 'assistant', text: string): void;
 };
-type Foreground = { controller: AbortController; row: Turn; user?: Message; eosAt: number; generated: string; saved?: Message; buffered: Buffer[] };
+type Foreground = { controller: AbortController; row: Turn; user?: Message; eosAt: number; generated: string; saved?: Message; buffered: Buffer[]; audioMs: number; resumable?: boolean };
+const RESUME = 'As I was saying, ';
+// shortcut: Turbo returns no alignment, so the cut point is estimated from audio length (measured 287 chars in 18.0 s); use alignment if ElevenLabs adds it.
+const SPOKEN_CHARS_PER_SECOND = 16;
 type Job = { request: string; row: Turn; conversation: Message[] };
 
 export class LocalSession {
@@ -63,14 +66,14 @@ export class LocalSession {
     this.history.push(user);
     this.hooks.send({ type: 'transcript', turnId: row.turnId, text: stripTags(text).trim() });
     this.hooks.transcript('user', stripTags(text).trim());
-    const fg: Foreground = { controller: new AbortController(), row, user, eosAt, generated: '', buffered: [] };
+    const fg: Foreground = { controller: new AbortController(), row, user, eosAt, generated: '', buffered: [], audioMs: 0 };
     this.foreground = fg;
     void this.respond(fg);
   }
 
   async greet() {
     const row = this.hooks.turn(Date.now(), 'greeting');
-    const fg: Foreground = { controller: new AbortController(), row, eosAt: Date.now(), generated: '', buffered: [] };
+    const fg: Foreground = { controller: new AbortController(), row, eosAt: Date.now(), generated: '', buffered: [], audioMs: 0 };
     this.foreground = fg;
     await this.say(fg, 'Hello.');
   }
@@ -80,6 +83,7 @@ export class LocalSession {
     if (fg && !fg.controller.signal.aborted) {
       fg.row.interrupted = true;
       fg.controller.abort();
+      if (fg.resumable) this.resume(fg);
       this.saveSpeech(fg);
       this.hooks.log({ event: 'local_interrupted', ...fg.row });
     }
@@ -96,6 +100,7 @@ export class LocalSession {
     if (fg.controller.signal.aborted || this.lifetime.signal.aborted) return;
     if (!fg.row.firstAudioAt && this.captures) { fg.buffered.push(pcm); return; }
     fg.row.firstAudioAt ??= Date.now(); fg.row.firstAudioSource = 'server_tts_pcm';
+    fg.audioMs += pcm.length / 48;
     this.playUntil = Math.max(this.playUntil, Date.now()) + pcm.length / 48;
     if (!fg.saved) { fg.saved = { role: 'assistant', content: '' }; this.history.push(fg.saved); }
     fg.saved.content = stripTags(fg.generated);
@@ -188,7 +193,7 @@ export class LocalSession {
     if (wait > 0) { this.resultTimer = setTimeout(() => this.deliverResults(), wait + 30); return; }
     const result = this.results.shift()!;
     const row = this.hooks.turn(Date.now(), 'background_result');
-    const fg: Foreground = { controller: new AbortController(), row, eosAt: Date.now(), generated: '', buffered: [] };
+    const fg: Foreground = { controller: new AbortController(), row, eosAt: Date.now(), generated: '', buffered: [], audioMs: 0, resumable: true };
     this.foreground = fg;
     void this.say(fg, result);
   }
@@ -202,8 +207,25 @@ export class LocalSession {
       this.hooks.send({ type: 'text', turnId: fg.row.turnId, text: stripTags(text) });
       sink.write(text);
       await sink.finish();
-    } catch (error) { if (!signal.aborted) this.hooks.send({ type: 'error', error: String(error) }); }
-    finally { fg.row.responseFinished = true; this.settle(fg); }
+    } catch (error) {
+      if (!signal.aborted) { this.hooks.send({ type: 'error', error: String(error) }); if (fg.resumable) this.resume(fg); }
+    } finally { fg.row.responseFinished = true; this.settle(fg); }
+  }
+
+  private resume(fg: Foreground) {
+    const text = fg.generated;
+    const heardMs = fg.row.interrupted ? Math.min(fg.audioMs, Date.now() - (fg.row.firstAudioAt ?? Date.now())) : fg.audioMs;
+    const heard = Math.floor(heardMs / 1000 * SPOKEN_CHARS_PER_SECOND);
+    if (heard >= text.length || (!fg.audioMs && text.startsWith(RESUME))) return;
+    let start = 0;
+    for (const m of text.matchAll(/[.!?]\s+/g)) { if (m.index + m[0].length > heard) break; start = m.index + m[0].length; }
+    if (fg.saved) {
+      fg.saved.content = stripTags(text.slice(0, start)).trim();
+      if (!fg.saved.content) this.history.splice(this.history.indexOf(fg.saved), 1);
+    }
+    const rest = text.slice(start);
+    this.results.unshift(rest.startsWith(RESUME) ? rest : RESUME + rest);
+    this.hooks.log({ event: 'background_resume', turnId: fg.row.turnId, heardMs: Math.round(heardMs), from: start });
   }
 
   private settle(fg: Foreground) {
