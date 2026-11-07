@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "delivery_id": "voice-call-round3",
+  "source": {
+    "fingerprint": "c602a16054acf1644ac15fbc425e678c5a8dbdf7d1117996869e448a4d907d3f"
+  },
+  "actors": {
+    "implementer": "codex-voice-call-round3-implementer",
+    "reviewer": "unassigned"
+  },
+  "report": {
+    "path": "/home/clauber/.t3/worktrees/openmausbot/t3-718ed616/poc/voice-call/RESULTS-round3.md",
+    "claimed_verdict": "TECHNICAL_PASS_RELEASE_BLOCKED"
+  },
+  "required_gates": [
+    {
+      "id": "technical_checks",
+      "required_for": "technical",
+      "minimum_level": "automated_local"
+    },
+    {
+      "id": "persona_workflow",
+      "required_for": "technical",
+      "minimum_level": "disposable_real"
+    },
+    {
+      "id": "library_workflow",
+      "required_for": "technical",
+      "minimum_level": "disposable_real"
+    },
+    {
+      "id": "timing_comparison",
+      "required_for": "technical",
+      "minimum_level": "disposable_real"
+    },
+    {
+      "id": "independent_review",
+      "required_for": "release",
+      "minimum_level": "independent_review"
+    },
+    {
+      "id": "manual_phone",
+      "required_for": "release",
+      "minimum_level": "disposable_real"
+    }
+  ],
+  "evidence": {
+    "technical_checks": {
+      "status": "pass",
+      "level": "automated_local",
+      "source_fingerprint": "c602a16054acf1644ac15fbc425e678c5a8dbdf7d1117996869e448a4d907d3f",
+      "actor": "codex-voice-call-round3-implementer",
+      "artifacts": [
+        "/home/clauber/.t3/worktrees/openmausbot/t3-718ed616/poc/voice-call/.data/round3-unit.tap",
+        "/home/clauber/.t3/worktrees/openmausbot/t3-718ed616/poc/voice-call/.data/round3-doctor-fixture.json",
+        "/home/clauber/.t3/worktrees/openmausbot/t3-718ed616/poc/voice-call/.data/round3-doctor.json"
+      ],
+      "reason": "14 tests pass; doctor passes on isolated fake-engine and copied-bot instances. External failure boundaries are mocked only in unit tests."
+    },
+    "persona_workflow": {
+      "status": "pass",
+      "level": "disposable_real",
+      "source_fingerprint": "c602a16054acf1644ac15fbc425e678c5a8dbdf7d1117996869e448a4d907d3f",
+      "actor": "codex-voice-call-round3-implementer",
+      "artifacts": [
+        "/home/clauber/.t3/worktrees/openmausbot/t3-718ed616/poc/voice-call/.data/round3-text.json",
+        "/home/clauber/.t3/worktrees/openmausbot/t3-718ed616/poc/voice-call/.data/round3-ui.json",
+        "/home/clauber/.t3/worktrees/openmausbot/t3-718ed616/poc/voice-call/.data/round3-call.png"
+      ],
+      "reason": "Real Haiku, Jev, copied-bot agent, AllTalk and Turbo paths; synthetic silent microphone and text-injected user turns."
+    },
+    "library_workflow": {
+      "status": "pass",
+      "level": "disposable_real",
+      "source_fingerprint": "c602a16054acf1644ac15fbc425e678c5a8dbdf7d1117996869e448a4d907d3f",
+      "actor": "codex-voice-call-round3-implementer",
+      "artifacts": [
+        "/home/clauber/.t3/worktrees/openmausbot/t3-718ed616/poc/voice-call/.data/round3-library.json",
+        "/home/clauber/.t3/worktrees/openmausbot/t3-718ed616/poc/voice-call/.data/round3-library.png"
+      ],
+      "reason": "Real library search, previews and successful add on unchanged library code; final account readback contains the added voice. Full slots are tested with a mocked vendor error."
+    },
+    "timing_comparison": {
+      "status": "pass",
+      "level": "disposable_real",
+      "source_fingerprint": "c602a16054acf1644ac15fbc425e678c5a8dbdf7d1117996869e448a4d907d3f",
+      "actor": "codex-voice-call-round3-implementer",
+      "artifacts": [
+        "/home/clauber/.t3/worktrees/openmausbot/t3-718ed616/poc/voice-call/.data/tts-sample-1.json",
+        "/home/clauber/.t3/worktrees/openmausbot/t3-718ed616/poc/voice-call/.data/tts-sample-2.json",
+        "/home/clauber/.t3/worktrees/openmausbot/t3-718ed616/poc/voice-call/.data/tts-sample-3.json"
+      ],
+      "reason": "Three real matched pairs with both balance caches warm. All return PCM. Limited latency demonstration, not a general performance verdict."
+    },
+    "independent_review": {
+      "status": "open",
+      "level": "claim",
+      "source_fingerprint": "c602a16054acf1644ac15fbc425e678c5a8dbdf7d1117996869e448a4d907d3f",
+      "actor": "unassigned",
+      "artifacts": [
+        "/home/clauber/.t3/worktrees/openmausbot/t3-718ed616/poc/voice-call/RESULTS-round3.md"
+      ],
+      "reason": "No independent delegate is permitted in this implementation child."
+    },
+    "manual_phone": {
+      "status": "open",
+      "level": "claim",
+      "source_fingerprint": "c602a16054acf1644ac15fbc425e678c5a8dbdf7d1117996869e448a4d907d3f",
+      "actor": "unassigned",
+      "artifacts": [
+        "/home/clauber/.t3/worktrees/openmausbot/t3-718ed616/poc/voice-call/README.md"
+      ],
+      "reason": "Human listening, physical microphone noise and iPhone Safari remain unverified."
+    }
+  }
+}

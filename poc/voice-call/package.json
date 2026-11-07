@@ -1,0 +1,17 @@
+{
+  "name": "voice-call-poc",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bash start.sh",
+    "report": "node --experimental-strip-types report.ts",
+    "calls": "node --experimental-strip-types scripted-calls.ts"
+  },
+  "dependencies": {
+    "@elevenlabs/elevenlabs-js": "2.76.0",
+    "@elevenlabs/client": "latest",
+    "esbuild": "latest",
+    "ws": "^8.18.3",
+    "node": "^24.0.0"
+  }
+}
