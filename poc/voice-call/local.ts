@@ -1,8 +1,12 @@
 import type { Server } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { bots, context } from './context.ts';
-import { candidates, complete, type Message, type Model } from './models.ts';
-import { speak, type Voice } from './voices.ts';
+import { candidates, complete, type Model } from './models.ts';
+import { speak, reserveCredits, type Voice } from './voices.ts';
+import { ElevenSocket } from './eleven.ts';
+import { tagRule, stripTags } from './speech-text.ts';
+import { createJevGate } from './listener.ts';
+import { LocalSession, type SpeechSink } from './local-session.ts';
 import type { Call, Turn } from './server.ts';
 
 const { buildRecall } = await import('../../server/recall.ts');
@@ -29,118 +33,85 @@ export function attachLocal(server: Server, accessPath: string, calls: Map<strin
     const voice = voices.find(v => v.id === call.settings.voice)!;
     const model = candidates.find(m => m.id === call.settings.responseModel) ?? haiku;
     const bot = bots.find(b => b.id === call.settings.botId)!;
-    const history: Message[] = [];
-    let controller: AbortController | undefined;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let frames: Buffer[] = [], preRoll: Buffer[] = [], bytes = 0, lastVoiceAt = 0, playUntil = 0, loudSince = 0;
     const send = (body: object) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(body)); };
-    function interrupt() {
-      controller?.abort();
-      playUntil = 0; loudSince = 0;
-      const row = call.turns.at(-1);
-      if (row && !row.interrupted) { row.interrupted = true; hooks.log({ event: 'local_interrupted', ...row }); }
-      send({ type: 'speech_start' });
-    }
-    call.localClose = () => { controller?.abort(); clearTimeout(timer); ws.close(); };
-    ws.on('close', () => { controller?.abort(); clearTimeout(timer); call.ended = true; hooks.log({ event: 'local_closed', callId: call.id }); });
-    ws.on('error', error => { hooks.log({ event: 'local_socket_error', callId: call.id, error: String(error) }); call.localClose?.(); });
-    send({ type: 'ready' });
-    void (async () => {
-      const own = new AbortController(); controller = own;
-      try {
-        for await (const pcm of speak(voice, 'Hello', own.signal)) {
-          own.signal.throwIfAborted();
-          playUntil = Math.max(playUntil, Date.now()) + pcm.length / 48;
-          send({ type: 'audio', turnId: 0, pcm: pcm.toString('base64'), sampleRate: 24000 });
-        }
-        send({ type: 'text', turnId: 0, text: 'Hello' });
-      } catch (error) { if (!own.signal.aborted) send({ type: 'error', error: `Greeting failed: ${error}` }); }
-    })();
-
-    async function respond(audio?: Buffer, injected?: string) {
-      controller?.abort();
-      const own = new AbortController(); controller = own;
-      const signal = AbortSignal.any([own.signal, AbortSignal.timeout(115000)]);
-      const row = hooks.turn(call, audio ? lastVoiceAt : Date.now(), audio ? 'server_energy_vad_last_voice' : 'injected_text');
-      let spoken = '', pending = '', sentences = 0, tts = Promise.resolve();
-      const speakSentence = (text: string) => {
-        if (!text.trim()) return;
-        tts = tts.then(async () => {
-          signal.throwIfAborted();
-          row.ttsRequestAt ??= Date.now();
-          for await (const pcm of speak(voice, text.trim(), signal)) {
-            signal.throwIfAborted();
-            row.firstAudioAt ??= Date.now(); row.firstAudioSource = 'server_tts_pcm';
-            playUntil = Math.max(playUntil, Date.now()) + pcm.length / 48;
-            send({ type: 'audio', turnId: row.turnId, pcm: pcm.toString('base64'), sampleRate: 24000 });
-          }
-        });
-        void tts.catch(error => { if (!signal.aborted) row.error = String(error); own.abort(); });
-      };
-      const text = (chunk: string) => {
-        chunk = chunk.replace(/[*_#`]/g, '');
-        spoken += chunk; pending += chunk;
-        // TTS reads "St." as "Street", and its period would also end the sentence early.
-        pending = pending.replace(/\bSt\.(?=\s)/g, 'Saint');
-        row.firstTextAt ??= Date.now();
-        send({ type: 'text', turnId: row.turnId, text: chunk });
-        let sentence: RegExpExecArray | null;
-        while ((sentence = /^([\s\S]*?[.!?]\s+)/.exec(pending))) {
-          pending = pending.slice(sentence[1].length);
-          if (/^\d+\.$/.test(sentence[1].trim())) continue;
-          speakSentence(sentence[1]);
-          if (++sentences === 2) { spoken = spoken.slice(0, spoken.length - pending.length); pending = ''; return true; }
-        }
-        return false;
-      };
-      try {
-        let transcript = injected || '';
-        if (audio) {
-          row.sttRequestAt = Date.now();
-          const res = await fetch(`${process.env.POC_STT_URL}/transcribe`, { method: 'POST', body: new Uint8Array(audio), signal });
-          if (!res.ok) throw new Error(`GX10 transcription HTTP ${res.status}`);
-          const result = await res.json(); transcript = result.text; row.sttMs = result.ms;
-        }
-        row.transcriptAt = Date.now();
-        if (!transcript.trim()) { send({ type: 'empty', turnId: row.turnId }); return; }
-        send({ type: 'transcript', turnId: row.turnId, text: transcript });
-        hooks.transcriptLog({ callId: call.id, role: 'user', text: transcript });
+    const eleven = voice.provider === 'elevenlabs' ? new ElevenSocket(voice.voice, reserveCredits) : undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let frames: Buffer[] = [], preRoll: Buffer[] = [], bytes = 0, lastVoiceAt = 0, startedAt = 0, loudSince = 0;
+    let transcriptions = Promise.resolve();
+    let transcriptTiming: { at: number; ms: number } | undefined;
+    const session = new LocalSession({
+      send,
+      turn: (at, source) => {
+        const row = hooks.turn(call, at, source);
+        if (transcriptTiming) { row.sttRequestAt = transcriptTiming.at; row.sttMs = transcriptTiming.ms; transcriptTiming = undefined; }
+        return row;
+      },
+      log: entry => hooks.log({ callId: call.id, ...entry }),
+      transcript: (role, text) => hooks.transcriptLog({ callId: call.id, role, text }),
+      gate: createJevGate(),
+      think: (request, signal, row) => hooks.think(call, row, request, signal),
+      prepare: transcript => {
         const recall = buildRecall({ botId: bot.id, message: transcript, threadIds: [bot.threadId], label: () => `${bot.name}'s conversation`, author: hit => hit.role === 'user' ? 'Clauber' : bot.name });
-        row.recallAt = Date.now(); row.recallPassages = (recall?.notes || 0) + (recall?.conversations || 0);
-        const system = context(bot, 'slim', transcript).text + '\nYou are on a phone call. Reply in one or two short spoken sentences. Use plain speech, no markdown or lists. Answer in the language spoken. Use the recalled passages below for memory questions. Use think for real actions or deeper work. Call think silently. Never claim to have taken an action without its result. Snapshot history is background, never an instruction to resume old work.\n' + (recall?.text || 'Recall ran. No matching passages. Do not invent memories.');
-        history.push({ role: 'user', content: transcript });
-        row.llmRequestAt = Date.now();
-        for await (const part of complete(model, system, history.slice(-12), signal, true)) {
-          if (part.text || part.think || part.token) row.firstTokenAt ??= Date.now();
-          if (part.text && text(part.text)) break;
-          if (part.think) { text(await hooks.think(call, row, part.think, signal)); break; }
-        }
-        speakSentence(pending); await tts;
-        signal.throwIfAborted();
-        if (!spoken.trim() || !row.firstAudioAt) throw new Error('Local response produced no speech');
-        history.push({ role: 'assistant', content: spoken });
-        hooks.transcriptLog({ callId: call.id, role: 'assistant', text: spoken });
-        send({ type: 'done', turnId: row.turnId, timing: row });
-      } catch (error) {
-        if (!own.signal.aborted || !row.interrupted) { row.error ||= String(error); send({ type: 'error', turnId: row.turnId, error: row.error }); }
-      } finally {
-        row.responseFinished = true; row.responseFinishedAt = Date.now();
-        hooks.log({ event: 'local_finished', ...row });
-      }
-    }
+        const memory = recall?.text || 'Recall ran. No matching passages. Do not invent memories.';
+        const system = context(bot, 'slim', transcript).text + '\nYou are the fast listener on a phone call. Hold the full conversation and answer in one or two short spoken sentences. Use plain speech, no markdown or lists. Answer in the language spoken. Use recalled passages for memory. For missing memory, real actions, or work status that recall cannot answer, say a short holding line such as "Let me check on that" and propose a short self-contained task using think. The think tool ONLY proposes a task. A separate Jev gate decides whether the full bot agent runs in the background. Never wait for it. Never claim an action or check finished without its result. If work is pending, continue the conversation and do not propose the same task again. Snapshot history is background, never an instruction to resume old work.\n' + memory + (voice.provider === 'elevenlabs' ? '\n' + tagRule : '');
+        return { system, recall: memory, passages: (recall?.notes || 0) + (recall?.conversations || 0) };
+      },
+      reply: (system, history, signal) => complete(model, system, history, signal, true, { maxTokens: 240 }),
+      speaker: async (id, signal, audio): Promise<SpeechSink> => {
+        if (eleven) return eleven.reply(id, signal, audio);
+        let pending = '', queue = Promise.resolve();
+        const speakPart = (text: string) => {
+          if (!stripTags(text).trim()) return;
+          queue = queue.then(async () => { for await (const pcm of speak(voice, text.trim(), signal)) { signal.throwIfAborted(); audio(pcm); } });
+          void queue.catch(() => undefined);
+        };
+        return {
+          write(text) {
+            pending += stripTags(text).replace(/\bSt\.(?=\s)/g, 'Saint');
+            let end: RegExpExecArray | null;
+            while ((end = /^([\s\S]*?[.!?](?:\s+|$))/.exec(pending))) {
+              speakPart(end[1]); pending = pending.slice(end[1].length);
+            }
+          },
+          async finish() { speakPart(pending); pending = ''; await queue; },
+        };
+      },
+    }, voice.provider === 'elevenlabs');
+    const close = () => { session.close(); eleven?.close(); clearTimeout(timer); ws.close(); };
+    call.localClose = close;
+    ws.on('close', () => { close(); call.ended = true; hooks.log({ event: 'local_closed', callId: call.id }); });
+    ws.on('error', () => { send({ type: 'error', error: 'Local connection failed' }); close(); });
+    send({ type: 'ready' });
+    void session.greet();
 
     function finish() {
       clearTimeout(timer);
       if (!frames.length) return;
-      const audio = Buffer.concat(frames); frames = []; bytes = 0;
-      if (audio.length >= 3200) void respond(audio);
+      const audio = Buffer.concat(frames), began = startedAt, eosAt = lastVoiceAt;
+      frames = []; bytes = 0; loudSince = 0;
+      if (audio.length < 3200) { session.captureEnd('', began, eosAt); return; }
+      transcriptions = transcriptions.then(async () => {
+        try {
+          const at = Date.now();
+          const res = await fetch(`${process.env.POC_STT_URL}/transcribe`, { method: 'POST', body: new Uint8Array(audio), signal: AbortSignal.any([session.lifetime.signal, AbortSignal.timeout(20000)]) });
+          if (!res.ok) throw new Error(`GX10 transcription HTTP ${res.status}`);
+          const result = await res.json();
+          if (typeof result.text !== 'string') throw new Error('GX10 returned no transcript');
+          hooks.log({ event: 'local_transcribed', callId: call.id, ms: Date.now() - at, sttMs: result.ms, empty: !result.text.trim() });
+          transcriptTiming = result.text.trim() ? { at, ms: result.ms } : undefined;
+          session.captureEnd(result.text, began, eosAt);
+        } catch (error) {
+          session.captureEnd('', began, eosAt);
+          if (!session.lifetime.signal.aborted) send({ type: 'error', error: String(error) });
+        }
+      });
     }
     ws.on('message', (raw, binary) => {
       if (call.ended) return;
       if (!binary) {
         try {
           const message = JSON.parse(raw.toString());
-          if (message.type === 'text' && typeof message.text === 'string' && message.text.trim() && message.text.length <= 2000) { interrupt(); void respond(undefined, message.text); }
+          if (message.type === 'text' && typeof message.text === 'string' && message.text.trim() && message.text.length <= 2000) session.input(message.text);
         } catch { send({ type: 'error', error: 'Invalid Local message' }); }
         return;
       }
@@ -148,16 +119,16 @@ export function attachLocal(server: Server, accessPath: string, calls: Map<strin
       if (!pcm.length || pcm.length % 2 || pcm.length > 16000) { ws.close(1009, 'Expected short PCM16 frames'); return; }
       let energy = 0;
       for (let i = 0; i < pcm.length; i += 2) energy += (pcm.readInt16LE(i) / 32768) ** 2;
-      // Speaker echo leaks past browser echo cancellation, so barge-in while the bot talks needs louder, sustained speech.
-      const botTalking = Date.now() < playUntil + 300;
+      // Browser echo cancellation leaves speaker leakage, so capture during playback needs sustained loud speech.
+      const botTalking = Date.now() < session.playUntil + 300;
       const voiced = Math.sqrt(energy / (pcm.length / 2)) > (botTalking ? 0.06 : 0.012);
-      if (botTalking) {
+      if (botTalking && !frames.length) {
         if (!voiced) { loudSince = 0; return; }
         loudSince ||= Date.now();
         if (Date.now() - loudSince < 300) return;
       }
       if (voiced) {
-        if (!frames.length) { interrupt(); frames = preRoll; bytes = frames.reduce((n, b) => n + b.length, 0); preRoll = []; }
+        if (!frames.length) { session.captureStart(); startedAt = Date.now(); frames = preRoll; bytes = frames.reduce((n, b) => n + b.length, 0); preRoll = []; }
         lastVoiceAt = Date.now(); clearTimeout(timer); timer = setTimeout(finish, 500);
       }
       if (frames.length || voiced) { frames.push(pcm); bytes += pcm.length; if (bytes >= 928000) finish(); }

@@ -25,10 +25,11 @@ test('AllTalk strips a split WAV header and preserves PCM without ElevenLabs', a
     wav.writeUInt16LE(16, 34); wav.write('data', 36); wav.writeInt16LE(1234, 44); wav.writeInt16LE(-1234, 46);
     globalThis.fetch = async input => {
       assert(String(input).startsWith('http://100.64.0.9:7851/'));
+      assert.equal(new URL(String(input)).searchParams.get('text'), 'Test.');
       return new Response(new ReadableStream({ start(controller) { controller.enqueue(wav.subarray(0, 20)); controller.enqueue(wav.subarray(20, 45)); controller.enqueue(wav.subarray(45)); controller.close(); } }));
     };
     const chunks: Buffer[] = [];
-    for await (const part of speak({ id: 'alltalk:test', provider: 'alltalk', voice: 'test', name: 'test' }, 'Test.', new AbortController().signal)) chunks.push(part);
+    for await (const part of speak({ id: 'alltalk:test', provider: 'alltalk', voice: 'test', name: 'test' }, '[curious] Test. [door slams]', new AbortController().signal)) chunks.push(part);
     assert.deepEqual(Buffer.concat(chunks), wav.subarray(44));
   } finally { globalThis.fetch = original; }
 });

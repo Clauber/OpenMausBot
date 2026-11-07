@@ -1,5 +1,6 @@
 import { attachLocal } from './local.ts';
-import { listVoices, creditBalance, requireCredits, creditFloor } from './voices.ts';
+import { ELEVEN_TTS_MODEL } from './eleven.ts';
+import { listVoices, creditBalance, requireCredits, creditFloor, searchLibrary, addLibraryVoice } from './voices.ts';
 import { loadavg } from 'node:os';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
@@ -45,7 +46,7 @@ async function api(path: string, method = 'GET', body?: object) {
 }
 const { voices, errors: voiceErrors } = await listVoices();
 const voice = bots[0].voice;
-const engineBody = { cascade_timeout_seconds: 15, name: 'OpenMausBot voice POC engine', speech_engine: { ws_url: `${publicUrl.replace('https:', 'wss:')}/ws`, request_headers: {} }, tts: { voice_id: voice, model_id: 'eleven_flash_v2', agent_output_audio_format: 'pcm_16000' }, asr: { user_input_audio_format: 'pcm_16000' }, turn: { turn_eagerness: 'eager', turn_timeout: 30 }, conversation: { client_events: events, max_duration_seconds: 600 }, auth: { enable_auth: true }, privacy: { record_voice: false, retention_days: 1 } };
+const engineBody = { cascade_timeout_seconds: 15, name: 'OpenMausBot voice POC engine', speech_engine: { ws_url: `${publicUrl.replace('https:', 'wss:')}/ws`, request_headers: {} }, tts: { voice_id: voice, model_id: ELEVEN_TTS_MODEL, agent_output_audio_format: 'pcm_16000' }, asr: { user_input_audio_format: 'pcm_16000' }, turn: { turn_eagerness: 'eager', turn_timeout: 30 }, conversation: { client_events: events, max_duration_seconds: 600 }, auth: { enable_auth: true }, privacy: { record_voice: false, retention_days: 1 } };
 if (cache.engineId) await api(`/speech-engine/${cache.engineId}`, 'PATCH', engineBody);
 else { cache.engineId = (await api('/speech-engine', 'POST', { name: engineBody.name, speech_engine: engineBody.speech_engine })).speech_engine_id; saveCache(); await api(`/speech-engine/${cache.engineId}`, 'PATCH', engineBody); }
 const toolConfig = { type: 'webhook', name: 'think', description: 'Ask the real bot agent to recall memory, reason, or use tools. Required for every tool request and explicit request to think.', pre_tool_speech: 'off', response_timeout_secs: 120, api_schema: { url: `${publicUrl}/think`, method: 'POST', request_headers: { 'X-POC-Secret': hookSecret }, request_body_schema: { type: 'object', properties: { request: { type: 'string', description: 'The full request to give the bot agent' }, callId: { type: 'string', description: 'The callId given in the system prompt' } }, required: ['request', 'callId'] } } };
@@ -131,13 +132,26 @@ const server = createServer(async (req, res) => {
       const balance = await creditBalance().catch(() => null);
       return reply(res, 200, { bots: bots.map(b => ({ id: b.id, name: b.name, voice: `elevenlabs:${b.voice}` })), models: models.map(m => m.id), probes, hostedModels, realtimeAvailable: true, voice, voices, voiceErrors, credits: { balance, floor: creditFloor, allowed: balance !== null && balance >= creditFloor } });
     }
+    if (route === 'api/voices/search' && req.method === 'GET') {
+      const search = url.searchParams.get('q')?.trim() || '';
+      const page = Number(url.searchParams.get('page') || 0);
+      if (!search || search.length > 200 || !Number.isInteger(page) || page < 0 || page > 2000) return reply(res, 400, { error: 'Enter a voice name or description, up to 200 characters.' });
+      return reply(res, 200, await searchLibrary(search, page));
+    }
+    if (route === 'api/voices/add' && req.method === 'POST') {
+      const body = await jsonBody(req);
+      if (typeof body.ownerId !== 'string' || !/^[a-zA-Z0-9_-]{1,256}$/.test(body.ownerId) || typeof body.voiceId !== 'string' || !/^[a-zA-Z0-9_-]{1,256}$/.test(body.voiceId) || typeof body.name !== 'string' || !body.name.trim() || body.name.length > 100) return reply(res, 400, { error: 'Invalid library voice selection' });
+      const voice = await addLibraryVoice(body.ownerId, body.voiceId, body.name.trim());
+      if (!voices.some(v => v.id === voice.id)) voices.push(voice);
+      return reply(res, 200, { voice });
+    }
     if (route === 'api/call' && req.method === 'POST') {
       // One user per PoC. A call abandoned before it connected (mic denied, tab closed) must not block the next one.
       if (active && !active.ended) { active.ended = true; active.localClose?.(); log({ event: 'replaced', callId: active.id }); }
       const settings: Settings = { voice: `elevenlabs:${voice}`, buffer: false, responseModel: models[0]?.id, thinkingModel: 'bot', elevenAgentLlm: hostedModels[0], promptCache: false, contextMode: 'full', callTopic: 'marketing team working preferences', turnEagerness: 'eager', turnTimeout: 30, speculativeTurn: false, ...await jsonBody(req) };
       if (!bots.some(b => b.id === settings.botId) || !['agent', 'engine', 'agent-realtime', 'local'].includes(settings.variant) || typeof settings.buffer !== 'boolean' || !models.some(m => m.id === settings.responseModel) || !(settings.thinkingModel === 'bot' || models.some(m => m.id === settings.thinkingModel)) || !hostedModels.includes(settings.elevenAgentLlm)) return reply(res, 400, { error: 'Invalid settings' });
       if (typeof settings.promptCache !== 'boolean' || !['full', 'slim'].includes(settings.contextMode) || typeof settings.callTopic !== 'string' || settings.callTopic.length > 2000 || !['eager', 'normal', 'patient'].includes(settings.turnEagerness) || !Number.isFinite(settings.turnTimeout) || settings.turnTimeout < 1 || settings.turnTimeout > 30 || typeof settings.speculativeTurn !== 'boolean') return reply(res, 400, { error: 'Invalid round-two settings' });
-      if (settings.variant === 'local') settings.promptCache = false;
+      if (settings.variant === 'local') { settings.promptCache = false; settings.thinkingModel = 'bot'; }
       if (settings.promptCache && (settings.variant !== 'engine' || models.find(m => m.id === settings.responseModel)?.provider !== 'anthropic')) return reply(res, 400, { error: 'Prompt cache requires an Anthropic Speech Engine response model' });
       if (settings.variant === 'agent-realtime' && settings.contextMode !== 'full') return reply(res, 400, { error: 'Realtime comparison requires full context' });
       const selectedVoice = voices.find(v => v.id === settings.voice);
@@ -158,7 +172,7 @@ const server = createServer(async (req, res) => {
       try {
         // ElevenLabs client 1.35.0 sends WebRTC overrides in one packet with a 64 KB limit.
         const turnConfig = { turn_eagerness: settings.turnEagerness, turn_timeout: settings.turnTimeout, speculative_turn: settings.speculativeTurn };
-        const tts = { voice_id: selectedVoice.voice, model_id: 'eleven_v4_turbo' };
+        const tts = { voice_id: selectedVoice.voice, model_id: ELEVEN_TTS_MODEL };
         if (settings.variant === 'engine') await api(`/speech-engine/${id}`, 'PATCH', { turn: turnConfig, tts });
         else await api(`/convai/agents/${id}`, 'PATCH', { conversation_config: { realtime_model: settings.variant === 'agent-realtime' ? realtimeModel : null, turn: turnConfig, tts, agent: { first_message: 'Hello', prompt: { prompt: `${call.prompt}\nUse callId {{poc_call_id}} when calling think.`, llm: settings.elevenAgentLlm, thinking_budget: 0 } } } });
         if (settings.promptCache && settings.variant === 'engine') {

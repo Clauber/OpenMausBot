@@ -7,22 +7,51 @@ Clauber wants a phone call to feel like talking to the bot he already chats with
 1. Run `poc/voice-call/start.sh` and open the HTTPS URL it prints.
 2. Keep **St. Paul** and **Local (GX10)** selected. The voice defaults to his configured ElevenLabs voice.
 3. To avoid ElevenLabs charges, select an **AllTalk** voice, such as **AllTalk / male_01.wav**.
-4. Press **Call**, allow microphone access, and speak. Pause for half a second to finish a turn. Speak again to interrupt playback.
+4. Press **Call**, allow microphone access, and speak. Pause for half a second to finish a turn. A new transcript with words interrupts playback.
 5. Press **Hang up** when finished.
 
-Local sends mono 16 kHz PCM over the private page's WebSocket. The PoC applies energy VAD with a 500 ms silence window. GX10 transcribes with cached `faster-whisper-small` 1.2.1 on CUDA FP16. Every transcript runs the product's `buildRecall` against the isolated snapshot. The reply uses the Response model picker (default direct Anthropic `claude-haiku-5-5`; `cliproxy:gpt-6-luna` goes to the GX10 CLIProxy with `CLI_PROXY_API_KEY`) and retains the existing `think` tool. Replies stop after two sentences and TTS starts as each sentence arrives. The turn-taking controls apply to the other variants; Local uses its own VAD settings.
+Local sends mono 16 kHz PCM over the private page's WebSocket. The PoC applies energy VAD with a 500 ms silence window. GX10 transcribes with cached `faster-whisper-small` 1.2.1 on CUDA FP16. Every transcript runs the product's `buildRecall` against the isolated snapshot. The Response picker defaults to direct Anthropic `claude-haiku-5-5`. Its other choice, `cliproxy:gpt-6-luna`, uses GX10 CLIProxy with `CLI_PROXY_API_KEY`. The turn-taking controls apply to the other variants. Local uses its own VAD settings.
 
-AllTalk uses its existing streaming API at `http://100.64.0.9:7851`. ElevenLabs voices use `eleven_v4_turbo` on the streaming TTS endpoint. The other variants accept ElevenLabs voice selections. Realtime Mini manages its own TTS model. AllTalk voices require Local.
+Haiku holds the full call history and answers in one or two short spoken sentences. Its `think` tool only proposes a self-contained task. Local never executes that tool directly. Reusing the existing proposal format keeps one reply stream and avoids another task-writing model call. Jev independently decides whether new full-agent work is needed, in parallel with the reply. It receives recent full-call context clipped to 16,000 bytes, recalled passages, and pending tasks. It starts work only when its agent option reaches 0.6. Missing credentials, invalid answers, errors, and a 1.5-second timeout start no job. `listener.ts` exposes the small `ListenerGate` interface for another gate implementation. Jev reads `decider.key` from live config read-only, with an optional `OMB_JEV_API_KEY` override.
 
-The page shows the ElevenLabs credit balance. The server refuses ElevenLabs TTS when the balance is unavailable or below 100 credits. It checks again before each Local TTS sentence. This does not reserve credits or interrupt an already accepted vendor request. Local with AllTalk uses no ElevenLabs engine, agent, or TTS generation. Startup lists voices and configures the retained hosted resources, but makes no ElevenLabs conversation probes. Do not run the historical `scripted-calls.ts` matrix with the remaining credit balance.
+The full agent uses the copied bot's existing `think` path. Local always uses thinking model `bot`. It starts with Haiku's proposed task if available, otherwise the latest user turn, plus the full conversation. Haiku can say "Let me check on that" while the job runs. New turns, including "Hello?", leave it running. Hangup cancels it. Additional tasks queue serially. Results play after the current short reply and scheduled audio finish, start with "Okay, I checked", and enter history. The page logs Jev decisions and job start, completion, and duration.
+
+ElevenLabs Local uses `eleven_v4_turbo` through one persistent text-to-dialogue WebSocket per call. Each reply has its own `context_id`. Tokens reach `inputs` immediately, the reply ends with `flush` and `close_context`, and interruption closes only that context. The older text-to-speech WebSocket rejects Turbo and directs callers to the dialogue endpoint. The dialogue endpoint buffers about 40 characters and eight words. Its protocol has no TTS `chunk_length_schedule` or auto-mode setting. There is no Local HTTP fallback. `eleven.ts` owns the model constant, vendor requests, and connection.
+
+Only ElevenLabs receives the optional voice-tag prompt. At most one approved tag reaches TTS per reply: `[laughs]`, `[sighs]`, `[exhales]`, `[curious]`, `[excited]`, `[sarcastic]`, or `[whispers]`. Tags stay intact across token boundaries and disappear from displayed and saved speech. Most replies need no tag. AllTalk receives no tag instruction and strips all square-bracket tags before its existing sentence-based streaming API at `http://100.64.0.9:7851`. AllTalk voices require Local. Hosted Agent and Speech Engine settings share the Turbo constant. Realtime Mini manages its own TTS model.
+
+The voice picker contains account voices from `/v2/voices`. Use **Search ElevenLabs library** to search shared voices by name or description. Open **Preview voice**, then choose **Add and use**. Adding a voice consumes an account voice slot. A full account gets an error explaining that an unused voice must be removed in ElevenLabs. The call freezes its voice when it starts.
+
+A noise segment cannot cancel a reply before transcription confirms words. Empty transcripts preserve the reply. If another segment starts within 1.5 seconds of the previous speech end, before first audio, Local merges the transcripts and answers the combined turn. Audio that arrives while this decision is pending waits for transcription.
+
+The page shows the ElevenLabs credit balance. The server refuses TTS if the balance is unknown or below 100 credits. It reserves an estimated 0.5 credit per character before sending each text chunk and refreshes the vendor balance every 30 seconds. This is a process-local estimate, not a vendor spending cap. Balance updates can lag, and another client can spend credits. Local with AllTalk uses no ElevenLabs generation. Startup lists voices and configures retained hosted resources without conversation probes. Do not run the historical `scripted-calls.ts` matrices for routine checks.
 
 The launcher copies `stt.py` into `~/scratch/voice-poc-stt` on GX10 and runs it with `/opt/meeting-system/venv/bin/python`. It uses the existing CTranslate2 libraries in `/opt/meeting-system/ct2/lib`, binds a free loopback port, and opens a private SSH forward. It changes no existing GX10 service. Stopping the supervisor closes the SSH session and stops this scratch transcription process. It uses the cached small model and downloads no model.
 
-Use headphones in a noisy room. Energy VAD can mistake background noise or speaker echo for speech. GX10 and 9router must be reachable. The page displays provider failures and allows another spoken turn. iPhone Safari and human listening quality still need manual acceptance.
+Use headphones in a noisy room. Energy VAD can mistake background noise or speaker echo for speech. GX10 and the selected model provider must be reachable. The page displays provider failures and allows another spoken turn. iPhone Safari and human listening quality still need manual acceptance.
 
 ## Verify Local
 
-Run `poc/voice-call/node_modules/node/bin/node --experimental-strip-types --test poc/voice-call/local.test.ts` for the credit and streaming WAV checks. With the stack running, run the same Node executable with `--experimental-strip-types poc/voice-call/local-smoke.ts` for five successful streamed audio turns. The smoke test uses AllTalk for both input speech and replies, records failed attempts, and stops after ten attempts. Do not run it during another call.
+Run the unit tests from the repository root:
+
+```sh
+poc/voice-call/node_modules/node/bin/node --experimental-strip-types --test \
+  poc/voice-call/local.test.ts poc/voice-call/round3.test.ts
+```
+
+With the isolated stack running, run the same Node executable with `--experimental-strip-types poc/voice-call/round3-smoke.ts`. It makes one text-injected AllTalk call, starts a read-only full-agent task, says "Hello?" during it, and waits for the spoken result. Evidence is `.data/round3-text.json`. Run `xvfb-run -a node_modules/.bin/electron --no-sandbox poc/voice-call/ui-smoke.cjs` for the actual HTTPS page, library previews, and a short tagged Turbo reply. This browser check spends ElevenLabs credits. Do not overlap calls.
+
+For one matched timing sample, run:
+
+```sh
+~/ai/bin/gsd-secrets run --key ELEVENLABS_API_KEY -- \
+  poc/voice-call/node_modules/node/bin/node --experimental-strip-types \
+  poc/voice-call/tts-timing.ts 1
+```
+
+Invoke samples `2` and `3` separately. Each makes one short live Local reply, then replays its text cadence through the old per-sentence HTTP path. The script asserts nonzero audio on both paths and writes `.data/tts-sample-N.json`. First-token-to-audio measures server PCM receipt, not audible playback. See [RESULTS-round3.md](RESULTS-round3.md) for the observed timings, protocol evidence, credit usage, and remaining limits.
+
+The earlier `local-smoke.ts` exercises AllTalk speech input and GX10 transcription. Its historical acceptance record is in [RESULTS-local.md](RESULTS-local.md). The new text-injected checks do not prove microphone recognition quality.
 
 Read `.data/local-timings.json` for the phases, generated transcripts, replies, audio byte counts, and failures. Transcription measures the PoC request through the SSH forward to the decoded transcript. First reply token measures the 9router request to the first text token. First TTS audio measures the first sentence request to the first PCM chunk received by the server. EOS uses the server's last voiced PCM frame, so it includes the 500 ms VAD wait. These timestamps do not measure when sound reaches a person's ear. See [RESULTS-local.md](RESULTS-local.md) for the acceptance record.
 
@@ -36,7 +65,7 @@ poc/voice-call/start.sh
 
 The script takes a snapshot when none exists, starts a loopback development OpenMausBot server, opens a Cloudflare quick tunnel, and starts the PoC server. It prints the private HTTPS page URL, three ports and exact owned PIDs. Runtime files, credentials supplied in memory, copied context, audio and logs stay under ignored `.data/`. Never commit that directory or share its contents as public evidence.
 
-`POC_BOTS` selects comma-separated bot names or IDs before the first snapshot. The measured bot is St. Paul. Its configured ElevenLabs voice is `JBFqnCBsd6RMkjVDRZzb`. The workspace default uses Fish and has an empty ElevenLabs voice, so the bot override is the correct comparison voice. The custom Agent and Speech Engine use ElevenLabs Flash v2 and PCM at 16 kHz. Realtime Mini keeps the voice and PCM rate, but manages its TTS model.
+`POC_BOTS` selects comma-separated bot names or IDs before the first snapshot. The measured bot is St. Paul. Its configured ElevenLabs voice is `JBFqnCBsd6RMkjVDRZzb`. The workspace default uses Fish and has an empty ElevenLabs voice, so the bot override is the comparison voice. The custom Agent and Speech Engine use Turbo and PCM at 16 kHz. Realtime Mini keeps the voice and PCM rate, but manages its TTS model.
 
 `--snapshot` requests snapshot creation. Existing snapshots are protected against replacement. Use a fresh worktree for a new snapshot. This preserves the isolated bot's new conversation state.
 
@@ -44,7 +73,9 @@ Read `.data/run.json` for the current URL and PIDs. Stop only this supervisor wi
 
 The page has a bot picker, variant switch, buffer toggle, response model, thinking model and hosted-agent LLM. Round two adds Anthropic caching, full or slim context, a memory-selection topic, turn eagerness, silence timeout and speculative turns. The three ElevenLabs variants use the ElevenLabs browser client over WebRTC. Local uses its own PCM WebSocket. Open the printed HTTPS URL on iPhone Safari and grant microphone access. One call can run at a time.
 
-## Compared paths
+## Earlier hosted comparisons
+
+The following synchronous tool behavior belongs to the hosted comparison variants. Local uses the background path above.
 
 Speech Engine attaches to the same HTTP server at `/ws` using `@elevenlabs/elevenlabs-js` 2.76.0. ElevenLabs authenticates the connection with its SDK JWT validation. The engine's WebSocket URL follows the current quick tunnel on every startup.
 

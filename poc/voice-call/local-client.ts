@@ -1,6 +1,7 @@
 import type { Turn } from './server.ts';
 type LocalMessage =
   | { type: 'ready' | 'speech_start' | 'empty' }
+  | { type: 'notice'; text: string }
   | { type: 'text' | 'transcript'; text: string; turnId: number }
   | { type: 'audio'; pcm: string; sampleRate: number; turnId: number }
   | { type: 'error'; error: string; turnId?: number }
